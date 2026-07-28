@@ -1,0 +1,27 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.28.3-pg16
+    container_name: trading-system-v2-timescaledb-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TIMESCALEDB_DB:-trading_system_v2_test}
+      POSTGRES_USER: ${TIMESCALEDB_USER:-trading_test}
+      POSTGRES_PASSWORD: ${TIMESCALEDB_PASSWORD:?TIMESCALEDB_PASSWORD must be set}
+      TZ: Asia/Seoul
+      PGTZ: Asia/Seoul
+    command: ["postgres", "-c", "timezone=Asia/Seoul"]
+    ports:
+      - "${TIMESCALEDB_PORT:-5432}:5432"
+    volumes:
+      - timescaledb_test_data:/var/lib/postgresql/data
+      - ./docker/timescaledb/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  timescaledb_test_data:
+    name: trading-system-v2-timescaledb-test-data
