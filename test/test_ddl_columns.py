@@ -40,6 +40,10 @@ class RawDdlTest(unittest.TestCase):
         ddl = ROOT / "database" / "ddl"
         self.assertTrue((ddl / "04_backfill_job.sql").exists())
         self.assertTrue((ddl / "05_backfill_segment.sql").exists())
+        manifest = (ddl / "06_futures_backfill_manifest.sql").read_text(encoding="utf-8")
+        self.assertIn("futures_backfill_manifest", manifest)
+        self.assertIn("API_VERIFIED_UNCONFIRMED", manifest)
+        self.assertIn("OFFICIAL_MASTER_VERIFIED", manifest)
 
     def test_first_phase_stock_minute_targets_are_seeded(self):
         seed = (ROOT / "database" / "seed" / "01_stock_minute_backfill_targets.sql").read_text(encoding="utf-8")

@@ -36,7 +36,7 @@ class TimescaleRawRepositoryIntegrationTest(unittest.TestCase):
         cls.pool = create_connection_pool(DatabaseSettings.from_environment())
         with cls.pool.connection() as connection:
             with connection.cursor() as cursor:
-                for ddl_name in ("04_backfill_job.sql", "05_backfill_segment.sql"):
+                for ddl_name in ("04_backfill_job.sql", "05_backfill_segment.sql", "06_futures_backfill_manifest.sql"):
                     cursor.execute((ROOT / "database" / "ddl" / ddl_name).read_text(encoding="utf-8"))
                 for ddl in sorted((ROOT / "database" / "ddl").glob("1[0-7]_raw_*.sql")):
                     cursor.execute(ddl.read_text(encoding="utf-8"))
