@@ -9,6 +9,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime, time as clock_time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,26 @@ from src.service.email_alert_service import EmailAlertService, EmailSettings
 from src.service.ntfy_alert_service import NtfyAlertService, NtfySettings
 from src.service.raw_ingestion_service import RawIngestionService
 from src.service.sma_cross_signal_service import SmaCrossSignalService
+
+
+OBSERVATION_START = clock_time(8, 1)
+OBSERVATION_END = clock_time(20, 4)
+
+
+def is_observation_time(now: datetime) -> bool:
+    """NXT 장전부터 장후 마지막 완료 봉을 받을 때까지 KST 기준으로 수집한다."""
+    return now.weekday() < 5 and OBSERVATION_START <= now.time() <= OBSERVATION_END
+
+
+def new_completed_bar_times(rows: list[dict[str, object]], *, now: datetime, last_processed: datetime | None) -> list[datetime]:
+    """현재 진행 중인 봉을 제외하고, 이번 프로세스에서 아직 평가하지 않은 완료 봉만 시간순으로 반환한다."""
+    cutoff = now.replace(second=0, microsecond=0)
+    return sorted({
+        row["bar_time"] for row in rows
+        if isinstance(row.get("bar_time"), datetime)
+        and row["bar_time"] < cutoff
+        and (last_processed is None or row["bar_time"] > last_processed)
+    })
 
 
 def main() -> int:
@@ -55,29 +76,32 @@ def main() -> int:
             minute_repository=StockMinuteAnalysisRepository(pool), signal_repository=signal_repository, email_service=alert_service
         )
         collector = StockMinuteCollector(KISClient())
+        last_integrated_bar_time: datetime | None = None
         while True:
             try:
                 now = kst_now()
-                if now.weekday() < 5 and (now.hour, now.minute) >= (9, 1) and (now.hour, now.minute) <= (15, 31):
-                    completed = []
+                if is_observation_time(now):
+                    integrated_rows: list[dict[str, object]] = []
                     for stock_code, market_code, venue in (
                         ("000660", "KOSPI", "KRX"), ("000660", "KOSPI", "NXT"), ("000660", "KOSPI", "INTEGRATED"),
                         ("0193T0", "ETF", "KRX"), ("0197X0", "ETF", "KRX"),
                     ):
                         rows = collector.collect(stock_code=stock_code, market_code=market_code, input_hour=now.strftime("%H%M%S"), trading_venue=venue)
-                        rows = [row for row in rows if row["bar_time"] < now.replace(second=0, microsecond=0)]
                         RawIngestionService(raw_repository).store(RawTable.STOCK_MINUTE, rows)
                         if stock_code == "000660" and venue == "INTEGRATED":
-                            completed = rows
-                    if completed:
-                        latest = max(row["bar_time"] for row in completed)
-                        result = service.evaluate_completed_bar(stock_code="000660", completed_time=latest)
-                        latest_bar = StockMinuteAnalysisRepository(pool).completed_bars(stock_code="000660", before_time=latest, limit=1)[-1]
-                        service.update_open_performance(stock_code="000660", completed_bar=latest_bar)
+                            integrated_rows = rows
+                    for completed_time in new_completed_bar_times(integrated_rows, now=now, last_processed=last_integrated_bar_time):
+                        result = service.evaluate_completed_bar(stock_code="000660", completed_time=completed_time)
+                        completed_bars = StockMinuteAnalysisRepository(pool).completed_bars(
+                            stock_code="000660", before_time=completed_time, limit=1
+                        )
+                        if completed_bars:
+                            service.update_open_performance(stock_code="000660", completed_bar=completed_bars[-1])
+                        last_integrated_bar_time = completed_time
                         if result:
-                            print(f"신호 기록: {result} {latest}")
-                        if latest.hour == 15 and latest.minute == 30:
-                            service.close_market_performance(stock_code="000660", market_close_bar_time=latest)
+                            print(f"신호 기록: {result} {completed_time}")
+                        if completed_time.hour == 15 and completed_time.minute == 30:
+                            service.close_market_performance(stock_code="000660", market_close_bar_time=completed_time)
             except Exception as error:
                 print(f"1분봉 신호 처리 실패: {type(error).__name__}")
             time.sleep(args.interval_seconds)

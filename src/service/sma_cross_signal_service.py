@@ -146,7 +146,8 @@ class SmaCrossSignalService:
     @staticmethod
     def _body(signal, details) -> str:
         return "\n".join((
-            f"상태: {signal.status}", f"방향: {signal.direction}", f"타점 시각: {signal.signal_time}",
+            f"상태: {signal.status}", f"방향: {signal.direction}",
+            f"타점 시각(KST): {signal.signal_time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"현재 종가: {signal.signal_price}", f"SMA5: {details['sma5']}", f"SMA10: {details['sma10']}",
             f"직전 확정 타점 가격: {details['previous_price']}", f"직전 이후 최대 상승률: {details['maximum_up']}",
             f"직전 이후 최대 하락률: {details['maximum_down']}", f"1% 변동성 충족: {details['threshold_met']}",

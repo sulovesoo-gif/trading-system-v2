@@ -84,6 +84,15 @@ class SmaFeatureAndEventTest(unittest.TestCase):
 
 
 class SmaCrossSignalServiceTest(unittest.TestCase):
+    def test_notification_body_labels_signal_time_as_kst(self):
+        signal = SmaCrossSignal(1, BASE, "000660", "LONG", "CONFIRMED", Decimal("10"))
+        body = SmaCrossSignalService._body(signal, {
+            "sma5": Decimal("10"), "sma10": Decimal("10"), "previous_price": Decimal("9.9"),
+            "maximum_up": Decimal("0.01"), "maximum_down": Decimal("-0.01"), "threshold_met": True,
+            "alignment": "ALIGNED", "threshold_direction": "UP", "threshold_alignment": "ALIGNED",
+        })
+        self.assertIn("타점 시각(KST): 2026-07-29 09:00:00", body)
+
     def test_first_cross_is_initial_confirmed(self):
         repo = FakeSignalRepository()
         service = SmaCrossSignalService(
