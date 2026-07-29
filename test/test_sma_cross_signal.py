@@ -53,7 +53,10 @@ class FakeSignalRepository:
     def confirm_candidate(self, **kwargs):
         self.confirmed_candidates.append(kwargs)
         value = self.candidate
-        self.confirmed = SmaCrossSignal(value.signal_id, value.signal_time, value.stock_code, value.direction, "CONFIRMED", value.signal_price)
+        self.confirmed = SmaCrossSignal(
+            value.signal_id, kwargs["confirmed_time"], value.stock_code, value.direction, "CONFIRMED",
+            kwargs["confirmed_price"],
+        )
         return self.confirmed
     def reject_candidate(self, **kwargs): self.rejected.append(kwargs)
     def create_notification(self, **_): return False
@@ -87,11 +90,15 @@ class SmaCrossSignalServiceTest(unittest.TestCase):
     def test_notification_body_labels_signal_time_as_kst(self):
         signal = SmaCrossSignal(1, BASE, "000660", "LONG", "CONFIRMED", Decimal("10"))
         body = SmaCrossSignalService._body(signal, {
-            "sma5": Decimal("10"), "sma10": Decimal("10"), "previous_price": Decimal("9.9"),
+            "candidate_time": BASE, "candidate_price": Decimal("10"),
+            "confirmed_time": BASE + timedelta(minutes=2), "confirmed_price": Decimal("10.1"),
+            "confirmed_change": Decimal("0.02"), "sma5": Decimal("10"), "sma10": Decimal("10"), "previous_price": Decimal("9.9"),
             "maximum_up": Decimal("0.01"), "maximum_down": Decimal("-0.01"), "threshold_met": True,
             "alignment": "ALIGNED", "threshold_direction": "UP", "threshold_alignment": "ALIGNED",
         })
-        self.assertIn("타점 시각(KST): 2026-07-30 09:00:00", body)
+        self.assertIn("후보 발생 시각(KST): 2026-07-30 09:00:00", body)
+        self.assertIn("실제 확정 시각(KST): 2026-07-30 09:02:00", body)
+        self.assertIn("실제 확정 종가: 10.1", body)
 
     def test_first_cross_is_initial_confirmed(self):
         repo = FakeSignalRepository()
@@ -120,6 +127,9 @@ class SmaCrossSignalServiceTest(unittest.TestCase):
         self.assertEqual(service.evaluate_completed_bar(stock_code="000660", completed_time=BASE + timedelta(minutes=10)), "CONFIRMED")
         self.assertEqual(repo.confirmed_candidates[0]["threshold_break_direction"], "DOWN")
         self.assertEqual(repo.confirmed_candidates[0]["threshold_direction_alignment"], "OPPOSED")
+        self.assertEqual(repo.confirmed_candidates[0]["confirmed_time"], BASE + timedelta(minutes=10))
+        self.assertEqual(repo.confirmed_candidates[0]["confirmed_price"], Decimal("9.9"))
+        self.assertEqual(repo.confirmed_candidates[0]["confirmed_change_from_previous"], Decimal("-0.01"))
 
     def test_opposite_cross_rejects_candidate(self):
         baseline = SmaCrossSignal(1, BASE, "000660", "LONG", "CONFIRMED", Decimal("10"))

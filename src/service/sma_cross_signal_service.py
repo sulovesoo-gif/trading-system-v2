@@ -28,13 +28,16 @@ class SmaCrossSignalService:
             baseline = self.signal_repository.latest_confirmed(stock_code)
             if baseline is None:
                 raise RuntimeError("후보 타점에 직전 확정 타점이 없습니다.")
-            break_direction, _ = threshold_break(current.bar.close_price, baseline.signal_price)
+            break_direction, confirmation_change = threshold_break(current.bar.close_price, baseline.signal_price)
             if break_direction:
                 alignment = "ALIGNED" if ((candidate.direction == "LONG") == (break_direction == "UP")) else "OPPOSED"
                 confirmed = self.signal_repository.confirm_candidate(
                     signal_id=candidate.signal_id,
                     threshold_break_direction=break_direction,
                     threshold_direction_alignment=alignment,
+                    confirmed_time=current.bar.bar_time,
+                    confirmed_price=current.bar.close_price,
+                    confirmed_change_from_previous=confirmation_change,
                 )
                 self._finalize_previous_performance(baseline, current.bar.bar_time - timedelta(minutes=1))
                 self.signal_repository.ensure_performance(confirmed.signal_id)
@@ -53,7 +56,11 @@ class SmaCrossSignalService:
             return None
         previous_confirmed = self.signal_repository.latest_confirmed(stock_code)
         if previous_confirmed is None:
-            created = self._create_signal(stock_code, previous, current, event, "INITIAL_CONFIRMED", None, True, None, None, None)
+            created = self._create_signal(
+                stock_code, previous, current, event, "INITIAL_CONFIRMED", None, True, None, None, None,
+                confirmed_time=current.bar.bar_time, confirmed_price=current.bar.close_price,
+                confirmed_change_from_previous=None,
+            )
             self.signal_repository.ensure_performance(created.signal_id)
             self._save_related_bars(created.signal_id, current.bar.bar_time)
             self._notify(created, "INITIAL", current, None)
@@ -64,7 +71,14 @@ class SmaCrossSignalService:
         )
         metrics = self._volatility_metrics(closes, previous_confirmed.signal_price)
         status = "CONFIRMED" if metrics["volatility_threshold_met"] else "CANDIDATE"
-        created = self._create_signal(stock_code, previous, current, event, status, previous_confirmed, **metrics)
+        confirmed_time = current.bar.bar_time if status == "CONFIRMED" else None
+        confirmed_price = current.bar.close_price if status == "CONFIRMED" else None
+        confirmed_change = current.bar.close_price / previous_confirmed.signal_price - Decimal("1") if status == "CONFIRMED" else None
+        created = self._create_signal(
+            stock_code, previous, current, event, status, previous_confirmed, **metrics,
+            confirmed_time=confirmed_time, confirmed_price=confirmed_price,
+            confirmed_change_from_previous=confirmed_change,
+        )
         self.signal_repository.ensure_performance(created.signal_id)
         self._save_related_bars(created.signal_id, current.bar.bar_time)
         if status == "CONFIRMED":
@@ -97,7 +111,12 @@ class SmaCrossSignalService:
                 end_reason="MARKET_CLOSE",
             )
 
-    def _create_signal(self, stock_code, previous_feature, current, event, status, previous_confirmed, volatility_threshold_met, maximum_up_change_since_previous, maximum_down_change_since_previous, maximum_absolute_change_since_previous):
+    def _create_signal(
+        self, stock_code, previous_feature, current, event, status, previous_confirmed,
+        volatility_threshold_met, maximum_up_change_since_previous, maximum_down_change_since_previous,
+        maximum_absolute_change_since_previous, *, confirmed_time, confirmed_price,
+        confirmed_change_from_previous,
+    ):
         return self.signal_repository.create({
             "signal_time": current.bar.bar_time, "stock_code": stock_code, "direction": event.direction, "status": status,
             "signal_price": current.bar.close_price, "candle_open": current.bar.open_price, "candle_close": current.bar.close_price,
@@ -110,6 +129,9 @@ class SmaCrossSignalService:
             "maximum_down_change_since_previous": maximum_down_change_since_previous,
             "maximum_absolute_change_since_previous": maximum_absolute_change_since_previous,
             "volatility_threshold_met": volatility_threshold_met,
+            "confirmed_time": confirmed_time,
+            "confirmed_price": confirmed_price,
+            "confirmed_change_from_previous": confirmed_change_from_previous,
         })
 
     @staticmethod
@@ -145,12 +167,23 @@ class SmaCrossSignalService:
 
     @staticmethod
     def _body(signal, details) -> str:
-        return "\n".join((
-            f"상태: {signal.status}", f"방향: {signal.direction}",
-            f"타점 시각(KST): {signal.signal_time.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"현재 종가: {signal.signal_price}", f"SMA5: {details['sma5']}", f"SMA10: {details['sma10']}",
-            f"직전 확정 타점 가격: {details['previous_price']}", f"직전 이후 최대 상승률: {details['maximum_up']}",
-            f"직전 이후 최대 하락률: {details['maximum_down']}", f"1% 변동성 충족: {details['threshold_met']}",
-            f"봉 방향 일치: {details['alignment']}", f"1% 경계 방향: {details['threshold_direction']}",
-            f"경계-후보 방향 일치: {details['threshold_alignment']}",
-        ))
+        lines = [
+            f"상태: {signal.status}",
+            f"방향: {signal.direction}",
+            f"후보 발생 시각(KST): {details['candidate_time'].strftime('%Y-%m-%d %H:%M:%S')}",
+            f"후보 가격: {details['candidate_price']}",
+            f"직전 확정 타점 가격: {details['previous_price']}",
+            f"직전 이후 최대 상승률: {details['maximum_up']}",
+            f"직전 이후 최대 하락률: {details['maximum_down']}",
+            f"1% 변동성 충족: {details['threshold_met']}",
+            f"봉 방향 일치: {details['alignment']}",
+        ]
+        if signal.status in ("INITIAL_CONFIRMED", "CONFIRMED"):
+            lines.extend((
+                f"실제 확정 시각(KST): {details['confirmed_time'].strftime('%Y-%m-%d %H:%M:%S')}",
+                f"실제 확정 종가: {details['confirmed_price']}",
+                f"직전 확정 타점 대비 실제 변동률: {details['confirmed_change']}",
+                f"1% 경계 돌파 방향: {details['threshold_direction']}",
+                f"후보 방향과 경계 방향 일치: {details['threshold_alignment']}",
+            ))
+        return "\n".join(lines)

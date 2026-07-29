@@ -23,7 +23,8 @@ class SmaCrossSignalRepository:
 
     def latest_confirmed(self, stock_code: str) -> SmaCrossSignal | None:
         return self._one(
-            "SELECT signal_id, signal_time, stock_code, direction, status, signal_price "
+            "SELECT signal_id, COALESCE(confirmed_time, signal_time), stock_code, direction, status, "
+            "COALESCE(confirmed_price, signal_price) "
             "FROM analysis_sma_cross_signal WHERE stock_code = %s "
             "AND status IN ('INITIAL_CONFIRMED', 'CONFIRMED') ORDER BY signal_time DESC, signal_id DESC LIMIT 1",
             (stock_code,),
@@ -55,13 +56,24 @@ class SmaCrossSignalRepository:
         )
         return self._one(sql, tuple(values[name] for name in columns), required=True)
 
-    def confirm_candidate(self, *, signal_id: int, threshold_break_direction: str, threshold_direction_alignment: str) -> SmaCrossSignal:
+    def confirm_candidate(
+        self,
+        *,
+        signal_id: int,
+        threshold_break_direction: str,
+        threshold_direction_alignment: str,
+        confirmed_time: datetime,
+        confirmed_price: Decimal,
+        confirmed_change_from_previous: Decimal,
+    ) -> SmaCrossSignal:
         return self._one(
             "UPDATE analysis_sma_cross_signal SET status = 'CONFIRMED', threshold_break_direction = %s, "
-            "threshold_direction_alignment = %s, volatility_threshold_met = TRUE, status_updated_at = CURRENT_TIMESTAMP "
+            "threshold_direction_alignment = %s, volatility_threshold_met = TRUE, confirmed_time = %s, "
+            "confirmed_price = %s, confirmed_change_from_previous = %s, status_updated_at = CURRENT_TIMESTAMP "
             "WHERE signal_id = %s AND status = 'CANDIDATE' "
-            "RETURNING signal_id, signal_time, stock_code, direction, status, signal_price",
-            (threshold_break_direction, threshold_direction_alignment, signal_id), required=True,
+            "RETURNING signal_id, confirmed_time, stock_code, direction, status, confirmed_price",
+            (threshold_break_direction, threshold_direction_alignment, confirmed_time, confirmed_price,
+             confirmed_change_from_previous, signal_id), required=True,
         )
 
     def reject_candidate(self, *, signal_id: int, reason: str) -> None:
@@ -79,7 +91,8 @@ class SmaCrossSignalRepository:
 
     def signal_details(self, signal_id: int) -> dict[str, object]:
         sql = (
-            "SELECT sma5, sma10, previous_confirmed_signal_price, maximum_up_change_since_previous, "
+            "SELECT signal_time, signal_price, confirmed_time, confirmed_price, confirmed_change_from_previous, "
+            "sma5, sma10, previous_confirmed_signal_price, maximum_up_change_since_previous, "
             "maximum_down_change_since_previous, maximum_absolute_change_since_previous, volatility_threshold_met, "
             "direction_alignment, threshold_break_direction, threshold_direction_alignment "
             "FROM analysis_sma_cross_signal WHERE signal_id = %s"
@@ -90,7 +103,11 @@ class SmaCrossSignalRepository:
                 row = cursor.fetchone()
         if row is None:
             raise RuntimeError("알림 대상 SMA 신호를 찾을 수 없습니다.")
-        names = ("sma5", "sma10", "previous_price", "maximum_up", "maximum_down", "maximum_absolute", "threshold_met", "alignment", "threshold_direction", "threshold_alignment")
+        names = (
+            "candidate_time", "candidate_price", "confirmed_time", "confirmed_price", "confirmed_change",
+            "sma5", "sma10", "previous_price", "maximum_up", "maximum_down", "maximum_absolute",
+            "threshold_met", "alignment", "threshold_direction", "threshold_alignment",
+        )
         return dict(zip(names, row))
 
     def mark_notification_sent(self, *, signal_id: int, notification_type: str) -> None:

@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS analysis_sma_cross_signal
     maximum_down_change_since_previous     NUMERIC(12,8),
     maximum_absolute_change_since_previous NUMERIC(12,8),
     volatility_threshold_met               BOOLEAN       NOT NULL,
+    confirmed_time                         TIMESTAMP(3),
+    confirmed_price                        NUMERIC(18,2),
+    confirmed_change_from_previous         NUMERIC(12,8),
     threshold_break_direction              VARCHAR(10)   CHECK (threshold_break_direction IN ('UP', 'DOWN')),
     threshold_direction_alignment          VARCHAR(10)   CHECK (threshold_direction_alignment IN ('ALIGNED', 'OPPOSED')),
     rejection_reason                       VARCHAR(100),
@@ -37,6 +40,21 @@ CREATE TABLE IF NOT EXISTS analysis_sma_cross_signal
         UNIQUE (stock_code, signal_time, status)
 );
 
+ALTER TABLE analysis_sma_cross_signal
+    ADD COLUMN IF NOT EXISTS confirmed_time TIMESTAMP(3),
+    ADD COLUMN IF NOT EXISTS confirmed_price NUMERIC(18,2),
+    ADD COLUMN IF NOT EXISTS confirmed_change_from_previous NUMERIC(12,8);
+
+UPDATE analysis_sma_cross_signal
+SET confirmed_time = signal_time,
+    confirmed_price = signal_price,
+    confirmed_change_from_previous = CASE
+        WHEN previous_confirmed_signal_price IS NULL THEN NULL
+        ELSE signal_price / previous_confirmed_signal_price - 1
+    END
+WHERE status IN ('INITIAL_CONFIRMED', 'CONFIRMED')
+  AND (confirmed_time IS NULL OR confirmed_price IS NULL);
+
 CREATE INDEX IF NOT EXISTS idx_analysis_sma_cross_signal_stock_time
     ON analysis_sma_cross_signal (stock_code, signal_time DESC);
 
@@ -44,3 +62,6 @@ COMMENT ON TABLE analysis_sma_cross_signal IS '완료된 SK하이닉스 1분봉 
 COMMENT ON COLUMN analysis_sma_cross_signal.signal_price IS '신호 발생 완료 1분봉의 종가';
 COMMENT ON COLUMN analysis_sma_cross_signal.maximum_down_change_since_previous IS '직전 확정 타점 이후 종가 기준 최저 변동률(음수)';
 COMMENT ON COLUMN analysis_sma_cross_signal.threshold_break_direction IS '후보를 확정한 완료 종가의 1% 경계 돌파 방향';
+COMMENT ON COLUMN analysis_sma_cross_signal.confirmed_time IS '후보가 1% 경계 종가 돌파로 실제 확정된 시각(KST)';
+COMMENT ON COLUMN analysis_sma_cross_signal.confirmed_price IS '실제 확정 완료 1분봉 종가';
+COMMENT ON COLUMN analysis_sma_cross_signal.confirmed_change_from_previous IS '직전 확정 타점 가격 대비 실제 확정 종가 변동률';
