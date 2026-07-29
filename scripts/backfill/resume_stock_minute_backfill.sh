@@ -30,11 +30,12 @@ if (( dry_run )); then
 fi
 
 backfill_read_resume_job "$requested_job_id"
+backfill_assert_job_id "$BACKFILL_JOB_ID" || backfill_die "재개 job_id가 유효하지 않습니다."
 
-remaining_count="$(backfill_psql -At -v job_id="$BACKFILL_JOB_ID" -c "
+remaining_count="$(backfill_psql -At -c "
     SELECT count(*)
     FROM backfill_segment
-    WHERE job_id = :'job_id'::bigint
+    WHERE job_id = ${BACKFILL_JOB_ID}
       AND status IN ('PENDING', 'RUNNING', 'FAILED');
 ")" || backfill_die "재개 대상 세그먼트 수 조회에 실패했습니다."
 

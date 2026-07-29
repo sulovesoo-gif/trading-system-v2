@@ -75,8 +75,8 @@ backfill_activate_venv() {
         || backfill_die "Python 실행 파일을 찾을 수 없습니다."
 }
 
-backfill_require_environment() {
-    local required=(DB_PASSWORD KIS_BASE_URL KIS_API_KEY KIS_API_SECRET)
+backfill_require_database_environment() {
+    local required=(DB_PASSWORD)
     local name
     for name in "${required[@]}"; do
         [[ -n "${!name:-}" ]] || backfill_die "필수 환경변수가 없습니다: ${name}"
@@ -90,6 +90,16 @@ backfill_require_environment() {
 
     [[ "$DB_NAME" == "trading_system_v2_test" ]] \
         || backfill_die "운영 DB 보호: DB_NAME은 trading_system_v2_test여야 합니다. 현재 값은 사용하지 않습니다."
+}
+
+backfill_require_environment() {
+    backfill_require_database_environment
+
+    local required=(KIS_BASE_URL KIS_API_KEY KIS_API_SECRET)
+    local name
+    for name in "${required[@]}"; do
+        [[ -n "${!name:-}" ]] || backfill_die "필수 환경변수가 없습니다: ${name}"
+    done
 }
 
 backfill_require_container() {
@@ -196,12 +206,22 @@ backfill_install_interrupt_trap() {
     trap backfill_on_interrupt INT TERM
 }
 
+backfill_assert_job_id() {
+    local job_id="$1"
+    [[ "$job_id" =~ ^[0-9]+$ ]] || {
+        echo "오류: job_id는 숫자만 사용할 수 있습니다." >&2
+        return 1
+    }
+}
+
 backfill_print_status() {
     [[ -n "$BACKFILL_JOB_ID" ]] || return 0
-    backfill_psql -P pager=off -v job_id="$BACKFILL_JOB_ID" -c "
+    local job_id="$BACKFILL_JOB_ID"
+    backfill_assert_job_id "$job_id" || return 1
+    backfill_psql -P pager=off -c "
         SELECT job_id, status, start_date, end_date, started_at, completed_at, failure_message
         FROM backfill_job
-        WHERE job_id = :'job_id'::bigint;
+        WHERE job_id = ${job_id};
 
         SELECT
             status,
@@ -211,7 +231,7 @@ backfill_print_status() {
             sum(inserted_count) AS inserted_count,
             sum(duplicate_count) AS duplicate_count
         FROM backfill_segment
-        WHERE job_id = :'job_id'::bigint
+        WHERE job_id = ${job_id}
         GROUP BY status
         ORDER BY status;
 
@@ -227,7 +247,7 @@ backfill_print_status() {
             min(minimum_bar_time) AS first_bar_time,
             max(maximum_bar_time) AS last_bar_time
         FROM backfill_segment
-        WHERE job_id = :'job_id'::bigint
+        WHERE job_id = ${job_id}
         GROUP BY instrument_code
         ORDER BY instrument_code;
     "
@@ -277,9 +297,11 @@ backfill_run_worker() {
 
 backfill_verify_job() {
     [[ -n "$BACKFILL_JOB_ID" ]] || backfill_die "검증할 job_id가 없습니다."
+    local job_id="$BACKFILL_JOB_ID"
+    backfill_assert_job_id "$job_id" || backfill_die "검증할 job_id가 유효하지 않습니다."
     backfill_log "완료 검증을 시작합니다: job_id=${BACKFILL_JOB_ID}"
 
-    if ! backfill_psql -P pager=off -v job_id="$BACKFILL_JOB_ID" -c "
+    if ! backfill_psql -P pager=off -c "
         SELECT
             instrument_code,
             count(*) AS expected_trade_days,
@@ -293,7 +315,7 @@ backfill_verify_job() {
             min(minimum_bar_time) AS first_bar_time,
             max(maximum_bar_time) AS last_bar_time
         FROM backfill_segment
-        WHERE job_id = :'job_id'::bigint
+        WHERE job_id = ${job_id}
         GROUP BY instrument_code
         ORDER BY instrument_code;
 
@@ -310,7 +332,7 @@ backfill_verify_job() {
          AND raw.bar_time::date = segment.trade_date
          AND raw.trading_venue = 'KRX'
          AND raw.collect_cycle = '1MIN'
-        WHERE segment.job_id = :'job_id'::bigint
+        WHERE segment.job_id = ${job_id}
         GROUP BY
             segment.instrument_code,
             segment.trade_date,
@@ -323,7 +345,7 @@ backfill_verify_job() {
         WITH expected_segments AS (
             SELECT instrument_code, trade_date
             FROM backfill_segment
-            WHERE job_id = :'job_id'::bigint AND status = 'COMPLETED'
+            WHERE job_id = ${job_id} AND status = 'COMPLETED'
         ), bars AS (
             SELECT raw.stock_code, raw.bar_time,
                    lag(raw.bar_time) OVER (
@@ -346,7 +368,7 @@ backfill_verify_job() {
         WITH expected_segments AS (
             SELECT instrument_code, trade_date
             FROM backfill_segment
-            WHERE job_id = :'job_id'::bigint AND status = 'COMPLETED'
+            WHERE job_id = ${job_id} AND status = 'COMPLETED'
         )
         SELECT raw.stock_code, raw.bar_time::date AS trade_date,
                min(raw.bar_time) AS first_bar_time, max(raw.bar_time) AS last_bar_time
@@ -360,15 +382,15 @@ backfill_verify_job() {
             OR max(raw.bar_time)::time < TIME '15:30:00'
         ORDER BY raw.stock_code, trade_date;
 
-        WITH target_codes AS (
-            SELECT DISTINCT instrument_code
+        WITH expected_segments AS (
+            SELECT instrument_code, trade_date
             FROM backfill_segment
-            WHERE job_id = :'job_id'::bigint
+            WHERE job_id = ${job_id} AND status = 'COMPLETED'
         )
         SELECT
-            stock_code,
+            raw.stock_code,
             count(*) AS stored_count,
-            count(DISTINCT (bar_time, data_source, market_code, trading_venue, collect_cycle, stock_code)) AS distinct_primary_key_count,
+            count(DISTINCT (raw.bar_time, raw.data_source, raw.market_code, raw.trading_venue, raw.collect_cycle, raw.stock_code)) AS distinct_primary_key_count,
             count(*) FILTER (WHERE trading_venue = 'KRX') AS krx_count,
             count(*) FILTER (WHERE collect_cycle = '1MIN') AS one_minute_count,
             count(*) FILTER (
@@ -376,21 +398,68 @@ backfill_verify_job() {
                   AND raw_payload ? 'stck_cntg_hour'
                   AND raw_payload ? 'stck_prpr'
             ) AS payload_preserved_count
-        FROM raw_stock_minute
-        WHERE stock_code IN (SELECT instrument_code FROM target_codes)
-          AND trading_venue = 'KRX'
-          AND collect_cycle = '1MIN'
-        GROUP BY stock_code
-        ORDER BY stock_code;
+        FROM raw_stock_minute AS raw
+        JOIN expected_segments AS segment
+          ON segment.instrument_code = raw.stock_code
+         AND segment.trade_date = raw.bar_time::date
+        WHERE raw.trading_venue = 'KRX'
+          AND raw.collect_cycle = '1MIN'
+        GROUP BY raw.stock_code
+        ORDER BY raw.stock_code;
+
+        WITH expected_segments AS (
+            SELECT instrument_code, trade_date
+            FROM backfill_segment
+            WHERE job_id = ${job_id} AND status = 'COMPLETED'
+        )
+        SELECT
+            raw.stock_code,
+            raw.bar_time,
+            raw.data_source,
+            raw.market_code,
+            raw.trading_venue,
+            raw.collect_cycle,
+            count(*) AS duplicate_primary_key_count
+        FROM raw_stock_minute AS raw
+        JOIN expected_segments AS segment
+          ON segment.instrument_code = raw.stock_code
+         AND segment.trade_date = raw.bar_time::date
+        GROUP BY
+            raw.stock_code,
+            raw.bar_time,
+            raw.data_source,
+            raw.market_code,
+            raw.trading_venue,
+            raw.collect_cycle
+        HAVING count(*) > 1
+        ORDER BY raw.stock_code, raw.bar_time;
+
+        WITH expected_segments AS (
+            SELECT instrument_code, trade_date
+            FROM backfill_segment
+            WHERE job_id = ${job_id} AND status = 'COMPLETED'
+        )
+        SELECT
+            raw.stock_code,
+            raw.trading_venue,
+            raw.collect_cycle,
+            count(*) AS invalid_raw_count
+        FROM raw_stock_minute AS raw
+        JOIN expected_segments AS segment
+          ON segment.instrument_code = raw.stock_code
+         AND segment.trade_date = raw.bar_time::date
+        WHERE raw.trading_venue <> 'KRX' OR raw.collect_cycle <> '1MIN'
+        GROUP BY raw.stock_code, raw.trading_venue, raw.collect_cycle
+        ORDER BY raw.stock_code, raw.trading_venue, raw.collect_cycle;
     "; then
         echo "오류: 완료 검증 SQL 실행에 실패했습니다. 작업 로그와 DB 상태를 확인하세요." >&2
         return 1
     fi
 
     local critical_status
-    critical_status="$(backfill_psql -At -v job_id="$BACKFILL_JOB_ID" -c "
+    critical_status="$(backfill_psql -At -c "
         WITH segments AS (
-            SELECT * FROM backfill_segment WHERE job_id = :'job_id'::bigint
+            SELECT * FROM backfill_segment WHERE job_id = ${job_id}
         ), missing_raw AS (
             SELECT 1
             FROM segments AS segment
@@ -405,7 +474,10 @@ backfill_verify_job() {
         ), invalid_raw AS (
             SELECT 1
             FROM raw_stock_minute AS raw
-            WHERE raw.stock_code IN (SELECT instrument_code FROM segments)
+            JOIN segments AS segment
+              ON segment.instrument_code = raw.stock_code
+             AND segment.trade_date = raw.bar_time::date
+            WHERE segment.status = 'COMPLETED'
               AND (raw.trading_venue <> 'KRX' OR raw.collect_cycle <> '1MIN'
                    OR NOT (raw.raw_payload ? 'stck_bsop_date'
                            AND raw.raw_payload ? 'stck_cntg_hour'
@@ -430,14 +502,14 @@ backfill_verify_job() {
 
 backfill_read_resume_job() {
     local requested_job_id="$1"
-    [[ "$requested_job_id" =~ ^[0-9]+$ ]] || backfill_die "job_id는 양의 정수여야 합니다."
+    backfill_assert_job_id "$requested_job_id" || backfill_die "job_id는 양의 정수여야 합니다."
     [[ "$requested_job_id" != "1" ]] || backfill_die "기존 스모크 작업 job_id=1은 재개하지 않습니다."
 
     local metadata
-    metadata="$(backfill_psql -At -F '|' -v job_id="$requested_job_id" -c "
+    metadata="$(backfill_psql -At -F '|' -c "
         SELECT job_type, start_date, end_date, status
         FROM backfill_job
-        WHERE job_id = :'job_id'::bigint;
+        WHERE job_id = ${requested_job_id};
     ")" || backfill_die "기존 백필 작업 상태 조회에 실패했습니다."
     [[ -n "$metadata" ]] || backfill_die "존재하지 않는 job_id입니다: ${requested_job_id}"
 
@@ -462,4 +534,16 @@ backfill_bootstrap() {
     backfill_install_interrupt_trap
     backfill_log "프로젝트 루트=${BACKFILL_PROJECT_ROOT}"
     backfill_log "DB=${DB_NAME}, 컨테이너=${BACKFILL_CONTAINER}, 요청 간격=${BACKFILL_REQUEST_INTERVAL}초"
+}
+
+backfill_bootstrap_database_only() {
+    local mode="$1"
+    backfill_setup_log "$mode"
+    cd "$BACKFILL_PROJECT_ROOT"
+    backfill_load_env
+    backfill_activate_venv
+    backfill_require_database_environment
+    backfill_require_container
+    backfill_log "프로젝트 루트=${BACKFILL_PROJECT_ROOT}"
+    backfill_log "DB 검증 전용 실행: DB=${DB_NAME}, 컨테이너=${BACKFILL_CONTAINER}"
 }
