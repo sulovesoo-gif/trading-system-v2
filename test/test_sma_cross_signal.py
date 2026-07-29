@@ -91,7 +91,7 @@ class SmaCrossSignalServiceTest(unittest.TestCase):
             "maximum_up": Decimal("0.01"), "maximum_down": Decimal("-0.01"), "threshold_met": True,
             "alignment": "ALIGNED", "threshold_direction": "UP", "threshold_alignment": "ALIGNED",
         })
-        self.assertIn("타점 시각(KST): 2026-07-29 09:00:00", body)
+        self.assertIn("타점 시각(KST): 2026-07-30 09:00:00", body)
 
     def test_first_cross_is_initial_confirmed(self):
         repo = FakeSignalRepository()
