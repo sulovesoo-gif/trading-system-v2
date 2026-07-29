@@ -12,6 +12,14 @@ sys.path.insert(0, str(ROOT))
 from src.repository.database import DatabaseSettings, create_connection_pool
 
 
+ANALYSIS_DDL_FILES = (
+    "18_analysis_sma_cross_signal.sql",
+    "19_analysis_sma_cross_performance.sql",
+    "20_analysis_signal_notification.sql",
+    "21_analysis_sma_cross_related_bar.sql",
+)
+
+
 def main() -> int:
     if os.getenv("DB_INTEGRATION_TEST") != "1" or "test" not in os.getenv("DB_NAME", "").lower():
         raise RuntimeError("DB_INTEGRATION_TEST=1 및 이름에 test가 포함된 테스트 DB에서만 실행합니다.")
@@ -20,7 +28,7 @@ def main() -> int:
         with pool.connection() as connection:
             with connection.transaction():
                 with connection.cursor() as cursor:
-                    for name in ("18_analysis_sma_cross_signal.sql", "19_analysis_sma_cross_performance.sql", "20_analysis_signal_notification.sql"):
+                    for name in ANALYSIS_DDL_FILES:
                         cursor.execute((ROOT / "database" / "ddl" / name).read_text(encoding="utf-8"))
     finally:
         pool.close()
