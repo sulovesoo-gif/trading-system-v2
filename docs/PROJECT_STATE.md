@@ -22,7 +22,7 @@ KIS API RAW Collector의 반환 데이터를 PostgreSQL/TimescaleDB RAW 테이�
 
 ## 다음 작업
 
-- SK하이닉스 완료 1분봉 SMA5/SMA10 크로스 알림은 Analysis·Repository·이메일 알림 코드와 테스트를 구현했으며, 테스트 DB 적용 및 본장 알림 전용 스모크 검증이 남아 있다.
+- SK하이닉스 완료 1분봉 SMA5/SMA10 크로스 알림은 Analysis·Repository·ntfy 기본 알림 코드와 테스트를 구현했으며, Ubuntu 테스트 서버에서 독립 ntfy 연결 스모크를 수행했다. 테스트 DB 적용 및 본장 알림 전용 스모크 검증이 남아 있다.
 - SMA 신호의 주 시계열은 `000660 / UN / INTEGRATED` 완료 1분봉으로 유지한다. 장후 KIS 응답에서 UN OHLC·체결량은 NX와 같고 누적 거래대금은 별도 값으로 확인됐으며, 정규장·세션 전환 특성은 본장 스모크로 추가 기록한다.
 - 최근월물 자동 선정과 만기 전환 방식을 별도 설계한다.
 - 공식 지수선물 마스터 파일 자동 갱신 방식을 별도 설계한다.
