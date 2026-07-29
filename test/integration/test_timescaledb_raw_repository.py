@@ -40,6 +40,13 @@ class TimescaleRawRepositoryIntegrationTest(unittest.TestCase):
                     cursor.execute((ROOT / "database" / "ddl" / ddl_name).read_text(encoding="utf-8"))
                 for ddl in sorted((ROOT / "database" / "ddl").glob("1[0-7]_raw_*.sql")):
                     cursor.execute(ddl.read_text(encoding="utf-8"))
+                for ddl_name in (
+                    "18_analysis_sma_cross_signal.sql",
+                    "19_analysis_sma_cross_performance.sql",
+                    "20_analysis_signal_notification.sql",
+                    "21_analysis_sma_cross_related_bar.sql",
+                ):
+                    cursor.execute((ROOT / "database" / "ddl" / ddl_name).read_text(encoding="utf-8"))
                 cursor.execute("SELECT extname FROM pg_extension WHERE extname = 'timescaledb'")
                 cls.timescaledb_extension = cursor.fetchone()
                 cursor.execute("SELECT hypertable_name FROM timescaledb_information.hypertables")

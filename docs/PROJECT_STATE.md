@@ -14,8 +14,16 @@ KIS API RAW Collector의 반환 데이터를 PostgreSQL/TimescaleDB RAW 테이�
 
 - 통합 테스트는 `DB_INTEGRATION_TEST=1`과 이름에 `test`가 포함된 별도 DB에서만 실행된다.
 
+## 원격 테스트 환경
+
+- Windows Codex는 OpenSSH `trading-v2` 별칭을 통해 Ubuntu ARM64 테스트 서버에 직접 접근할 수 있다.
+- 원격 프로젝트 경로는 `/home/ubuntu/projects/trading-system-v2`이며, 테스트 DB `trading_system_v2_test`의 TimescaleDB 컨테이너는 healthy 상태다.
+- Windows 로컬, `origin/main`, Ubuntu 원격 HEAD는 모두 `4833c1b17e5d24d983d838173de08f292595262d`로 동기화되어 있고, 로컬·원격 작업 트리는 clean 상태다.
+
 ## 다음 작업
 
+- SK하이닉스 완료 1분봉 SMA5/SMA10 크로스 알림은 Analysis·Repository·이메일 알림 코드와 테스트를 구현했으며, 테스트 DB 적용 및 본장 알림 전용 스모크 검증이 남아 있다.
+- SMA 신호의 주 시계열은 `000660 / UN / INTEGRATED` 완료 1분봉으로 유지한다. 장후 KIS 응답에서 UN OHLC·체결량은 NX와 같고 누적 거래대금은 별도 값으로 확인됐으며, 정규장·세션 전환 특성은 본장 스모크로 추가 기록한다.
 - 최근월물 자동 선정과 만기 전환 방식을 별도 설계한다.
 - 공식 지수선물 마스터 파일 자동 갱신 방식을 별도 설계한다.
 ## 백필 현재 상태
