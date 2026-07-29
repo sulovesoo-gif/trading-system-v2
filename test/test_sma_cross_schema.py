@@ -20,3 +20,4 @@ class SmaCrossSchemaTest(unittest.TestCase):
         ddl = (Path(__file__).resolve().parents[1] / "database" / "ddl" / "18_analysis_sma_cross_signal.sql").read_text(encoding="utf-8")
         for column in ("confirmed_time", "confirmed_price", "confirmed_change_from_previous"):
             self.assertIn(column, ddl)
+        self.assertIn("WHERE status = 'INITIAL_CONFIRMED'", ddl)

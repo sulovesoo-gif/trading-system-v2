@@ -52,7 +52,7 @@ SET confirmed_time = signal_time,
         WHEN previous_confirmed_signal_price IS NULL THEN NULL
         ELSE signal_price / previous_confirmed_signal_price - 1
     END
-WHERE status IN ('INITIAL_CONFIRMED', 'CONFIRMED')
+WHERE status = 'INITIAL_CONFIRMED'
   AND (confirmed_time IS NULL OR confirmed_price IS NULL);
 
 CREATE INDEX IF NOT EXISTS idx_analysis_sma_cross_signal_stock_time
