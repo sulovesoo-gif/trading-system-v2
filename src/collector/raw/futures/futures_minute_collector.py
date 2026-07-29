@@ -17,7 +17,7 @@ class FuturesMinuteCollector(BaseCollector):
         market_code: str,
         input_date: str,
         input_hour: str,
-        hour_classification_code: str = "0",
+        hour_classification_code: str = "60",
         previous_data_include_yn: str = "Y",
         fake_tick_include_yn: str = "N",
         collect_cycle: str = "1MIN",
@@ -36,7 +36,7 @@ class FuturesMinuteCollector(BaseCollector):
         rows: list[dict[str, object]] = []
         for output in self.output_list(payload, "output2"):
             self.require_fields(output, ("stck_bsop_date", "stck_cntg_hour", "futs_oprc", "futs_hgpr", "futs_lwpr", "futs_prpr", "cntg_vol", "acml_tr_pbmn"))
-            row = self.metadata(market_code=market_code, collect_cycle=collect_cycle)
+            row = self.metadata(market_code=market_code, collect_cycle=collect_cycle, trading_venue="KRX")
             row.update(
                 {
                     "bar_time": combine_kst_datetime(

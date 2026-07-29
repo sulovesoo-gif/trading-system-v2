@@ -278,3 +278,21 @@ API 100% 저장 원칙을 적용하려면 나머지 응답 필드도 동일 테�
 - `101X9000`, `101609`, `KR4101690003`은 공식 지수선물 마스터에서 확인되지 않아 사용하지 않는다.
 - `FHMIF10000000.output1`에는 선물 단축코드가 없으므로, Collector 요청 인자 `A01609`을 `raw_futures_quote.futures_code`로 저장한다. `raw_payload`에는 실제 `output1` 원본 객체만 저장한다.
 - `FHKIF03020200`은 `A01609`에 대해 최신순 `output2` 102행을 반환한다. 각 행의 `stck_bsop_date`와 `stck_cntg_hour`를 결합해 `raw_futures_minute.bar_time`으로 저장한다.
+## 과거 1분봉 백필 API
+
+| Collector | 목적 | KIS API 명칭 | TR_ID | URL | 최대 반환 건수 | RAW 테이블 |
+|---|---|---|---|---|---:|---|
+| stock_historical_minute | 주식·ETF KRX 과거 1분봉 | 주식일별분봉조회 | FHKST03010230 | `/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice` | 120 | `raw_stock_minute` |
+
+- 거래소 요청값은 `KRX=J`, `NXT=NX`, `INTEGRATED=UN`으로 사용한다.
+- 실제 KRX 스모크 결과에서 120행이 최신순으로 반환됐으며 `tr_cont` 헤더는 없었다.
+- 다음 페이지는 가장 오래된 `bar_time`보다 1분 앞선 KST 시각을 다음 요청의 날짜·시각 입력값으로 사용한다.
+- `output2` 각 객체만 행별 `raw_payload`로 보존한다.
+## 백필 거래일 API
+
+| Collector | 목적 | KIS API 명칭 | TR_ID | URL | 사용 필드 |
+|---|---|---|---|---|---|
+| holiday_calendar | KRX 개장일 판정 | 국내휴장일조회 | CTCA0903R | `/uapi/domestic-stock/v1/quotations/chk-holiday` | `bass_dt`, `opnd_yn` |
+
+- 과거 1분봉 백필은 `opnd_yn='Y'`인 날짜만 세그먼트로 생성한다.
+- 공식 권고에 따라 휴장일 API 호출은 최소 1초 간격으로 제한한다.

@@ -1,13 +1,7 @@
-certifi==2026.7.22
-charset-normalizer==3.4.9
-idna==3.18
-numpy==2.5.1
-pandas==3.0.3
-python-dateutil==2.9.0.post0
-python-dotenv==1.2.2
+# Trading System V2 RAW 수집·저장 계층 런타임 의존성
+# 지원 Python: >=3.10, <3.15
 requests==2.34.2
-six==1.17.0
-tzdata==2026.3
-urllib3==2.7.0
-psycopg[binary]==3.3.3
-psycopg_pool==3.3.0
+python-dotenv==1.2.2
+# Ubuntu ARM64·Python 3.10·TimescaleDB 통합 테스트에서 설치와 동작을 확인한 버전이다.
+psycopg[binary]==3.3.4
+psycopg_pool==3.3.1

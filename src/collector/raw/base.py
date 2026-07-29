@@ -15,15 +15,24 @@ class BaseCollector:
         self.client = client
         self._now = now_provider or kst_now
 
-    def metadata(self, *, market_code: str, collect_cycle: str) -> dict[str, object]:
+    def metadata(
+        self,
+        *,
+        market_code: str,
+        collect_cycle: str,
+        trading_venue: str | None = None,
+    ) -> dict[str, object]:
         # collected_at은 API 응답을 수신해 RAW 행으로 변환한 실제 KST 수집 시각이다.
         collected_at = self._now()
-        return {
+        metadata: dict[str, object] = {
             "collected_at": collected_at,
             "data_source": self.data_source,
             "market_code": market_code,
             "collect_cycle": collect_cycle,
         }
+        if trading_venue is not None:
+            metadata["trading_venue"] = trading_venue
+        return metadata
 
     @staticmethod
     def output_dict(payload: dict, key: str = "output") -> dict:

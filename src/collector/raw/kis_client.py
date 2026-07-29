@@ -68,7 +68,13 @@ class KISClient:
         self.last_http_status: int | None = None
 
     def get(
-        self, *, path: str, tr_id: str, params: dict[str, str], custtype: str = "P"
+        self,
+        *,
+        path: str,
+        tr_id: str,
+        params: dict[str, str],
+        custtype: str = "P",
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if not self.base_url or not self.app_key or not self.app_secret:
             raise KISClientError("KIS_BASE_URL, KIS_API_KEY, KIS_API_SECRET를 확인하세요.")
@@ -90,6 +96,7 @@ class KISClient:
                         "appsecret": self.app_secret,
                         "tr_id": tr_id,
                         "custtype": custtype,
+                        **(extra_headers or {}),
                     },
                     params=params,
                     timeout=self.timeout,

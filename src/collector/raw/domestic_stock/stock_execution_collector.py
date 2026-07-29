@@ -11,18 +11,18 @@ class StockExecutionCollector(BaseCollector):
     tr_id = "FHKST01010300"
 
     def collect(
-        self, *, stock_code: str, market_code: str, collect_cycle: str = "1MIN"
+        self, *, stock_code: str, market_code: str, trading_venue: str = "KRX", collect_cycle: str = "1MIN"
     ) -> list[dict[str, object]]:
         payload = self.client.get(
             path=self.path,
             tr_id=self.tr_id,
-            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+            params={"FID_COND_MRKT_DIV_CODE": {"KRX": "J", "NXT": "NX", "INTEGRATED": "UN"}[trading_venue], "FID_INPUT_ISCD": stock_code},
         )
         rows: list[dict[str, object]] = []
         required = ("stck_cntg_hour", "stck_prpr", "prdy_vrss", "prdy_vrss_sign", "prdy_ctrt", "cntg_vol", "tday_rltv")
         for output in self.output_list(payload, "output"):
             self.require_fields(output, required)
-            row = self.metadata(market_code=market_code, collect_cycle=collect_cycle)
+            row = self.metadata(market_code=market_code, collect_cycle=collect_cycle, trading_venue=trading_venue)
             row.update(
                 {
                     "snapshot_time": combine_kst_datetime(None, to_text(output.get("stck_cntg_hour")), collection_time=row["collected_at"]),

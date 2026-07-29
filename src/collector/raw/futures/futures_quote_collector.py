@@ -23,7 +23,7 @@ class FuturesQuoteCollector(BaseCollector):
         )
         output = self.output_dict(payload, "output1")
         self.require_fields(output, ("hts_kor_isnm", "futs_prpr", "futs_prdy_vrss", "prdy_vrss_sign", "futs_prdy_clpr", "futs_prdy_ctrt", "futs_oprc", "futs_hgpr", "futs_lwpr", "futs_mxpr", "futs_llam", "acml_vol", "acml_tr_pbmn", "hts_otst_stpl_qty", "otst_stpl_qty_icdc", "basis", "hts_thpr", "mrkt_basis", "futs_last_tr_date", "hts_rmnn_dynu"))
-        row = self.metadata(market_code=market_code, collect_cycle=collect_cycle)
+        row = self.metadata(market_code=market_code, collect_cycle=collect_cycle, trading_venue="KRX")
         # API가 데이터 기준 시각을 제공하지 않으므로 KST 실제 조회 시각을 snapshot_time으로 사용한다.
         expiration = to_text(output.get("futs_last_tr_date"))
         row.update(

@@ -1,0 +1,3 @@
+# 개발·테스트 환경은 런타임 의존성을 포함한다.
+# 현재 테스트는 Python 표준 라이브러리 unittest를 사용하므로 추가 패키지가 없다.
+-r requirements.txt

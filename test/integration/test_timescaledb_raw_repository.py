@@ -36,6 +36,8 @@ class TimescaleRawRepositoryIntegrationTest(unittest.TestCase):
         cls.pool = create_connection_pool(DatabaseSettings.from_environment())
         with cls.pool.connection() as connection:
             with connection.cursor() as cursor:
+                for ddl_name in ("04_backfill_job.sql", "05_backfill_segment.sql"):
+                    cursor.execute((ROOT / "database" / "ddl" / ddl_name).read_text(encoding="utf-8"))
                 for ddl in sorted((ROOT / "database" / "ddl").glob("1[0-7]_raw_*.sql")):
                     cursor.execute(ddl.read_text(encoding="utf-8"))
                 cursor.execute("SELECT extname FROM pg_extension WHERE extname = 'timescaledb'")
@@ -98,6 +100,8 @@ class TimescaleRawRepositoryIntegrationTest(unittest.TestCase):
         timestamp = datetime(2026, 7, 29, 10, 0, 0, 123000) + timedelta(minutes=offset)
         row = {column: None for column in spec.columns}
         row.update({"collected_at": timestamp, "data_source": "KIS", "market_code": "TEST", "collect_cycle": "TEST", "raw_payload": {"table": table.value, "offset": offset}})
+        if "trading_venue" in row:
+            row["trading_venue"] = "KRX"
         if "snapshot_time" in row:
             row["snapshot_time"] = timestamp
         if "bar_time" in row:

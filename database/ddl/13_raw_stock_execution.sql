@@ -15,6 +15,7 @@ CREATE TABLE raw_stock_execution
     collected_at                 TIMESTAMP(3) NOT NULL,
     data_source                  VARCHAR(30)  NOT NULL,
     market_code                  VARCHAR(30)  NOT NULL,
+    trading_venue                VARCHAR(10)  NOT NULL CHECK (trading_venue IN ('KRX', 'NXT', 'INTEGRATED')),
     collect_cycle                VARCHAR(10)  NOT NULL,
     stock_code                   VARCHAR(20)  NOT NULL,
 
@@ -34,6 +35,7 @@ CREATE TABLE raw_stock_execution
             snapshot_time,
             data_source,
             market_code,
+            trading_venue,
             collect_cycle,
             stock_code
         )

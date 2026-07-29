@@ -18,13 +18,14 @@ class StockMinuteCollector(BaseCollector):
         input_hour: str,
         previous_data_include_yn: str = "Y",
         etc_classification_code: str = "",
+        trading_venue: str = "KRX",
         collect_cycle: str = "1MIN",
     ) -> list[dict[str, object]]:
         payload = self.client.get(
             path=self.path,
             tr_id=self.tr_id,
             params={
-                "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code,
+                "FID_COND_MRKT_DIV_CODE": {"KRX": "J", "NXT": "NX", "INTEGRATED": "UN"}[trading_venue], "FID_INPUT_ISCD": stock_code,
                 "FID_INPUT_HOUR_1": input_hour,
                 "FID_PW_DATA_INCU_YN": previous_data_include_yn,
                 "FID_ETC_CLS_CODE": etc_classification_code,
@@ -33,7 +34,7 @@ class StockMinuteCollector(BaseCollector):
         rows: list[dict[str, object]] = []
         for output in self.output_list(payload, "output2"):
             self.require_fields(output, ("stck_bsop_date", "stck_cntg_hour", "stck_oprc", "stck_hgpr", "stck_lwpr", "stck_prpr", "cntg_vol", "acml_tr_pbmn"))
-            row = self.metadata(market_code=market_code, collect_cycle=collect_cycle)
+            row = self.metadata(market_code=market_code, collect_cycle=collect_cycle, trading_venue=trading_venue)
             row.update(
                 {
                     "bar_time": combine_kst_datetime(

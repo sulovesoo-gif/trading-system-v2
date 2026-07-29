@@ -11,16 +11,16 @@ class StockQuoteCollector(BaseCollector):
     tr_id = "FHKST01010100"
 
     def collect(
-        self, *, stock_code: str, market_code: str, collect_cycle: str = "1MIN"
+        self, *, stock_code: str, market_code: str, trading_venue: str = "KRX", collect_cycle: str = "1MIN"
     ) -> dict[str, object]:
         payload = self.client.get(
             path=self.path,
             tr_id=self.tr_id,
-            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+            params={"FID_COND_MRKT_DIV_CODE": {"KRX": "J", "NXT": "NX", "INTEGRATED": "UN"}[trading_venue], "FID_INPUT_ISCD": stock_code},
         )
         output = self.output_dict(payload)
         self.require_fields(output, ("stck_prpr", "prdy_vrss", "prdy_vrss_sign", "prdy_ctrt", "stck_oprc", "stck_hgpr", "stck_lwpr", "stck_sdpr", "stck_mxpr", "stck_llam", "acml_vol", "acml_tr_pbmn", "wghn_avrg_stck_prc", "frgn_ntby_qty", "pgtr_ntby_qty", "vi_cls_code", "temp_stop_yn"))
-        row = self.metadata(market_code=market_code, collect_cycle=collect_cycle)
+        row = self.metadata(market_code=market_code, collect_cycle=collect_cycle, trading_venue=trading_venue)
         # API가 데이터 기준 시각을 제공하지 않으므로 KST 실제 조회 시각을 snapshot_time으로 사용한다.
         row.update(
             {
