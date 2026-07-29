@@ -1,4 +1,4 @@
-"""SK하이닉스 KRX 완료 1분봉 SMA 크로스 이메일 알림 실행기.
+"""SK하이닉스 통합 완료 1분봉 SMA 크로스 ntfy 알림 실행기.
 
 주문 API와 주문 기능은 전혀 사용하지 않는다.
 """
@@ -25,6 +25,7 @@ from src.repository.raw_specs import RawTable
 from src.repository.sma_cross_signal_repository import SmaCrossSignalRepository
 from src.repository.stock_minute_analysis_repository import StockMinuteAnalysisRepository
 from src.service.email_alert_service import EmailAlertService, EmailSettings
+from src.service.ntfy_alert_service import NtfyAlertService, NtfySettings
 from src.service.raw_ingestion_service import RawIngestionService
 from src.service.sma_cross_signal_service import SmaCrossSignalService
 
@@ -42,9 +43,16 @@ def main() -> int:
     try:
         raw_repository = RawRepository(pool)
         signal_repository = SmaCrossSignalRepository(pool)
-        email = None if args.dry_run else EmailAlertService(EmailSettings.from_environment())
+        if args.dry_run:
+            alert_service = None
+        elif os.getenv("ALERT_NTFY_ENABLED", "false").lower() == "true":
+            alert_service = NtfyAlertService(NtfySettings.from_environment())
+        elif os.getenv("ALERT_SMTP_ENABLED", "false").lower() == "true":
+            alert_service = EmailAlertService(EmailSettings.from_environment())
+        else:
+            raise RuntimeError("기본 알림은 ntfy입니다. ALERT_NTFY_ENABLED=true를 설정하세요.")
         service = SmaCrossSignalService(
-            minute_repository=StockMinuteAnalysisRepository(pool), signal_repository=signal_repository, email_service=email
+            minute_repository=StockMinuteAnalysisRepository(pool), signal_repository=signal_repository, email_service=alert_service
         )
         collector = StockMinuteCollector(KISClient())
         while True:
