@@ -51,6 +51,25 @@ def new_completed_bar_times(rows: list[dict[str, object]], *, now: datetime, las
     })
 
 
+def completed_rows_for_storage(rows: list[dict[str, object]], *, now: datetime) -> list[dict[str, object]]:
+    """현재 진행 중인 1분봉을 RAW에 최초 저장하지 않는다.
+
+    raw_stock_minute는 기본키 충돌 시 값을 갱신하지 않으므로, 현재 분의 중간
+    OHLCV가 먼저 저장되면 완료값으로 교체할 수 없다. 수집·저장은 실행기에서
+    완료 봉으로 제한하고 Collector는 API 원문 변환만 수행한다.
+    """
+    cutoff = now.replace(second=0, microsecond=0)
+    return [
+        row for row in rows
+        if isinstance(row.get("bar_time"), datetime) and row["bar_time"] < cutoff
+    ]
+
+
+def initial_analysis_watermark(now: datetime) -> datetime:
+    """재시작 전 API가 반환하는 과거 완료 봉을 신규 신호로 재평가하지 않는다."""
+    return now.replace(second=0, microsecond=0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--interval-seconds", type=int, default=5)
@@ -76,7 +95,7 @@ def main() -> int:
             minute_repository=StockMinuteAnalysisRepository(pool), signal_repository=signal_repository, email_service=alert_service
         )
         collector = StockMinuteCollector(KISClient())
-        last_integrated_bar_time: datetime | None = None
+        last_integrated_bar_time = initial_analysis_watermark(kst_now())
         while True:
             try:
                 now = kst_now()
@@ -87,9 +106,10 @@ def main() -> int:
                         ("0193T0", "ETF", "KRX"), ("0197X0", "ETF", "KRX"),
                     ):
                         rows = collector.collect(stock_code=stock_code, market_code=market_code, input_hour=now.strftime("%H%M%S"), trading_venue=venue)
-                        RawIngestionService(raw_repository).store(RawTable.STOCK_MINUTE, rows)
+                        completed_rows = completed_rows_for_storage(rows, now=now)
+                        RawIngestionService(raw_repository).store(RawTable.STOCK_MINUTE, completed_rows)
                         if stock_code == "000660" and venue == "INTEGRATED":
-                            integrated_rows = rows
+                            integrated_rows = completed_rows
                     for completed_time in new_completed_bar_times(integrated_rows, now=now, last_processed=last_integrated_bar_time):
                         result = service.evaluate_completed_bar(stock_code="000660", completed_time=completed_time)
                         completed_bars = StockMinuteAnalysisRepository(pool).completed_bars(

@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from src.analysis.event.sma_cross_event import detect_cross_signal, threshold_break
-from src.analysis.feature.sma_feature import MinuteBar, build_sma_features
+from src.analysis.feature.integrated_session import filter_integrated_analysis_bars
+from src.analysis.feature.sma_feature import MinuteBar, SmaFeature, build_sma_features
 from src.repository.sma_cross_signal_repository import SmaCrossSignal
 from src.service.sma_cross_signal_service import SmaCrossSignalService
 
@@ -67,6 +68,24 @@ class FakeSignalRepository:
 
 
 class SmaFeatureAndEventTest(unittest.TestCase):
+    def test_0849_to_0900_without_sma_cross_does_not_create_long(self):
+        previous_bar = MinuteBar(datetime(2026, 7, 30, 8, 49), Decimal("1358000"), Decimal("1358000"), Decimal("1358000"), Decimal("1358000"))
+        current_bar = MinuteBar(datetime(2026, 7, 30, 9, 0), Decimal("1361000"), Decimal("1389500"), Decimal("1358000"), Decimal("1383000"))
+        previous = SmaFeature(previous_bar, Decimal("1365000"), Decimal("1355600"))
+        current = SmaFeature(current_bar, Decimal("1369600"), Decimal("1359500"))
+        self.assertIsNone(detect_cross_signal(previous, current))
+
+    def test_integrated_gap_bars_are_excluded_without_filling(self):
+        source = [
+            MinuteBar(datetime(2026, 7, 30, 8, 49), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
+            MinuteBar(datetime(2026, 7, 30, 8, 50), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
+            MinuteBar(datetime(2026, 7, 30, 8, 59), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
+            MinuteBar(datetime(2026, 7, 30, 9, 0), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
+        ]
+        self.assertEqual(
+            [bar.bar_time for bar in filter_integrated_analysis_bars(source)],
+            [datetime(2026, 7, 30, 8, 49), datetime(2026, 7, 30, 9, 0)],
+        )
     def test_up_cross_requires_both_sma_and_close_crosses(self):
         source = bars(["10"] * 10 + ["20"])
         source[-1] = MinuteBar(source[-1].bar_time, Decimal("10"), Decimal("20"), Decimal("10"), Decimal("20"))
