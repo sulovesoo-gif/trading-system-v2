@@ -96,6 +96,9 @@ def main() -> int:
         )
         collector = StockMinuteCollector(KISClient())
         last_integrated_bar_time = initial_analysis_watermark(kst_now())
+        restored_arm = service.restore_armed_state(stock_code="000660", before_time=last_integrated_bar_time)
+        if restored_arm is not None:
+            print(f"ARMED 상태 복구: {restored_arm.armed_direction} {restored_arm.ma_cross_time}")
         while True:
             try:
                 now = kst_now()

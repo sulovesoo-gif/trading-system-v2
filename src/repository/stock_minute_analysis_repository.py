@@ -28,6 +28,14 @@ class StockMinuteAnalysisRepository:
         return filter_integrated_analysis_bars(bars) if trading_venue == "INTEGRATED" else bars
 
     def closes_since(self, *, stock_code: str, start_time: datetime, end_time: datetime, trading_venue: str = "INTEGRATED") -> list[Decimal]:
+        return [bar.close_price for bar in self.bars_since(
+            stock_code=stock_code,
+            start_time=start_time,
+            end_time=end_time,
+            trading_venue=trading_venue,
+        )]
+
+    def bars_since(self, *, stock_code: str, start_time: datetime, end_time: datetime, trading_venue: str = "INTEGRATED") -> list[MinuteBar]:
         sql = (
             "SELECT bar_time, close_price FROM raw_stock_minute WHERE stock_code = %s AND data_source = 'KIS' "
             "AND market_code = 'KOSPI' AND trading_venue = %s AND collect_cycle = '1MIN' "
@@ -42,7 +50,7 @@ class StockMinuteAnalysisRepository:
             for row in rows
         ]
         filtered = filter_integrated_analysis_bars(bars) if trading_venue == "INTEGRATED" else bars
-        return [bar.close_price for bar in filtered]
+        return filtered
 
     def nearest_completed_bar(self, *, stock_code: str, before_time: datetime, trading_venue: str = "KRX") -> MinuteBar | None:
         rows = self.completed_bars(stock_code=stock_code, before_time=before_time, limit=1, trading_venue=trading_venue)

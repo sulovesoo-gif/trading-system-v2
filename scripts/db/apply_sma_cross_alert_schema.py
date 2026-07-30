@@ -17,6 +17,7 @@ ANALYSIS_DDL_FILES = (
     "19_analysis_sma_cross_performance.sql",
     "20_analysis_signal_notification.sql",
     "21_analysis_sma_cross_related_bar.sql",
+    "22_analysis_sma_cross_arm_state.sql",
 )
 
 

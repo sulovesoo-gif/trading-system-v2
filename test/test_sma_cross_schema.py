@@ -13,6 +13,7 @@ class SmaCrossSchemaTest(unittest.TestCase):
                 "19_analysis_sma_cross_performance.sql",
                 "20_analysis_signal_notification.sql",
                 "21_analysis_sma_cross_related_bar.sql",
+                "22_analysis_sma_cross_arm_state.sql",
             ),
         )
 
@@ -22,12 +23,24 @@ class SmaCrossSchemaTest(unittest.TestCase):
             self.assertIn(column, ddl)
         self.assertIn("WHERE status = 'INITIAL_CONFIRMED'", ddl)
 
+    def test_armed_state_and_close_range_columns_are_declared(self):
+        root = Path(__file__).resolve().parents[1]
+        signal_ddl = (root / "database" / "ddl" / "18_analysis_sma_cross_signal.sql").read_text(encoding="utf-8")
+        arm_ddl = (root / "database" / "ddl" / "22_analysis_sma_cross_arm_state.sql").read_text(encoding="utf-8")
+        for column in (
+            "armed_direction", "ma_cross_time", "ma_cross_price", "ma_cross_sma5", "ma_cross_sma10",
+            "armed_wait_minutes", "highest_close_since_previous", "highest_close_time",
+            "lowest_close_since_previous", "lowest_close_time", "close_range_return",
+        ):
+            self.assertIn(column, signal_ddl)
+        self.assertIn("analysis_sma_cross_arm_state", arm_ddl)
+
     def test_rejected_signals_are_not_confirmed_baselines(self):
         from src.repository.sma_cross_signal_repository import SmaCrossSignalRepository
 
         repository = SmaCrossSignalRepository(pool=None)
         captured = {}
-        repository._one = lambda sql, values, required=False: captured.update(sql=sql, values=values)  # type: ignore[method-assign]
+        repository._signal_one = lambda sql, values, required=False: captured.update(sql=sql, values=values)  # type: ignore[method-assign]
         repository.latest_confirmed("000660")
         self.assertIn("status IN ('INITIAL_CONFIRMED', 'CONFIRMED')", captured["sql"])
         self.assertNotIn("'REJECTED'", captured["sql"])

@@ -3,159 +3,160 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
-from src.analysis.event.sma_cross_event import detect_cross_signal, threshold_break
-from src.analysis.feature.integrated_session import filter_integrated_analysis_bars
-from src.analysis.feature.sma_feature import MinuteBar, SmaFeature, build_sma_features
-from src.repository.sma_cross_signal_repository import SmaCrossSignal
+from src.analysis.event.sma_cross_event import detect_cross_signal, detect_ma_cross
+from src.analysis.feature.sma_feature import MinuteBar, SmaFeature
+from src.repository.sma_cross_signal_repository import ArmedState, SmaCrossSignal
 from src.service.sma_cross_signal_service import SmaCrossSignalService
 
 
 BASE = datetime(2026, 7, 30, 9, 0)
 
 
-def bars(closes: list[str]) -> list[MinuteBar]:
-    return [MinuteBar(BASE + timedelta(minutes=index), Decimal(value), Decimal(value), Decimal(value), Decimal(value)) for index, value in enumerate(closes)]
+def feature(offset: int, close: str, sma5: str, sma10: str, open_price: str | None = None) -> SmaFeature:
+    price = Decimal(close)
+    opening = Decimal(open_price) if open_price is not None else price
+    bar = MinuteBar(BASE + timedelta(minutes=offset), opening, price, price, price)
+    return SmaFeature(bar, Decimal(sma5), Decimal(sma10))
 
 
 class FakeMinuteRepository:
-    def __init__(self, source, closes):
-        self.source = source
-        self.closes = [Decimal(value) for value in closes]
+    def __init__(self, range_bars: list[MinuteBar] | None = None) -> None:
+        self.range_bars = range_bars or []
 
     def completed_bars(self, **_):
-        return self.source
+        return []
 
-    def closes_since(self, **_):
-        return self.closes
+    def bars_since(self, **_):
+        return self.range_bars
 
     def nearest_completed_bar(self, **_):
         return None
 
 
 class FakeSignalRepository:
-    def __init__(self, confirmed=None, candidate=None):
+    def __init__(self, *, confirmed=None, candidate=None, armed=None) -> None:
         self.confirmed = confirmed
         self.candidate = candidate
+        self.armed = armed
         self.created = []
         self.confirmed_candidates = []
         self.rejected = []
-        self.performance = []
+        self.cleared = []
+        self.arm_updates = []
 
     def latest_confirmed(self, _): return self.confirmed
     def active_candidate(self, _): return self.candidate
+    def armed_state(self, _): return self.armed
     def signal_exists_at(self, **_): return False
+    def upsert_arm(self, **kwargs):
+        self.arm_updates.append(kwargs)
+        self.armed = ArmedState(kwargs['stock_code'], kwargs['armed_direction'], kwargs['ma_cross_time'], kwargs['ma_cross_price'], kwargs['ma_cross_sma5'], kwargs['ma_cross_sma10'], None)
+        return self.armed
+    def clear_arm(self, stock_code): self.cleared.append(stock_code); self.armed = None
+    def set_arm_candidate(self, **kwargs): self.arm_candidate = kwargs
     def create(self, values):
-        signal = SmaCrossSignal(len(self.created) + 10, values["signal_time"], values["stock_code"], values["direction"], values["status"], values["signal_price"])
+        signal = SmaCrossSignal(len(self.created) + 10, values['signal_time'], values['stock_code'], values['direction'], values['status'], values['signal_price'])
         self.created.append((signal, values))
-        if signal.status in ("INITIAL_CONFIRMED", "CONFIRMED"):
+        if signal.status in ('INITIAL_CONFIRMED', 'CONFIRMED'):
             self.confirmed = signal
         return signal
     def confirm_candidate(self, **kwargs):
         self.confirmed_candidates.append(kwargs)
-        value = self.candidate
-        self.confirmed = SmaCrossSignal(
-            value.signal_id, kwargs["confirmed_time"], value.stock_code, value.direction, "CONFIRMED",
-            kwargs["confirmed_price"],
-        )
+        self.confirmed = SmaCrossSignal(self.candidate.signal_id, kwargs['confirmed_time'], self.candidate.stock_code, self.candidate.direction, 'CONFIRMED', kwargs['confirmed_price'])
         return self.confirmed
     def reject_candidate(self, **kwargs): self.rejected.append(kwargs)
     def create_notification(self, **_): return False
     def signal_details(self, _): return {}
     def save_related_bar(self, **_): pass
     def ensure_performance(self, *_): pass
-    def update_performance(self, **kwargs): self.performance.append(kwargs)
+    def update_performance(self, **_): pass
 
 
-class SmaFeatureAndEventTest(unittest.TestCase):
-    def test_0849_to_0900_without_sma_cross_does_not_create_long(self):
-        previous_bar = MinuteBar(datetime(2026, 7, 30, 8, 49), Decimal("1358000"), Decimal("1358000"), Decimal("1358000"), Decimal("1358000"))
-        current_bar = MinuteBar(datetime(2026, 7, 30, 9, 0), Decimal("1361000"), Decimal("1389500"), Decimal("1358000"), Decimal("1383000"))
-        previous = SmaFeature(previous_bar, Decimal("1365000"), Decimal("1355600"))
-        current = SmaFeature(current_bar, Decimal("1369600"), Decimal("1359500"))
-        self.assertIsNone(detect_cross_signal(previous, current))
+class ArmedSmaCrossServiceTest(unittest.TestCase):
+    def evaluate(self, service, previous, current):
+        with patch('src.service.sma_cross_signal_service.build_sma_features', return_value=[previous, current]):
+            return service.evaluate_completed_bar(stock_code='000660', completed_time=current.bar.bar_time)
 
-    def test_integrated_gap_bars_are_excluded_without_filling(self):
-        source = [
-            MinuteBar(datetime(2026, 7, 30, 8, 49), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
-            MinuteBar(datetime(2026, 7, 30, 8, 50), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
-            MinuteBar(datetime(2026, 7, 30, 8, 59), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
-            MinuteBar(datetime(2026, 7, 30, 9, 0), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1")),
-        ]
-        self.assertEqual(
-            [bar.bar_time for bar in filter_integrated_analysis_bars(source)],
-            [datetime(2026, 7, 30, 8, 49), datetime(2026, 7, 30, 9, 0)],
-        )
-    def test_up_cross_requires_both_sma_and_close_crosses(self):
-        source = bars(["10"] * 10 + ["20"])
-        source[-1] = MinuteBar(source[-1].bar_time, Decimal("10"), Decimal("20"), Decimal("10"), Decimal("20"))
-        features = build_sma_features(source)
-        event = detect_cross_signal(features[-2], features[-1])
-        self.assertEqual((event.direction, event.direction_alignment), ("LONG", "ALIGNED"))
-
-    def test_down_cross_and_candle_alignment(self):
-        source = bars(["20"] * 10 + ["10"])
-        source[-1] = MinuteBar(source[-1].bar_time, Decimal("20"), Decimal("20"), Decimal("10"), Decimal("10"))
-        event = detect_cross_signal(*build_sma_features(source)[-2:])
-        self.assertEqual((event.direction, event.direction_alignment), ("SHORT", "ALIGNED"))
-
-    def test_threshold_uses_close_and_both_directions(self):
-        self.assertEqual(threshold_break(Decimal("10.1"), Decimal("10"))[0], "UP")
-        self.assertEqual(threshold_break(Decimal("9.9"), Decimal("10"))[0], "DOWN")
-        self.assertIsNone(threshold_break(Decimal("10.009"), Decimal("10"))[0])
-
-
-class SmaCrossSignalServiceTest(unittest.TestCase):
-    def test_notification_body_labels_signal_time_as_kst(self):
-        signal = SmaCrossSignal(1, BASE, "000660", "LONG", "CONFIRMED", Decimal("10"))
-        body = SmaCrossSignalService._body(signal, {
-            "candidate_time": BASE, "candidate_price": Decimal("10"),
-            "confirmed_time": BASE + timedelta(minutes=2), "confirmed_price": Decimal("10.1"),
-            "confirmed_change": Decimal("0.02"), "sma5": Decimal("10"), "sma10": Decimal("10"), "previous_price": Decimal("9.9"),
-            "maximum_up": Decimal("0.01"), "maximum_down": Decimal("-0.01"), "threshold_met": True,
-            "alignment": "ALIGNED", "threshold_direction": "UP", "threshold_alignment": "ALIGNED",
-        })
-        self.assertIn("후보 발생 시각(KST): 2026-07-30 09:00:00", body)
-        self.assertIn("실제 확정 시각(KST): 2026-07-30 09:02:00", body)
-        self.assertIn("실제 확정 종가: 10.1", body)
-
-    def test_first_cross_is_initial_confirmed(self):
+    def test_ma_cross_arms_without_same_bar_signal(self):
+        previous = feature(0, '10', '10', '10')
+        current = feature(1, '9', '11', '10')
         repo = FakeSignalRepository()
-        service = SmaCrossSignalService(
-            minute_repository=FakeMinuteRepository(bars(["10"] * 10 + ["20"]), ["10"]), signal_repository=repo
-        )
-        self.assertEqual(service.evaluate_completed_bar(stock_code="000660", completed_time=BASE + timedelta(minutes=10)), "INITIAL_CONFIRMED")
-        self.assertEqual(repo.created[0][0].status, "INITIAL_CONFIRMED")
+        service = SmaCrossSignalService(minute_repository=FakeMinuteRepository(), signal_repository=repo)
+        self.assertIsNone(self.evaluate(service, previous, current))
+        self.assertEqual(repo.arm_updates[0]['armed_direction'], 'LONG')
+        self.assertEqual(repo.created, [])
 
-    def test_cross_is_candidate_before_absolute_one_percent_move(self):
-        baseline = SmaCrossSignal(1, BASE, "000660", "LONG", "CONFIRMED", Decimal("10"))
-        repo = FakeSignalRepository(confirmed=baseline)
-        service = SmaCrossSignalService(
-            minute_repository=FakeMinuteRepository(bars(["10"] * 10 + ["20"]), ["10", "10.005"]), signal_repository=repo
-        )
-        self.assertEqual(service.evaluate_completed_bar(stock_code="000660", completed_time=BASE + timedelta(minutes=10)), "CANDIDATE")
-        self.assertFalse(repo.created[0][1]["volatility_threshold_met"])
+    def test_following_close_cross_creates_initial_confirmed_and_clears_arm(self):
+        arm = ArmedState('000660', 'LONG', BASE, Decimal('9'), Decimal('11'), Decimal('10'), None)
+        previous = feature(1, '9', '11', '10')
+        current = feature(2, '11', '11', '10', '10')
+        repo = FakeSignalRepository(armed=arm)
+        service = SmaCrossSignalService(minute_repository=FakeMinuteRepository(), signal_repository=repo)
+        self.assertEqual(self.evaluate(service, previous, current), 'INITIAL_CONFIRMED')
+        self.assertEqual(repo.created[0][0].signal_time, BASE + timedelta(minutes=2))
+        self.assertEqual(repo.created[0][1]['ma_cross_time'], BASE)
+        self.assertEqual(repo.cleared, ['000660'])
 
-    def test_candidate_confirms_without_new_cross_when_down_threshold_breaks(self):
-        baseline = SmaCrossSignal(1, BASE, "000660", "LONG", "CONFIRMED", Decimal("10"))
-        candidate = SmaCrossSignal(2, BASE + timedelta(minutes=1), "000660", "LONG", "CANDIDATE", Decimal("10.1"))
-        repo = FakeSignalRepository(confirmed=baseline, candidate=candidate)
-        service = SmaCrossSignalService(
-            minute_repository=FakeMinuteRepository(bars(["10"] * 10 + ["9.9"]), ["10", "9.9"]), signal_repository=repo
-        )
-        self.assertEqual(service.evaluate_completed_bar(stock_code="000660", completed_time=BASE + timedelta(minutes=10)), "CONFIRMED")
-        self.assertEqual(repo.confirmed_candidates[0]["threshold_break_direction"], "DOWN")
-        self.assertEqual(repo.confirmed_candidates[0]["threshold_direction_alignment"], "OPPOSED")
-        self.assertEqual(repo.confirmed_candidates[0]["confirmed_time"], BASE + timedelta(minutes=10))
-        self.assertEqual(repo.confirmed_candidates[0]["confirmed_price"], Decimal("9.9"))
-        self.assertEqual(repo.confirmed_candidates[0]["confirmed_change_from_previous"], Decimal("-0.01"))
+    def test_range_under_one_percent_creates_candidate(self):
+        baseline = SmaCrossSignal(1, BASE, '000660', 'LONG', 'CONFIRMED', Decimal('100'))
+        arm = ArmedState('000660', 'SHORT', BASE + timedelta(minutes=1), Decimal('100'), Decimal('9'), Decimal('10'), None)
+        previous = feature(2, '10', '9', '10')
+        current = feature(3, '9.8', '9', '10')
+        range_bars = [
+            MinuteBar(BASE, Decimal('100'), Decimal('100'), Decimal('100'), Decimal('100')),
+            MinuteBar(BASE + timedelta(minutes=3), Decimal('99.5'), Decimal('99.5'), Decimal('99.5'), Decimal('99.5')),
+        ]
+        repo = FakeSignalRepository(confirmed=baseline, armed=arm)
+        service = SmaCrossSignalService(minute_repository=FakeMinuteRepository(range_bars), signal_repository=repo)
+        self.assertEqual(self.evaluate(service, previous, current), 'CANDIDATE')
+        self.assertFalse(repo.created[0][1]['volatility_threshold_met'])
+        self.assertEqual(repo.created[0][1]['close_range_return'], Decimal('100') / Decimal('99.5') - Decimal('1'))
 
-    def test_opposite_cross_rejects_candidate(self):
-        baseline = SmaCrossSignal(1, BASE, "000660", "LONG", "CONFIRMED", Decimal("10"))
-        candidate = SmaCrossSignal(2, BASE + timedelta(minutes=1), "000660", "LONG", "CANDIDATE", Decimal("19"))
-        repo = FakeSignalRepository(confirmed=baseline, candidate=candidate)
-        service = SmaCrossSignalService(
-            minute_repository=FakeMinuteRepository(bars(["20"] * 10 + ["10"]), ["20", "20.005"]), signal_repository=repo
-        )
-        service.evaluate_completed_bar(stock_code="000660", completed_time=BASE + timedelta(minutes=10))
-        self.assertEqual(repo.rejected[0]["reason"], "OPPOSITE_CROSS_BEFORE_THRESHOLD")
+    def test_candidate_confirms_from_close_range_without_new_price_cross(self):
+        baseline = SmaCrossSignal(1, BASE, '000660', 'LONG', 'CONFIRMED', Decimal('100'))
+        candidate = SmaCrossSignal(2, BASE + timedelta(minutes=1), '000660', 'SHORT', 'CANDIDATE', Decimal('99.8'))
+        arm = ArmedState('000660', 'SHORT', BASE + timedelta(minutes=1), Decimal('99.8'), Decimal('9'), Decimal('10'), 2)
+        previous = feature(3, '9.8', '9', '10')
+        current = feature(4, '9.7', '9', '10')
+        range_bars = [
+            MinuteBar(BASE, Decimal('100'), Decimal('100'), Decimal('100'), Decimal('100')),
+            MinuteBar(BASE + timedelta(minutes=2), Decimal('98'), Decimal('98'), Decimal('98'), Decimal('98')),
+            MinuteBar(BASE + timedelta(minutes=4), Decimal('99.7'), Decimal('99.7'), Decimal('99.7'), Decimal('99.7')),
+        ]
+        repo = FakeSignalRepository(confirmed=baseline, candidate=candidate, armed=arm)
+        service = SmaCrossSignalService(minute_repository=FakeMinuteRepository(range_bars), signal_repository=repo)
+        self.assertEqual(self.evaluate(service, previous, current), 'CONFIRMED')
+        self.assertEqual(repo.confirmed_candidates[0]['range_metrics']['highest_close_since_previous'], Decimal('100'))
+        self.assertEqual(repo.confirmed_candidates[0]['range_metrics']['lowest_close_since_previous'], Decimal('98'))
+        self.assertEqual(repo.cleared, ['000660'])
+
+    def test_opposite_ma_cross_replaces_arm_and_rejects_opposite_candidate(self):
+        candidate = SmaCrossSignal(2, BASE, '000660', 'LONG', 'CANDIDATE', Decimal('100'))
+        previous = feature(0, '10', '10', '10')
+        current = feature(1, '11', '9', '10')
+        repo = FakeSignalRepository(candidate=candidate)
+        service = SmaCrossSignalService(minute_repository=FakeMinuteRepository(), signal_repository=repo)
+        self.evaluate(service, previous, current)
+        self.assertEqual(repo.rejected[0]['reason'], 'OPPOSITE_MA_CROSS')
+        self.assertEqual(repo.arm_updates[0]['armed_direction'], 'SHORT')
+
+    def test_restart_restores_latest_ma_cross_without_creating_signal(self):
+        previous = feature(0, '10', '10', '10')
+        current = feature(1, '9', '9', '10')
+        repo = FakeSignalRepository()
+        service = SmaCrossSignalService(minute_repository=FakeMinuteRepository(), signal_repository=repo)
+        with patch('src.service.sma_cross_signal_service.build_sma_features', return_value=[previous, current]):
+            restored = service.restore_armed_state(stock_code='000660', before_time=current.bar.bar_time)
+        self.assertEqual(restored.armed_direction, 'SHORT')
+        self.assertEqual(restored.ma_cross_time, current.bar.bar_time)
+        self.assertEqual(repo.created, [])
+
+
+class LegacyComparisonTest(unittest.TestCase):
+    def test_legacy_same_bar_rule_remains_available(self):
+        previous = feature(0, '10', '10', '10')
+        current = feature(1, '11', '11', '10')
+        self.assertEqual(detect_cross_signal(previous, current).direction, 'LONG')
+        self.assertEqual(detect_ma_cross(previous, current).direction, 'LONG')

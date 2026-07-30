@@ -1,9 +1,8 @@
-"""SMA5/SMA10 및 종가 돌파 이벤트 판정."""
+"""Completed-minute SMA5/SMA10 cross and close-cross events."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
 
 from src.analysis.feature.sma_feature import SmaFeature
 
@@ -15,19 +14,10 @@ class CrossSignal:
     direction_alignment: str
 
 
-def detect_cross_signal(previous: SmaFeature, current: SmaFeature) -> CrossSignal | None:
-    up = (
-        previous.sma5 <= previous.sma10
-        and current.sma5 > current.sma10
-        and previous.bar.close_price <= previous.sma10
-        and current.bar.close_price > current.sma10
-    )
-    down = (
-        previous.sma5 >= previous.sma10
-        and current.sma5 < current.sma10
-        and previous.bar.close_price >= previous.sma10
-        and current.bar.close_price < current.sma10
-    )
+def detect_ma_cross(previous: SmaFeature, current: SmaFeature) -> CrossSignal | None:
+    """Detect the moving-average cross only; the price cross is a later ARMED step."""
+    up = previous.sma5 <= previous.sma10 and current.sma5 > current.sma10
+    down = previous.sma5 >= previous.sma10 and current.sma5 < current.sma10
     if not up and not down:
         return None
     direction = "LONG" if up else "SHORT"
@@ -35,17 +25,24 @@ def detect_cross_signal(previous: SmaFeature, current: SmaFeature) -> CrossSigna
     return CrossSignal(direction, candle_direction, _alignment(direction, candle_direction))
 
 
-def threshold_break(close_price: Decimal, reference_price: Decimal) -> tuple[str | None, Decimal]:
-    """완료 봉 종가만 사용해 양방향 1% 경계 돌파를 판정한다."""
-    change = close_price / reference_price - Decimal("1")
-    if change >= Decimal("0.01"):
-        return "UP", change
-    if change <= Decimal("-0.01"):
-        return "DOWN", change
-    return None, change
+def detect_close_cross(previous: SmaFeature, current: SmaFeature, direction: str) -> bool:
+    """Detect the post-arm close/SMA10 cross using completed bars only."""
+    if direction == "LONG":
+        return previous.bar.close_price <= previous.sma10 and current.bar.close_price > current.sma10
+    if direction == "SHORT":
+        return previous.bar.close_price >= previous.sma10 and current.bar.close_price < current.sma10
+    raise ValueError(f"Unsupported armed direction: {direction}")
 
 
-def _candle_direction(open_price: Decimal, close_price: Decimal) -> str:
+def detect_cross_signal(previous: SmaFeature, current: SmaFeature) -> CrossSignal | None:
+    """Legacy same-bar rule retained only for comparison tests."""
+    event = detect_ma_cross(previous, current)
+    if event is None or not detect_close_cross(previous, current, event.direction):
+        return None
+    return event
+
+
+def _candle_direction(open_price, close_price) -> str:
     if close_price > open_price:
         return "UP"
     if close_price < open_price:

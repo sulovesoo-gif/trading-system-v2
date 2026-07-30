@@ -23,6 +23,17 @@ CREATE TABLE IF NOT EXISTS analysis_sma_cross_signal
     previous_sma10                         NUMERIC(18,6) NOT NULL,
     previous_confirmed_signal_time         TIMESTAMP(3),
     previous_confirmed_signal_price        NUMERIC(18,2),
+    armed_direction                        VARCHAR(10)   CHECK (armed_direction IN ('LONG', 'SHORT')),
+    ma_cross_time                          TIMESTAMP(3),
+    ma_cross_price                         NUMERIC(18,2),
+    ma_cross_sma5                          NUMERIC(18,6),
+    ma_cross_sma10                         NUMERIC(18,6),
+    armed_wait_minutes                     INTEGER,
+    highest_close_since_previous           NUMERIC(18,2),
+    highest_close_time                     TIMESTAMP(3),
+    lowest_close_since_previous            NUMERIC(18,2),
+    lowest_close_time                      TIMESTAMP(3),
+    close_range_return                     NUMERIC(12,8),
     maximum_up_change_since_previous       NUMERIC(12,8),
     maximum_down_change_since_previous     NUMERIC(12,8),
     maximum_absolute_change_since_previous NUMERIC(12,8),
@@ -43,7 +54,18 @@ CREATE TABLE IF NOT EXISTS analysis_sma_cross_signal
 ALTER TABLE analysis_sma_cross_signal
     ADD COLUMN IF NOT EXISTS confirmed_time TIMESTAMP(3),
     ADD COLUMN IF NOT EXISTS confirmed_price NUMERIC(18,2),
-    ADD COLUMN IF NOT EXISTS confirmed_change_from_previous NUMERIC(12,8);
+    ADD COLUMN IF NOT EXISTS confirmed_change_from_previous NUMERIC(12,8),
+    ADD COLUMN IF NOT EXISTS armed_direction VARCHAR(10) CHECK (armed_direction IN ('LONG', 'SHORT')),
+    ADD COLUMN IF NOT EXISTS ma_cross_time TIMESTAMP(3),
+    ADD COLUMN IF NOT EXISTS ma_cross_price NUMERIC(18,2),
+    ADD COLUMN IF NOT EXISTS ma_cross_sma5 NUMERIC(18,6),
+    ADD COLUMN IF NOT EXISTS ma_cross_sma10 NUMERIC(18,6),
+    ADD COLUMN IF NOT EXISTS armed_wait_minutes INTEGER,
+    ADD COLUMN IF NOT EXISTS highest_close_since_previous NUMERIC(18,2),
+    ADD COLUMN IF NOT EXISTS highest_close_time TIMESTAMP(3),
+    ADD COLUMN IF NOT EXISTS lowest_close_since_previous NUMERIC(18,2),
+    ADD COLUMN IF NOT EXISTS lowest_close_time TIMESTAMP(3),
+    ADD COLUMN IF NOT EXISTS close_range_return NUMERIC(12,8);
 
 UPDATE analysis_sma_cross_signal
 SET confirmed_time = signal_time,
@@ -65,3 +87,7 @@ COMMENT ON COLUMN analysis_sma_cross_signal.threshold_break_direction IS '후보
 COMMENT ON COLUMN analysis_sma_cross_signal.confirmed_time IS '후보가 1% 경계 종가 돌파로 실제 확정된 시각(KST)';
 COMMENT ON COLUMN analysis_sma_cross_signal.confirmed_price IS '실제 확정 완료 1분봉 종가';
 COMMENT ON COLUMN analysis_sma_cross_signal.confirmed_change_from_previous IS '직전 확정 타점 가격 대비 실제 확정 종가 변동률';
+COMMENT ON COLUMN analysis_sma_cross_signal.armed_direction IS '후속 종가 돌파를 기다린 SMA 교차 방향';
+COMMENT ON COLUMN analysis_sma_cross_signal.ma_cross_time IS 'ARMED 상태를 만든 SMA5/SMA10 교차 완료 봉 시각(KST)';
+COMMENT ON COLUMN analysis_sma_cross_signal.armed_wait_minutes IS 'SMA 교차부터 종가 돌파 신호까지의 완료 봉 대기 시간(분)';
+COMMENT ON COLUMN analysis_sma_cross_signal.close_range_return IS '직전 확정 타점 이후 완료 봉 종가 최고/최저 범위 수익률';
