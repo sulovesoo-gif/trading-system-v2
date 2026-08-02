@@ -34,9 +34,15 @@ def dashboard_payload(pool) -> dict:
         ORDER BY bar_time DESC LIMIT 1""")
         completed = cur.fetchone()
         cur.execute("""SELECT snapshot_time,target_bar_time,stock_code,trading_venue,close_price FROM raw_stock_minute_snapshot
-        WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND collect_cycle='1MIN'
+        WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND collect_cycle='5SEC'
         ORDER BY snapshot_time DESC LIMIT 1""")
         snapshot = cur.fetchone()
+        cur.execute("""SELECT bar_time,close_price FROM raw_stock_minute WHERE stock_code='000660'
+        AND trading_venue='INTEGRATED' AND collect_cycle='1MIN' AND bar_time::date=CURRENT_DATE ORDER BY bar_time""")
+        completed_series = cur.fetchall()
+        cur.execute("""SELECT snapshot_time,target_bar_time,close_price FROM raw_stock_minute_snapshot WHERE stock_code='000660'
+        AND trading_venue='INTEGRATED' AND collect_cycle='5SEC' AND snapshot_time::date=CURRENT_DATE ORDER BY snapshot_time""")
+        snapshot_series = cur.fetchall()
         cur.execute("""SELECT strategy_code,observation_code,position_direction,position_weight,last_processed_time
         FROM analysis_multi_ma_state WHERE stock_code='000660' AND trading_venue='INTEGRATED'
         ORDER BY strategy_code,observation_code""")
@@ -56,13 +62,22 @@ def dashboard_payload(pool) -> dict:
         trades = cur.fetchall()
     columns = lambda names, rows: [dict(zip(names, row)) for row in rows]
     now = datetime.now(KST)
+    prices = [float(row[1]) for row in completed_series]
+    def average(period: int, index: int):
+        return None if index + 1 < period else round(sum(prices[index + 1 - period:index + 1]) / period, 2)
+    series = [{"time": row[0], "price": row[1], "ma_short": average(3, index), "ma_mid": average(5, index), "ma_long": average(10, index)} for index, row in enumerate(completed_series)]
+    if snapshot is not None:
+        series.append({"time": snapshot[0], "price": snapshot[4], "ma_short": None, "ma_mid": None, "ma_long": None, "in_progress": True})
+    in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
+    status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
         "generated_at": now,
-        "market_status": "CLOSED" if now.weekday() >= 5 else "OPEN_OR_IDLE",
+        "market_status": status,
         "strategy_alert_enabled": False,
         "order_enabled": False,
         "latest_completed": None if completed is None else dict(zip(("bar_time","stock_code","trading_venue","close_price"), completed)),
         "latest_snapshot": None if snapshot is None else dict(zip(("snapshot_time","target_bar_time","stock_code","trading_venue","close_price"), snapshot)),
+        "completed_count_today": len(completed_series), "snapshot_count_today": len(snapshot_series), "series": series,
         "states": columns(("strategy_code","observation_code","position_direction","position_weight","last_processed_time"), states),
         "summaries": columns(("strategy_code","observation_code","total_profit_amount","total_profit_rate","trade_count","signal_exit_profit","session_close_exit_profit"), summaries),
         "signals": columns(("signal_time","signal_no","direction","signal_price","observation_code","strategy_code","reason"), signals),
