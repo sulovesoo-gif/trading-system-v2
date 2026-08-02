@@ -22,6 +22,7 @@ ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN trade_date SET DEFAU
 ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN observation_code SET DEFAULT 'COMPLETE';
 ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN signal_no SET DEFAULT 'SIGNAL_1';
 ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN reason SET DEFAULT '';
+ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN signal_type SET DEFAULT 'SIGNAL_1';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_multi_ma_signal_replay ON analysis_multi_ma_signal
  (trade_date,stock_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code,signal_time,signal_no,direction);
 
@@ -50,6 +51,7 @@ ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN average_entry_price S
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN market_code SET DEFAULT 'KOSPI';
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN analysis_slot SET DEFAULT 'COMPLETE';
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN cycle_id SET DEFAULT '00000000-0000-0000-0000-000000000000'::uuid;
+ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN entry_weight SET DEFAULT 1;
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN cumulative_weight SET DEFAULT 0;
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN detail_reason SET DEFAULT '';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_multi_ma_cycle_natural ON analysis_multi_ma_trade
@@ -62,3 +64,20 @@ CREATE TABLE IF NOT EXISTS analysis_multi_ma_trade_leg (
  signal_time TIMESTAMP(3) NOT NULL, entry_price NUMERIC(18,2) NOT NULL, entry_ratio NUMERIC(8,6) NOT NULL,
  notional_amount NUMERIC(22,6), created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
  PRIMARY KEY(trade_id,signal_no));
+
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS total_profit_amount NUMERIC(22,6) NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS total_profit_rate NUMERIC(18,10) NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS loss_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS win_rate NUMERIC(18,10) NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS signal_exit_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS session_close_exit_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS signal_exit_profit NUMERIC(22,6) NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS session_close_exit_profit NUMERIC(22,6) NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS max_profit NUMERIC(22,6);
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS max_loss NUMERIC(22,6);
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS observation_code VARCHAR(10);
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN market_code SET DEFAULT 'KOSPI';
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN analysis_slot SET DEFAULT 'COMPLETE';
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN observation_code SET DEFAULT 'COMPLETE';
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN ma_config_code SET DEFAULT 'MA_3_5_10';
+ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN price_field_code SET DEFAULT 'CLOSE';
