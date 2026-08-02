@@ -26,8 +26,10 @@ from src.repository.database import DatabaseSettings, create_connection_pool
 from src.repository.raw_repository import RawRepository
 from src.repository.raw_specs import RawTable
 from src.repository.multi_ma_repository import MultiMaRepository, MultiMaStateKey
+from src.repository.multi_ma_performance_repository import MultiMaPerformanceKey, MultiMaPerformanceRepository
 from src.repository.stock_minute_analysis_repository import StockMinuteAnalysisRepository
 from src.service.multi_ma_analysis_service import MultiMaAnalysisService, STRATEGY_CODES, new_slot_states
+from src.service.multi_ma_performance_service import MultiMaPerformanceService
 from src.service.raw_ingestion_service import RawIngestionService
 from src.service.stock_minute_snapshot_service import SCHEDULED_SNAPSHOT_SECONDS, StockMinuteSnapshotService
 
@@ -51,6 +53,7 @@ class Runtime:
         self.minutes = StockMinuteAnalysisRepository(pool)
         self.analysis = MultiMaAnalysisService()
         self.multi_repository = MultiMaRepository(pool)
+        self.performance = MultiMaPerformanceService(MultiMaPerformanceRepository(pool))
         self.states: dict[tuple[str, str], dict] = {}
 
     def cycle(self, now: datetime) -> None:
@@ -96,6 +99,15 @@ class Runtime:
             for signal in result.signals:
                 if signal.signal_type in accepted[strategy_code]:
                     self.multi_repository.record_signal(key, signal=signal, feature=result.feature)
+                    performance_strategy = strategy_code.replace("_ONLY", "")
+                    performance_key = MultiMaPerformanceKey(
+                        result.feature.bar.bar_time.date(), stock_code, venue, performance_strategy,
+                        "COMPLETE" if slot == "COMPLETE" else f"SEC_{slot}", config.code, config.price_field,
+                    )
+                    self.performance.process_signal(
+                        performance_key, signal_no=signal.signal_type, direction=signal.direction,
+                        signal_time=result.feature.bar.bar_time, price=result.feature.value, reason=signal.reason,
+                    )
         if result.signals:
             print(f"다중 MA 신호 stock={stock_code} venue={venue} slot={slot} time={result.feature.bar.bar_time} signals={[signal.signal_type + ':' + signal.direction for signal in result.signals]}")
 
