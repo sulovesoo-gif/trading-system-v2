@@ -37,6 +37,13 @@ class MultiMaPerformanceService:
         if state.portfolio.direction=="FLAT": return False
         self._close(key,state,exit_time,exit_price,"SESSION_CLOSE","SESSION_END"); return True
 
+    def close_trade_date(self, trade_date, *, exit_time, exit_price) -> int:
+        closed = 0
+        for key in tuple(self.runtime):
+            if key.trade_date == trade_date and self.session_close(key, exit_time=exit_time, exit_price=exit_price):
+                closed += 1
+        return closed
+
     def _close(self,key,state,exit_time,exit_price,exit_type,reason):
         pnl,_=state.portfolio.close(exit_price); rate=pnl/self.initial_capital*Decimal("100")
         self.repository.close_trade(trade_id=state.trade_id,exit_time=exit_time,exit_price=exit_price,exit_type=exit_type,exit_reason=reason,profit=pnl,profit_rate=rate)

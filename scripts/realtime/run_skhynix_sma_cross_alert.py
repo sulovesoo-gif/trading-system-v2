@@ -66,7 +66,9 @@ def main() -> int:
                         sma.evaluate_completed_bar(stock_code="000660", completed_time=row["bar_time"])
                         latest = StockMinuteAnalysisRepository(pool).completed_bars(stock_code="000660", before_time=row["bar_time"], limit=1)
                         if latest: sma.update_open_performance(stock_code="000660", completed_bar=latest[-1])
-                        if row["bar_time"].hour == 15 and row["bar_time"].minute == 30: sma.close_market_performance(stock_code="000660", market_close_bar_time=row["bar_time"])
+                        if row["bar_time"].hour == 15 and row["bar_time"].minute == 30:
+                            sma.close_market_performance(stock_code="000660", market_close_bar_time=row["bar_time"])
+                            multi.performance.close_trade_date(row["bar_time"].date(), exit_time=row["bar_time"], exit_price=row["close_price"])
                         last_sma = row["bar_time"]
                 else:
                     snapshot = StockMinuteSnapshotService.build_snapshot(collector_rows=rows, observed_at=now)
