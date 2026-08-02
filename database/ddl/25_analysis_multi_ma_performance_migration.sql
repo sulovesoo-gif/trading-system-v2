@@ -23,6 +23,8 @@ ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN observation_code SET
 ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN signal_no SET DEFAULT 'SIGNAL_1';
 ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN reason SET DEFAULT '';
 ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN signal_type SET DEFAULT 'SIGNAL_1';
+ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN market_code SET DEFAULT 'KOSPI';
+ALTER TABLE IF EXISTS analysis_multi_ma_signal ALTER COLUMN analysis_slot SET DEFAULT 'COMPLETE';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_multi_ma_signal_replay ON analysis_multi_ma_signal
  (trade_date,stock_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code,signal_time,signal_no,direction);
 
