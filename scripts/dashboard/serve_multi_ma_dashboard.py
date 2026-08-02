@@ -83,6 +83,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return None
     def log_message(self, format, *args):
         logging.info("http %s", format % args)
+    def _read_only(self):
+        self.send_error(405, "Read-only dashboard")
+    do_POST = _read_only
+    do_PUT = _read_only
+    do_PATCH = _read_only
+    do_DELETE = _read_only
 
 
 def exporter(pool, output: Path, stop: threading.Event) -> None:
@@ -97,7 +103,7 @@ def exporter(pool, output: Path, stop: threading.Event) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bind", default="127.0.0.1")
+    parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
