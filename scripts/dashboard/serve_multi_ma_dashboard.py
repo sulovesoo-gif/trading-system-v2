@@ -62,12 +62,15 @@ def dashboard_payload(pool) -> dict:
         trades = cur.fetchall()
     columns = lambda names, rows: [dict(zip(names, row)) for row in rows]
     now = datetime.now(KST)
-    prices = [float(row[1]) for row in completed_series]
-    def average(period: int, index: int):
-        return None if index + 1 < period else round(sum(prices[index + 1 - period:index + 1]) / period, 2)
-    series = [{"time": row[0], "price": row[1], "ma_short": average(3, index), "ma_mid": average(5, index), "ma_long": average(10, index)} for index, row in enumerate(completed_series)]
-    if snapshot is not None:
-        series.append({"time": snapshot[0], "price": snapshot[4], "ma_short": None, "ma_mid": None, "ma_long": None, "in_progress": True})
+    completed_values = [(row[0], float(row[1])) for row in completed_series]
+    def point(timestamp, price):
+        values = [value for at, value in completed_values if at < timestamp] + [float(price)]
+        average = lambda period: None if len(values) < period else round(sum(values[-period:]) / period, 2)
+        return {"timestamp": timestamp, "price": price, "ma_short": average(3), "ma_mid": average(5), "ma_long": average(10)}
+    series = {"COMPLETE": [point(at, value) for at, value in completed_values]}
+    for second in range(5, 60, 5):
+        code = f"SEC_{second:02d}"
+        series[code] = [point(row[1], row[2]) for row in snapshot_series if row[0].second == second]
     in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
     status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
