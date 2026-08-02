@@ -15,6 +15,7 @@ class RawTable(str, Enum):
     STOCK_DAILY = "raw_stock_daily"
     FUTURES_QUOTE = "raw_futures_quote"
     FUTURES_MINUTE = "raw_futures_minute"
+    STOCK_MINUTE_SNAPSHOT = "raw_stock_minute_snapshot"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,12 @@ RAW_SPECS: dict[RawTable, RawTableSpec] = {
     RawTable.STOCK_DAILY: RawTableSpec(RawTable.STOCK_DAILY, "15_raw_stock_daily.sql", ("trade_date", "collected_at", "data_source", "market_code", "trading_venue", "collect_cycle", "stock_code", "open_price", "high_price", "low_price", "close_price", "volume", "amount", "previous_day_difference", "previous_day_difference_sign", "adjusted_yn", "split_rate", "raw_payload"), ("trade_date", "data_source", "market_code", "trading_venue", "collect_cycle", "stock_code")),
     RawTable.FUTURES_QUOTE: RawTableSpec(RawTable.FUTURES_QUOTE, "16_raw_futures_quote.sql", VENUE_SNAPSHOT + ("futures_code", "futures_name", "current_price", "previous_day_difference", "previous_day_difference_sign", "previous_close_price", "change_rate", "open_price", "high_price", "low_price", "upper_limit_price", "lower_limit_price", "base_price", "accumulated_volume", "accumulated_amount", "open_interest", "open_interest_change", "basis", "theoretical_price", "market_basis", "expiration_date", "days_to_expiration", "raw_payload"), ("snapshot_time", "data_source", "market_code", "trading_venue", "collect_cycle", "futures_code")),
     RawTable.FUTURES_MINUTE: RawTableSpec(RawTable.FUTURES_MINUTE, "17_raw_futures_minute.sql", VENUE_BAR + ("futures_code", "open_price", "high_price", "low_price", "close_price", "volume", "accumulated_amount", "raw_payload"), ("bar_time", "data_source", "market_code", "trading_venue", "collect_cycle", "futures_code")),
+    RawTable.STOCK_MINUTE_SNAPSHOT: RawTableSpec(
+        RawTable.STOCK_MINUTE_SNAPSHOT,
+        "23_raw_stock_minute_snapshot.sql",
+        ("snapshot_time", "target_bar_time", "collected_at", "data_source", "market_code", "trading_venue", "collect_cycle", "stock_code", "snapshot_second", "open_price", "high_price", "low_price", "close_price", "volume", "accumulated_amount", "raw_payload"),
+        ("snapshot_time", "data_source", "market_code", "trading_venue", "collect_cycle", "stock_code"),
+    ),
 }
 
 

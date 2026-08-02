@@ -49,3 +49,10 @@ class RawDdlTest(unittest.TestCase):
         seed = (ROOT / "database" / "seed" / "01_stock_minute_backfill_targets.sql").read_text(encoding="utf-8")
         for stock_code in ("000660", "0193T0", "0197X0", "005930", "0193W0", "0193L0"):
             self.assertIn(stock_code, seed)
+
+    def test_stock_minute_snapshot_uses_its_own_raw_table(self):
+        content = (ROOT / "database" / "ddl" / "23_raw_stock_minute_snapshot.sql").read_text(encoding="utf-8")
+        self.assertIn("raw_stock_minute_snapshot", content)
+        self.assertIn("target_bar_time", content)
+        self.assertIn("snapshot_second", content)
+        self.assertIn("raw_payload                 JSONB        NOT NULL", content)

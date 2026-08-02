@@ -16,6 +16,7 @@ venv/
 # Logs
 logs/
 *.log
+reports/
 
 # OS
 .DS_Store
