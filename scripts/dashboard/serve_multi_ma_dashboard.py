@@ -70,7 +70,7 @@ def dashboard_payload(pool) -> dict:
     series = {"COMPLETE": [point(at, value) for at, value in completed_values]}
     for second in range(5, 60, 5):
         code = f"SEC_{second:02d}"
-        series[code] = [point(row[1], row[2]) for row in snapshot_series if row[0].second == second]
+        series[code] = [point(row[0], row[2]) for row in snapshot_series if row[0].second == second]
     in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
     status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
