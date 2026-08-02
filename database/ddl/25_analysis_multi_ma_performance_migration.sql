@@ -57,7 +57,7 @@ ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN market_code SET DEFAU
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN analysis_slot SET DEFAULT 'COMPLETE';
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN cycle_id SET DEFAULT '00000000-0000-0000-0000-000000000000'::uuid;
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN entry_weight SET DEFAULT 1;
-ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN cumulative_weight SET DEFAULT 0;
+ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN cumulative_weight SET DEFAULT 1;
 ALTER TABLE IF EXISTS analysis_multi_ma_trade ALTER COLUMN detail_reason SET DEFAULT '';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_multi_ma_cycle_natural ON analysis_multi_ma_trade
  (trade_date,stock_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code,cycle_no);
