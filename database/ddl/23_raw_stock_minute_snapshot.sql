@@ -23,7 +23,12 @@ CREATE TABLE IF NOT EXISTS raw_stock_minute_snapshot
 
     CONSTRAINT pk_raw_stock_minute_snapshot PRIMARY KEY
     (
-        snapshot_time, data_source, market_code, trading_venue, collect_cycle, stock_code
+        snapshot_time,
+        data_source,
+        market_code,
+        trading_venue,
+        collect_cycle,
+        stock_code
     )
 );
 
