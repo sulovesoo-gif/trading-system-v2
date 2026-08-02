@@ -9,7 +9,7 @@ import argparse
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +107,11 @@ def next_tick(now: datetime) -> datetime:
     return min(future) if future else (minute + timedelta(minutes=1)).replace(second=0)
 
 
+def is_observation_time(now: datetime) -> bool:
+    """초기 MARKET seed의 공통 관찰 구간. 휴장일 API 연결 전에는 평일만 허용한다."""
+    return now.weekday() < 5 and clock_time(8, 0) <= now.time() <= clock_time(20, 5)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="현재 시각의 조건에 맞는 한 주기만 수행")
@@ -120,6 +125,9 @@ def main() -> int:
         runtime = Runtime(pool)
         while True:
             now = kst_now()
+            if not is_observation_time(now):
+                time.sleep(1)
+                continue
             if now.second in SCHEDULED_SNAPSHOT_SECONDS or now.second == 1:
                 runtime.cycle(now)
                 if args.once:
