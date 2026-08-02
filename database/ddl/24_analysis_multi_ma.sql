@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS analysis_multi_ma_state
     position_direction          VARCHAR(10)  NOT NULL DEFAULT 'FLAT' CHECK (position_direction IN ('FLAT', 'LONG', 'SHORT')),
     position_weight             NUMERIC(8,6) NOT NULL DEFAULT 0 CHECK (position_weight >= 0 AND position_weight <= 1),
     applied_signals             JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    cycle_id                    UUID,
+    average_entry_price         NUMERIC(18,6),
+    realized_pnl                NUMERIC(22,6) NOT NULL DEFAULT 0,
     updated_at                  TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT pk_analysis_multi_ma_state PRIMARY KEY
     (stock_code, market_code, trading_venue, strategy_code, analysis_slot, ma_config_code, price_field_code)
@@ -66,6 +69,8 @@ CREATE TABLE IF NOT EXISTS analysis_multi_ma_trade
     cumulative_weight           NUMERIC(8,6) NOT NULL CHECK (cumulative_weight > 0 AND cumulative_weight <= 1),
     exit_time                   TIMESTAMP(3),
     exit_price                  NUMERIC(18,2),
+    exit_type                   VARCHAR(20) CHECK (exit_type IN ('SIGNAL', 'SESSION_CLOSE')),
+    exit_reason                 VARCHAR(30) CHECK (exit_reason IN ('SIGNAL_1', 'SIGNAL_2', 'SIGNAL_3', 'MULTIPLE_SIGNALS', 'SESSION_END')),
     realized_pnl                NUMERIC(22,6),
     realized_return             NUMERIC(18,10),
     cumulative_pnl              NUMERIC(22,6),
@@ -73,6 +78,9 @@ CREATE TABLE IF NOT EXISTS analysis_multi_ma_trade
     detail_reason               VARCHAR(500) NOT NULL,
     created_at                  TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE analysis_multi_ma_trade ADD COLUMN IF NOT EXISTS exit_type VARCHAR(20);
+ALTER TABLE analysis_multi_ma_trade ADD COLUMN IF NOT EXISTS exit_reason VARCHAR(30);
 
 CREATE TABLE IF NOT EXISTS analysis_multi_ma_summary
 (
@@ -92,9 +100,21 @@ CREATE TABLE IF NOT EXISTS analysis_multi_ma_summary
     maximum_profit              NUMERIC(22,6),
     maximum_loss                NUMERIC(22,6),
     maximum_drawdown            NUMERIC(18,10) NOT NULL DEFAULT 0,
+    signal_exit_count           INTEGER NOT NULL DEFAULT 0,
+    session_close_exit_count    INTEGER NOT NULL DEFAULT 0,
+    signal_exit_profit          NUMERIC(22,6) NOT NULL DEFAULT 0,
+    session_close_exit_profit   NUMERIC(22,6) NOT NULL DEFAULT 0,
     current_position_direction  VARCHAR(10)  NOT NULL DEFAULT 'FLAT',
     current_position_weight     NUMERIC(8,6) NOT NULL DEFAULT 0,
     calculated_at               TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT pk_analysis_multi_ma_summary PRIMARY KEY
     (trade_date, stock_code, market_code, trading_venue, strategy_code, analysis_slot, ma_config_code, price_field_code)
 );
+
+ALTER TABLE analysis_multi_ma_state ADD COLUMN IF NOT EXISTS cycle_id UUID;
+ALTER TABLE analysis_multi_ma_state ADD COLUMN IF NOT EXISTS average_entry_price NUMERIC(18,6);
+ALTER TABLE analysis_multi_ma_state ADD COLUMN IF NOT EXISTS realized_pnl NUMERIC(22,6) NOT NULL DEFAULT 0;
+ALTER TABLE analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS signal_exit_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS session_close_exit_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS signal_exit_profit NUMERIC(22,6) NOT NULL DEFAULT 0;
+ALTER TABLE analysis_multi_ma_summary ADD COLUMN IF NOT EXISTS session_close_exit_profit NUMERIC(22,6) NOT NULL DEFAULT 0;
