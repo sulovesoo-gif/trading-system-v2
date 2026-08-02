@@ -86,3 +86,5 @@ ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN analysis_slot SET D
 ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN observation_code SET DEFAULT 'COMPLETE';
 ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN ma_config_code SET DEFAULT 'MA_3_5_10';
 ALTER TABLE IF EXISTS analysis_multi_ma_summary ALTER COLUMN price_field_code SET DEFAULT 'CLOSE';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_multi_ma_summary_natural ON analysis_multi_ma_summary
+ (trade_date,stock_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code);
