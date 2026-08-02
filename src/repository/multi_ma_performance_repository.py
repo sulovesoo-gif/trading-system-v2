@@ -37,14 +37,14 @@ class MultiMaPerformanceRepository:
     def save_state(self, key: MultiMaPerformanceKey, *, last_processed_time, direction: str, weight: Decimal, applied_signals: Iterable[str]) -> None:
         """48개 조합의 재시작 가능한 분석 상태를 설정 축별로 저장한다."""
         sql = """INSERT INTO analysis_multi_ma_state
-        (stock_code,market_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code,trade_date,last_processed_time,position_direction,position_weight,applied_signals)
-        VALUES (%s,'KOSPI',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (stock_code,market_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code) DO UPDATE SET
+        (stock_code,market_code,trading_venue,strategy_code,observation_code,analysis_slot,ma_config_code,price_field_code,trade_date,last_processed_time,position_direction,position_weight,applied_signals)
+        VALUES (%s,'KOSPI',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (stock_code,market_code,trading_venue,strategy_code,analysis_slot,ma_config_code,price_field_code) DO UPDATE SET
         trade_date=EXCLUDED.trade_date,last_processed_time=EXCLUDED.last_processed_time,position_direction=EXCLUDED.position_direction,
         position_weight=EXCLUDED.position_weight,applied_signals=EXCLUDED.applied_signals,updated_at=CURRENT_TIMESTAMP"""
         with self.pool.connection() as conn:
             with conn.transaction(), conn.cursor() as cur:
-                cur.execute(sql, (key.stock_code,key.trading_venue,key.strategy_code,key.observation_code,key.ma_config_code,key.price_field_code,
+                cur.execute(sql, (key.stock_code,key.trading_venue,key.strategy_code,key.observation_code,key.observation_code,key.ma_config_code,key.price_field_code,
                                   key.trade_date,last_processed_time,direction,weight,list(sorted(applied_signals))))
 
     def get_state(self, key: MultiMaPerformanceKey):
@@ -52,7 +52,7 @@ class MultiMaPerformanceRepository:
             with conn.cursor() as cur:
                 cur.execute("""SELECT trade_date,last_processed_time,position_direction,position_weight,applied_signals
                 FROM analysis_multi_ma_state WHERE stock_code=%s AND market_code='KOSPI' AND trading_venue=%s AND strategy_code=%s
-                AND observation_code=%s AND ma_config_code=%s AND price_field_code=%s""",
+                AND analysis_slot=%s AND ma_config_code=%s AND price_field_code=%s""",
                             (key.stock_code,key.trading_venue,key.strategy_code,key.observation_code,key.ma_config_code,key.price_field_code))
                 return cur.fetchone()
 

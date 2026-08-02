@@ -1,6 +1,8 @@
 -- Existing validation databases may contain the initial multi-MA draft schema.
 -- This migration only adds compatibility columns/defaults; it never drops data.
 ALTER TABLE IF EXISTS analysis_multi_ma_state ADD COLUMN IF NOT EXISTS observation_code VARCHAR(10);
+UPDATE analysis_multi_ma_state SET observation_code=analysis_slot WHERE observation_code IS NULL;
+ALTER TABLE IF EXISTS analysis_multi_ma_state ALTER COLUMN observation_code SET DEFAULT 'COMPLETE';
 ALTER TABLE IF EXISTS analysis_multi_ma_state ADD COLUMN IF NOT EXISTS trade_date DATE;
 ALTER TABLE IF EXISTS analysis_multi_ma_state ADD COLUMN IF NOT EXISTS position_direction VARCHAR(10) NOT NULL DEFAULT 'FLAT';
 ALTER TABLE IF EXISTS analysis_multi_ma_state ADD COLUMN IF NOT EXISTS position_weight NUMERIC(8,6) NOT NULL DEFAULT 0;
