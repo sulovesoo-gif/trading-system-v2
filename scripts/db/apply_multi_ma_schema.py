@@ -13,7 +13,7 @@ from src.repository.database import DatabaseSettings, create_connection_pool
 
 
 FILES = (
-    "01_common_code_group.sql", "02_common_code.sql", "23_raw_stock_minute_snapshot.sql", "24_analysis_multi_ma.sql",
+    "01_common_code_group.sql", "02_common_code.sql", "23_raw_stock_minute_snapshot.sql", "24_analysis_multi_ma.sql", "25_analysis_multi_ma_performance_migration.sql",
 )
 SEED = ROOT / "database" / "seed" / "02_common_code_initial.sql"
 
