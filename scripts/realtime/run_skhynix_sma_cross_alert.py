@@ -57,7 +57,12 @@ def main() -> int:
             last_dispatch = tick
             for stock in codes.enabled_minute_stocks():
                 venue = stock.default_market_code
-                rows = collector.collect(stock_code=stock.stock_code, market_code="KOSPI", trading_venue=venue, input_hour=now.strftime("%H%M%S"))
+                try:
+                    rows = collector.collect(stock_code=stock.stock_code, market_code="KOSPI", trading_venue=venue, input_hour=now.strftime("%H%M%S"))
+                except Exception as error:
+                    # 인증·네트워크 오류가 수집 서비스 전체 종료로 위장되지 않게 한다.
+                    print(f"KIS minute collection failed: {type(error).__name__}")
+                    continue
                 if now.second == 1:
                     row = completed(rows, now)
                     if row is None: continue
