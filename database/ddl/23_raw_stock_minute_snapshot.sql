@@ -24,10 +24,6 @@ CREATE TABLE IF NOT EXISTS raw_stock_minute_snapshot
     CONSTRAINT pk_raw_stock_minute_snapshot PRIMARY KEY
     (
         snapshot_time, data_source, market_code, trading_venue, collect_cycle, stock_code
-    ),
-    CONSTRAINT uq_raw_stock_minute_snapshot_slot UNIQUE
-    (
-        target_bar_time, data_source, market_code, trading_venue, collect_cycle, stock_code, snapshot_second
     )
 );
 
@@ -38,5 +34,5 @@ CREATE INDEX IF NOT EXISTS idx_raw_stock_minute_snapshot_target
 
 COMMENT ON TABLE raw_stock_minute_snapshot IS '진행 중 1분봉을 5초 기준으로 관찰한 KIS 원문 RAW';
 COMMENT ON COLUMN raw_stock_minute_snapshot.target_bar_time IS '관찰 대상 1분봉 시각(KST)';
-COMMENT ON COLUMN raw_stock_minute_snapshot.snapshot_time IS 'API 요청 기준 관찰 시각(KST)';
+COMMENT ON COLUMN raw_stock_minute_snapshot.snapshot_time IS '예정된 관찰 슬롯 시각(KST); 같은 슬롯 재시도는 기본키 중복으로 보존하지 않음';
 COMMENT ON COLUMN raw_stock_minute_snapshot.snapshot_second IS '분 내 관찰 기준 초; 00초는 관찰 전용이며 완료봉 확정 근거가 아님';

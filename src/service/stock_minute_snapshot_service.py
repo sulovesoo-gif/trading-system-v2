@@ -21,7 +21,9 @@ class StockMinuteSnapshotService:
             return None
         source = matches[0]
         return {
-            "snapshot_time": observed_at,
+            # snapshot_time은 Timescale hypertable의 파티션·중복 키이므로 예정된 5초 슬롯으로 고정한다.
+            # 실제 응답 수신 시각은 Collector의 collected_at을 보존한다.
+            "snapshot_time": observed_at.replace(microsecond=0),
             "target_bar_time": target,
             "collected_at": source["collected_at"],
             "data_source": source["data_source"],
