@@ -47,7 +47,7 @@ def _snapshot_bar(row) -> MinuteBar:
 
 
 class Runtime:
-    def __init__(self, pool) -> None:
+    def __init__(self, pool, *, restore_feature_state: bool = True) -> None:
         self.pool = pool
         self.codes = CommonCodeRepository(pool)
         self.raw = RawIngestionService(RawRepository(pool))
@@ -58,6 +58,7 @@ class Runtime:
         self.performance = MultiMaPerformanceService(MultiMaPerformanceRepository(pool))
         self.states: dict[tuple[str, str, str, str, str], dict] = {}
         self.previous_features: dict[tuple[str, str, str, str, str], MultiMaFeature] = {}
+        self.restore_feature_state = restore_feature_state
 
     def cycle(self, now: datetime) -> None:
         if not self.codes.switch_enabled("GLOBAL_COLLECT_YN"):
@@ -88,7 +89,7 @@ class Runtime:
         state_key = (stock_code, venue, slot, config.code, config.price_field)
         states = self.states.setdefault(state_key, new_slot_states())
         previous = self.previous_features.get(state_key)
-        if previous is None:
+        if previous is None and self.restore_feature_state:
             restore_key = MultiMaStateKey(stock_code, "KOSPI", venue, STRATEGY_CODES[0], slot, config.code, config.price_field)
             restored = self.multi_repository.load_feature_state(restore_key)
             if restored is not None:
@@ -119,7 +120,6 @@ class Runtime:
             )
             for signal in result.signals:
                 if signal.signal_type in accepted[strategy_code]:
-                    self.multi_repository.record_signal(key, signal=signal, feature=result.feature)
                     performance_strategy = strategy_code.replace("_ONLY", "")
                     performance_key = MultiMaPerformanceKey(
                         result.feature.bar.bar_time.date(), stock_code, venue, performance_strategy,
