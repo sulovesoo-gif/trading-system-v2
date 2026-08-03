@@ -46,6 +46,7 @@ class MultiMaPerformanceService:
         elif key.strategy_code=="ACCUMULATED" and signal_no not in state.applied:
             increment=Decimal("1")/Decimal("3"); state.portfolio.enter(direction,price,increment,signal_no); state.applied.add(signal_no)
             self.repository.add_trade_leg(trade_id=state.trade_id,signal_no=signal_no,signal_time=signal_time,entry_price=price,entry_ratio=increment,notional_amount=self.initial_capital*increment)
+        self._persist_state(key, state, signal_time)
         return True
 
     def session_close(self,key,*,exit_time,exit_price):
@@ -65,3 +66,13 @@ class MultiMaPerformanceService:
         self.repository.close_trade(trade_id=state.trade_id,exit_time=exit_time,exit_price=exit_price,exit_type=exit_type,exit_reason=reason,profit=pnl,profit_rate=rate)
         self.repository.rebuild_daily_summary(key,initial_capital=self.initial_capital)
         state.trade_id=None; state.cycle_no=None; state.applied=set()
+        self._persist_state(key, state, exit_time)
+
+    def _persist_state(self, key, state, processed_time):
+        if hasattr(self.repository, "save_state"):
+            self.repository.save_state(
+                key, last_processed_time=processed_time,
+                direction=state.portfolio.direction,
+                weight=sum((leg.weight for leg in state.portfolio.legs), Decimal("0")),
+                applied_signals=state.applied,
+            )

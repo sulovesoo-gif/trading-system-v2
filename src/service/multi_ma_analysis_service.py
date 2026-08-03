@@ -60,8 +60,14 @@ class MultiMaAnalysisService:
             STRATEGY_SIGNAL_1: tuple(apply_single_signal(states[STRATEGY_SIGNAL_1], item, accepted_type="SIGNAL_1") for item in grouped["SIGNAL_1"]),
             STRATEGY_SIGNAL_2: tuple(apply_single_signal(states[STRATEGY_SIGNAL_2], item, accepted_type="SIGNAL_2") for item in grouped["SIGNAL_2"]),
             STRATEGY_SIGNAL_3: tuple(apply_single_signal(states[STRATEGY_SIGNAL_3], item, accepted_type="SIGNAL_3") for item in grouped["SIGNAL_3"]),
-            STRATEGY_ACCUMULATED: tuple(apply_accumulated(states[STRATEGY_ACCUMULATED], signals)),
         }
+        # Slope and alignment can validly turn in opposite directions at the
+        # same instant.  They remain independent raw signals; do not let the
+        # legacy in-memory accumulated helper abort the whole observation.
+        actions[STRATEGY_ACCUMULATED] = (
+            () if len({item.direction for item in signals}) > 1
+            else tuple(apply_accumulated(states[STRATEGY_ACCUMULATED], signals))
+        )
         return AnalysisResult(current, signals, actions)
 
 
