@@ -91,6 +91,13 @@ def dashboard_payload(pool) -> dict:
         AND trading_venue='INTEGRATED' AND collect_cycle='5SEC' AND snapshot_time::date=CURRENT_DATE ORDER BY snapshot_time""")
         snapshot_series = cur.fetchall()
         cur.execute("""SELECT DISTINCT ON (date_trunc('minute', snapshot_time))
+        date_trunc('minute', snapshot_time) minute_time, snapshot_time, collected_at,
+        execution_strength, execution_volume
+        FROM raw_stock_execution WHERE stock_code='000660' AND trading_venue='INTEGRATED'
+        AND collect_cycle='5SEC' AND snapshot_time::date=CURRENT_DATE
+        ORDER BY date_trunc('minute', snapshot_time), collected_at DESC, snapshot_time DESC""")
+        execution_minutes = cur.fetchall()
+        cur.execute("""SELECT DISTINCT ON (date_trunc('minute', snapshot_time))
         date_trunc('minute', snapshot_time) minute_time, snapshot_time, sell_amount, buy_amount,
         net_buy_amount, net_buy_volume, net_buy_amount_change
         FROM raw_program WHERE stock_code='000660' AND market_code='KOSPI' AND collect_cycle='1MIN'
@@ -129,6 +136,18 @@ def dashboard_payload(pool) -> dict:
     now = datetime.now(KST)
     completed_values = [(row[0], float(row[4])) for row in completed_series]
     program_rows = build_program_minute_series(columns(("minute_time", "source_snapshot_time", "cumulative_sell_amount", "cumulative_buy_amount", "cumulative_net_buy_amount", "cumulative_net_buy_volume", "api_net_buy_amount_change"), program_minutes))
+    execution_rows = columns(("minute_time", "source_snapshot_time", "collected_at", "execution_strength", "execution_volume"), execution_minutes)
+    previous_execution_time = previous_strength = previous_session = None
+    for row in execution_rows:
+        session = _analysis_session_id(row["minute_time"])
+        if session is None:
+            row["status"], row["previous_execution_strength"], row["execution_strength_change"] = "DATA_MISSING", None, None
+            continue
+        continuous = session == previous_session and previous_execution_time is not None and row["minute_time"] - previous_execution_time == timedelta(minutes=1)
+        row["status"] = "NORMAL" if continuous else ("SESSION_START" if session != previous_session else "EXECUTION_STRENGTH_GAP")
+        row["previous_execution_strength"] = previous_strength if continuous else None
+        row["execution_strength_change"] = (float(row["execution_strength"]) - float(previous_strength)) if continuous and row["execution_strength"] is not None and previous_strength is not None else None
+        previous_execution_time, previous_strength, previous_session = row["minute_time"], row["execution_strength"], session
     def point(timestamp, price):
         # timestamp is represented exactly once: a completed bar replaces the
         # in-progress value for COMPLETE, while SEC observations append only
@@ -211,6 +230,8 @@ def dashboard_payload(pool) -> dict:
             observation["canonical_signals"] = list(unique.values())
         program = next((row for row in program_rows if row["minute_time"] == detail["bar_time"]), None)
         detail["program"] = program or {"status": "DATA_MISSING"}
+        execution = next((row for row in execution_rows if row["minute_time"] == detail["bar_time"]), None)
+        detail["execution_strength"] = execution or {"status": "DATA_MISSING"}
     in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
     status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
@@ -223,6 +244,7 @@ def dashboard_payload(pool) -> dict:
         "completed_count_today": len(completed_series), "snapshot_count_today": len(snapshot_series),
         "main_completed_series": series["COMPLETE"], "current_observations": current_observations,
         "program_minutes": program_rows, "programMinuteSeries": program_rows,
+        "executionStrengthSeries": execution_rows,
         "series": series, "minute_details": list(by_minute.values()),
         "states": columns(("strategy_code","observation_code","position_direction","position_weight","last_processed_time"), states),
         "summaries": columns(("strategy_code","observation_code","total_profit_amount","total_profit_rate","trade_count","win_count","loss_count","win_rate","signal_exit_count","session_close_exit_count","signal_exit_profit","session_close_exit_profit","max_profit","max_loss"), summaries),

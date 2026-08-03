@@ -108,10 +108,11 @@ class CollectorMappingTest(unittest.TestCase):
         executions = collector(StockExecutionCollector, {"output": [{
             "stck_cntg_hour": "102959", "stck_prpr": "100", "prdy_vrss": "1",
             "prdy_vrss_sign": "2", "prdy_ctrt": "1", "cntg_vol": "5", "tday_rltv": "101.2",
-        }]}).collect(stock_code="005930", market_code="KOSPI")
+        }]}).collect(stock_code="005930", market_code="KOSPI", trading_venue="INTEGRATED", collect_cycle="5SEC")
         execution = executions[0]
         self.assertEqual(execution["snapshot_time"], datetime(2026, 7, 28, 10, 29, 59))
         self.assertEqual(execution["execution_strength"], Decimal("101.2"))
+        self.assertEqual(executions and executions[0]["trading_venue"], "INTEGRATED")
         self.assert_row_matches_ddl(execution, "13_raw_stock_execution.sql")
 
     def test_stock_minute_and_daily_mapping(self):

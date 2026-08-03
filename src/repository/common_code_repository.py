@@ -30,7 +30,11 @@ class ApiScheduleConfig:
     end_time: str
     enabled: bool
     def due(self, now) -> bool:
-        return self.enabled and self.interval_unit == "MIN" and now.second == self.execution_second and self.start_time <= now.strftime("%H:%M") <= self.end_time
+        if not self.enabled or not (self.start_time <= now.strftime("%H:%M") <= self.end_time):
+            return False
+        if self.interval_unit == "MIN":
+            return now.second == self.execution_second
+        return self.interval_unit == "SEC" and self.interval_value > 0 and now.second % self.interval_value == 0
 
 
 @dataclass(frozen=True)
