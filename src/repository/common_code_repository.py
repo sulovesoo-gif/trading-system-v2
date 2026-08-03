@@ -98,7 +98,7 @@ class CommonCodeRepository:
         row = self._fetchone("SELECT code, attr1, attr2, attr5, attr6, attr7, attr8 FROM common_code WHERE group_cd = 'API_SCHEDULE' AND code = %s AND use_yn = 'Y'", (code,))
         if row is None:
             return ApiScheduleConfig(code, "MIN", 1, -1, "99:99", "00:00", False)
-        return ApiScheduleConfig(row[0], row[1], int(row[2]), int(row[3]), row[4], row[5], row[6] == "Y")
+        return ApiScheduleConfig(row[0], row[1], int(row[2] or 0), int(row[3] or -1), row[4], row[5], row[6] == "Y")
 
     def _fetchone(self, sql, params=()):
         with self.pool.connection() as connection:
