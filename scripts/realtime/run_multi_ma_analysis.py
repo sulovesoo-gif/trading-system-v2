@@ -64,17 +64,30 @@ def _snapshot_bar(row) -> MinuteBar:
     return MinuteBar(row["target_bar_time"], row["open_price"], row["high_price"], row["low_price"], row["close_price"])
 
 
+def _analysis_session_id(bar_time: datetime) -> str | None:
+    """Return an analyzable continuous-trading session for a KST minute."""
+    value = bar_time.time()
+    if clock_time(8, 0) <= value <= clock_time(8, 49, 59):
+        return "NXT_PREMARKET"
+    if clock_time(9, 0) <= value <= clock_time(15, 19, 59):
+        return "KRX_REGULAR"
+    if clock_time(15, 40) <= value <= clock_time(20, 0):
+        return "NXT_AFTERMARKET"
+    return None
+
+
 def _analysis_session_gap(bar_time: datetime) -> bool:
     """Do not synthesize or analyze the documented 08:50–08:59 venue gap."""
-    return clock_time(8, 50) <= bar_time.time() <= clock_time(8, 59, 59)
+    return _analysis_session_id(bar_time) is None
 
 
 def _has_unexpected_data_gap(bars, snapshot_bar=None) -> bool:
     series = list(bars) + ([] if snapshot_bar is None else [snapshot_bar])
     for previous, current in zip(series, series[1:]):
-        if current.bar_time - previous.bar_time <= timedelta(minutes=1):
+        if _analysis_session_id(previous.bar_time) != _analysis_session_id(current.bar_time):
+            # Session transitions are explicit reset boundaries, not errors.
             continue
-        if previous.bar_time.time() == clock_time(8, 49) and current.bar_time.time() == clock_time(9, 0):
+        if current.bar_time - previous.bar_time <= timedelta(minutes=1):
             continue
         return True
     return False
@@ -119,13 +132,17 @@ class Runtime:
         if not self.codes.switch_enabled("GLOBAL_ANALYSIS_YN"):
             return
         candidate_time = snapshot_bar.bar_time if snapshot_bar is not None else before_time
-        if _analysis_session_gap(candidate_time):
+        session_id = _analysis_session_id(candidate_time)
+        if session_id is None:
             return
         config = self.codes.active_ma_config("MA_3_5_10")
         # One extra completed bar is required to calculate the current
         # short-MA slope.  Signal comparison itself is against the prior
         # feature of this exact observation slot (below).
         bars = self.minutes.completed_bars(stock_code=stock_code, before_time=before_time, limit=config.long_period + 1, trading_venue=venue)
+        # Auction / pre-after-market minutes are not analyzable bars.  A new
+        # continuous session must warm up from its own completed minutes.
+        bars = [bar for bar in bars if _analysis_session_id(bar.bar_time) == session_id]
         state_key = (stock_code, venue, slot, config.code, config.price_field)
         if _has_unexpected_data_gap(bars, snapshot_bar):
             print(f"DATA_GAP stock={stock_code} venue={venue} slot={slot} before={before_time}")

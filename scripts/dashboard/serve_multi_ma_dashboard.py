@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as clock_time, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +24,17 @@ KST = ZoneInfo("Asia/Seoul")
 
 def _json_default(value):
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _analysis_session_id(bar_time: datetime) -> str | None:
+    value = bar_time.time()
+    if clock_time(8, 0) <= value <= clock_time(8, 49, 59):
+        return "NXT_PREMARKET"
+    if clock_time(9, 0) <= value <= clock_time(15, 19, 59):
+        return "KRX_REGULAR"
+    if clock_time(15, 40) <= value <= clock_time(20, 0):
+        return "NXT_AFTERMARKET"
+    return None
 
 
 def _contiguous_average(points, period: int):
@@ -92,7 +103,11 @@ def dashboard_payload(pool) -> dict:
         # timestamp is represented exactly once: a completed bar replaces the
         # in-progress value for COMPLETE, while SEC observations append only
         # their current target minute after prior completed bars.
-        values = [(at, value) for at, value in completed_values if at < timestamp]
+        session_id = _analysis_session_id(timestamp)
+        values = [
+            (at, value) for at, value in completed_values
+            if at < timestamp and _analysis_session_id(at) == session_id
+        ]
         values.append((timestamp, float(price)))
         return {
             "timestamp": timestamp,

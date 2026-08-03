@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 import unittest
 
-from scripts.realtime.run_multi_ma_analysis import _has_unexpected_data_gap, _previous_completed
+from scripts.realtime.run_multi_ma_analysis import _analysis_session_gap, _has_unexpected_data_gap, _previous_completed
 from src.analysis.feature.sma_feature import MinuteBar
 
 
@@ -31,3 +31,11 @@ class CompletedMinuteSelectionTest(unittest.TestCase):
         bar = lambda minute: MinuteBar(datetime(2026, 8, 3, 15, minute), *(Decimal("1"),) * 4)
         self.assertTrue(_has_unexpected_data_gap([bar(19), bar(26)]))
         self.assertFalse(_has_unexpected_data_gap([bar(18), bar(19)]))
+
+    def test_close_auction_and_pre_aftermarket_are_excluded_not_data_gaps(self):
+        bar = lambda hour, minute: MinuteBar(datetime(2026, 8, 3, hour, minute), *(Decimal("1"),) * 4)
+        self.assertTrue(_analysis_session_gap(datetime(2026, 8, 3, 15, 20)))
+        self.assertTrue(_analysis_session_gap(datetime(2026, 8, 3, 15, 30)))
+        self.assertTrue(_analysis_session_gap(datetime(2026, 8, 3, 15, 39)))
+        self.assertFalse(_has_unexpected_data_gap([bar(15, 19), bar(15, 40)]))
+        self.assertTrue(_has_unexpected_data_gap([bar(15, 40), bar(15, 42)]))

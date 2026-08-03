@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import unittest
 
-from scripts.dashboard.serve_multi_ma_dashboard import _contiguous_average
+from scripts.dashboard.serve_multi_ma_dashboard import _analysis_session_id, _contiguous_average
 
 
 class DashboardSeriesTest(unittest.TestCase):
@@ -16,3 +16,8 @@ class DashboardSeriesTest(unittest.TestCase):
         points = [(start + timedelta(minutes=offset), value) for offset, value in enumerate((1580000, 1581000, 1585000, 1587000, 1582000))]
         self.assertEqual(_contiguous_average(points, 3), 1584666.67)
         self.assertEqual(_contiguous_average(points, 5), 1583000.0)
+
+    def test_aftermarket_is_a_new_session(self):
+        self.assertEqual(_analysis_session_id(datetime(2026, 8, 3, 15, 19)), "KRX_REGULAR")
+        self.assertIsNone(_analysis_session_id(datetime(2026, 8, 3, 15, 30)))
+        self.assertEqual(_analysis_session_id(datetime(2026, 8, 3, 15, 40)), "NXT_AFTERMARKET")
