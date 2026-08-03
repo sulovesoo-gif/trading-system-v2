@@ -144,10 +144,10 @@ class MultiMaPerformanceRepository:
                  COALESCE(SUM(realized_profit_amount) FILTER (WHERE exit_type='SESSION_CLOSE'),0) close_profit,
                  MAX(realized_profit_amount) max_profit, MIN(realized_profit_amount) max_loss FROM closed)
         INSERT INTO analysis_multi_ma_summary
-        (trade_date,stock_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code,initial_capital,total_profit_amount,total_profit_rate,trade_count,win_count,loss_count,win_rate,signal_exit_count,session_close_exit_count,signal_exit_profit,session_close_exit_profit,max_profit,max_loss,calculated_at)
-        SELECT %s,%s,%s,%s,%s,%s,%s,%s,total_profit,total_profit/%s*100,trade_count,win_count,loss_count,
+        (trade_date,stock_code,market_code,trading_venue,strategy_code,observation_code,analysis_slot,ma_config_code,price_field_code,initial_capital,total_profit_amount,total_profit_rate,trade_count,win_count,loss_count,win_rate,signal_exit_count,session_close_exit_count,signal_exit_profit,session_close_exit_profit,max_profit,max_loss,calculated_at)
+        SELECT %s,%s,'KOSPI',%s,%s,%s,%s,%s,%s,%s,total_profit,total_profit/%s*100,trade_count,win_count,loss_count,
           CASE WHEN trade_count=0 THEN 0 ELSE win_count::numeric/trade_count*100 END,signal_count,close_count,signal_profit,close_profit,max_profit,max_loss,CURRENT_TIMESTAMP FROM aggregate
-        ON CONFLICT (trade_date,stock_code,trading_venue,strategy_code,observation_code,ma_config_code,price_field_code) DO UPDATE SET
+        ON CONFLICT (trade_date,stock_code,market_code,trading_venue,strategy_code,analysis_slot,ma_config_code,price_field_code) DO UPDATE SET
           initial_capital=EXCLUDED.initial_capital,total_profit_amount=EXCLUDED.total_profit_amount,total_profit_rate=EXCLUDED.total_profit_rate,
           trade_count=EXCLUDED.trade_count,win_count=EXCLUDED.win_count,loss_count=EXCLUDED.loss_count,win_rate=EXCLUDED.win_rate,
           signal_exit_count=EXCLUDED.signal_exit_count,session_close_exit_count=EXCLUDED.session_close_exit_count,
@@ -155,7 +155,11 @@ class MultiMaPerformanceRepository:
           max_profit=EXCLUDED.max_profit,max_loss=EXCLUDED.max_loss,calculated_at=CURRENT_TIMESTAMP"""
         with self.pool.connection() as conn:
             with conn.transaction(), conn.cursor() as cur:
-                cur.execute(sql, (*key.values(), *key.values(), initial_capital, initial_capital))
+                cur.execute(sql, (
+                    *key.values(), key.trade_date, key.stock_code, key.trading_venue,
+                    key.strategy_code, key.observation_code, key.observation_code,
+                    key.ma_config_code, key.price_field_code, initial_capital, initial_capital,
+                ))
 
     def period_summary(self, *, start_date, end_date, stock_code: str | None = None):
         params: list[object] = [start_date, end_date]
