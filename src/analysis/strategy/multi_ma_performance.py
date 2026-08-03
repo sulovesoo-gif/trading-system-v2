@@ -5,13 +5,17 @@ from decimal import Decimal
 
 @dataclass(frozen=True)
 class Leg:
-    direction: str; price: Decimal; weight: Decimal; signal_type: str
+    direction: str; price: Decimal; weight: Decimal; signal_type: str; quantity: int
+    @property
+    def notional_amount(self) -> Decimal:
+        return self.price * self.quantity
 @dataclass
 class Portfolio:
     capital: Decimal; direction: str = "FLAT"; legs: list[Leg] = field(default_factory=list); realized: Decimal = Decimal("0")
     def enter(self, direction, price, weight, signal_type):
-        self.direction = direction; self.legs.append(Leg(direction, price, weight, signal_type))
+        quantity = int((self.capital * weight) // price)
+        self.direction = direction; self.legs.append(Leg(direction, price, weight, signal_type, quantity))
     def close(self, price):
-        pnl = sum((price-leg.price if leg.direction == "LONG" else leg.price-price) * (self.capital*leg.weight/leg.price) for leg in self.legs)
+        pnl = sum((price-leg.price if leg.direction == "LONG" else leg.price-price) * leg.quantity for leg in self.legs)
         self.realized += pnl; closed = tuple(self.legs); self.legs.clear(); self.direction = "FLAT"; return pnl, closed
     def reset(self): self.direction="FLAT"; self.legs.clear()

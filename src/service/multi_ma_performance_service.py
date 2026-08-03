@@ -12,7 +12,7 @@ class PositionRuntime:
     applied: set[str] = field(default_factory=set)
 
 class MultiMaPerformanceService:
-    def __init__(self, repository, *, initial_capital: Decimal = Decimal("1000000")) -> None:
+    def __init__(self, repository, *, initial_capital: Decimal = Decimal("10000000")) -> None:
         self.repository=repository; self.initial_capital=initial_capital; self.runtime: dict[object, PositionRuntime]={}
 
     def _state(self,key):
@@ -59,14 +59,14 @@ class MultiMaPerformanceService:
         if state.portfolio.direction=="FLAT":
             state.trade_id,state.cycle_no=self.repository.create_trade(key,direction=direction,entry_time=signal_time,entry_price=price,entry_ratio=target,average_entry_price=price)
             state.portfolio.enter(direction,price,target,signal_no); state.applied={signal_no}
-            self.repository.add_trade_leg(trade_id=state.trade_id,signal_no=signal_no,signal_time=signal_time,entry_price=price,entry_ratio=target,notional_amount=self.initial_capital*target)
+            self.repository.add_trade_leg(trade_id=state.trade_id,signal_no=signal_no,signal_time=signal_time,entry_price=price,entry_ratio=target,notional_amount=state.portfolio.legs[-1].notional_amount)
         elif key.strategy_code=="ACCUMULATED" and signal_no not in state.applied:
             held = sum((leg.weight for leg in state.portfolio.legs), Decimal("0"))
             increment = min(Decimal("1") / Decimal("3"), max(Decimal("0"), Decimal("1") - held))
             if increment == 0:
                 return False
             state.portfolio.enter(direction,price,increment,signal_no); state.applied.add(signal_no)
-            self.repository.add_trade_leg(trade_id=state.trade_id,signal_no=signal_no,signal_time=signal_time,entry_price=price,entry_ratio=increment,notional_amount=self.initial_capital*increment)
+            self.repository.add_trade_leg(trade_id=state.trade_id,signal_no=signal_no,signal_time=signal_time,entry_price=price,entry_ratio=increment,notional_amount=state.portfolio.legs[-1].notional_amount)
         self._persist_state(key, state, signal_time)
         return True
 
