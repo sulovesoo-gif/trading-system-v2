@@ -37,9 +37,27 @@ from src.service.stock_minute_snapshot_service import SCHEDULED_SNAPSHOT_SECONDS
 
 
 def _previous_completed(rows, now):
+    """Return only the API row whose raw timestamp is the expected prior minute.
+
+    A rolling KIS response can temporarily expose a flat, zero-volume placeholder
+    for the just-finished minute.  It is not an official completed bar and must
+    never be frozen into ``raw_stock_minute`` by the insert-only RAW policy.
+    """
     target = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
     candidates = [row for row in rows if row.get("bar_time") == target]
-    return candidates[0] if len(candidates) == 1 else None
+    if len(candidates) != 1:
+        print(f"MISSING_COMPLETED_BAR expected={target.isoformat()} reason=RAW_TIMESTAMP_NOT_FOUND")
+        return None
+    row = candidates[0]
+    open_price, high_price = row.get("open_price"), row.get("high_price")
+    low_price, close_price, volume = row.get("low_price"), row.get("close_price"), row.get("volume")
+    if None in (open_price, high_price, low_price, close_price, volume) or high_price < max(open_price, close_price) or low_price > min(open_price, close_price) or volume < 0:
+        print(f"MISSING_COMPLETED_BAR expected={target.isoformat()} reason=INVALID_OHLCV")
+        return None
+    if volume == 0 and open_price == high_price == low_price == close_price:
+        print(f"MISSING_COMPLETED_BAR expected={target.isoformat()} reason=PRELIMINARY_ZERO_VOLUME_PLACEHOLDER")
+        return None
+    return row
 
 
 def _snapshot_bar(row) -> MinuteBar:
