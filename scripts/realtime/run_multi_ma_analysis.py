@@ -46,6 +46,11 @@ def _snapshot_bar(row) -> MinuteBar:
     return MinuteBar(row["target_bar_time"], row["open_price"], row["high_price"], row["low_price"], row["close_price"])
 
 
+def _analysis_session_gap(bar_time: datetime) -> bool:
+    """Do not synthesize or analyze the documented 08:50–08:59 venue gap."""
+    return clock_time(8, 50) <= bar_time.time() <= clock_time(8, 59, 59)
+
+
 class Runtime:
     def __init__(self, pool, *, restore_feature_state: bool = True) -> None:
         self.pool = pool
@@ -80,6 +85,9 @@ class Runtime:
 
     def _analyze(self, stock_code: str, venue: str, slot: str, before_time, snapshot_bar) -> None:
         if not self.codes.switch_enabled("GLOBAL_ANALYSIS_YN"):
+            return
+        candidate_time = snapshot_bar.bar_time if snapshot_bar is not None else before_time
+        if _analysis_session_gap(candidate_time):
             return
         config = self.codes.active_ma_config("MA_3_5_10")
         # One extra completed bar is required to calculate the current
