@@ -113,6 +113,8 @@ class TimescaleRawRepositoryIntegrationTest(unittest.TestCase):
             row["snapshot_time"] = timestamp
         if "target_bar_time" in row:
             row["target_bar_time"] = timestamp
+        if "snapshot_second" in row:
+            row["snapshot_second"] = 5
         if "bar_time" in row:
             row["bar_time"] = timestamp
         if "trade_date" in row:
