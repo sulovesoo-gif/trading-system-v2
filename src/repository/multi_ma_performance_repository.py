@@ -75,6 +75,12 @@ class MultiMaPerformanceRepository:
                 cur.execute(sql, key.values())
                 return cur.fetchone()
 
+    def get_trade_legs(self, trade_id: int):
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT signal_no,entry_price,entry_ratio FROM analysis_multi_ma_trade_leg WHERE trade_id=%s ORDER BY signal_time", (trade_id,))
+                return cur.fetchall()
+
     def create_trade(self, key: MultiMaPerformanceKey, *, direction: str, entry_time, entry_price: Decimal, entry_ratio: Decimal, average_entry_price: Decimal):
         """설정 축 advisory lock 안에서 다음 cycle_no를 배정한다."""
         lock_key = "|".join(map(str, key.values()))

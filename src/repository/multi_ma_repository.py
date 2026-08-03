@@ -52,6 +52,19 @@ class MultiMaRepository:
                                       feature.ma_short, feature.ma_mid, feature.ma_long, feature.short_slope, signal.reason))
                     return cur.fetchone() is not None
 
+    def load_feature_state(self, key: MultiMaStateKey):
+        """Return the last feature for one observation slot after a restart."""
+        sql = (
+            "SELECT last_processed_time, ma_short, ma_mid, ma_long, short_slope "
+            "FROM analysis_multi_ma_state WHERE stock_code=%s AND market_code=%s "
+            "AND trading_venue=%s AND strategy_code=%s AND analysis_slot=%s "
+            "AND ma_config_code=%s AND price_field_code=%s"
+        )
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(key.__dict__.values()))
+                return cur.fetchone()
+
     @staticmethod
     def new_cycle_id():
         return uuid4()

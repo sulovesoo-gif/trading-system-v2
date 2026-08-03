@@ -35,6 +35,7 @@ class MultiMaAnalysisService:
         in_progress_bar: MinuteBar | None,
         ma_config,
         states: dict[str, StrategyState],
+        previous_feature: MultiMaFeature | None = None,
     ) -> AnalysisResult | None:
         bars = list(completed_bars)
         if ma_config.include_in_progress and in_progress_bar is not None:
@@ -48,10 +49,12 @@ class MultiMaAnalysisService:
             long_period=ma_config.long_period,
             price_field=ma_config.price_field,
         )
-        if len(features) < 2:
+        if not features:
             return None
-        previous, current = features[-2], features[-1]
-        signals = tuple(detect_signals(previous, current))
+        current = features[-1]
+        # Each observation (SEC_05…COMPLETE) must compare with its own
+        # preceding observation, never with an in-call completed-bar feature.
+        signals = tuple(detect_signals(previous_feature, current))
         grouped = {kind: [item for item in signals if item.signal_type == kind] for kind in ("SIGNAL_1", "SIGNAL_2", "SIGNAL_3")}
         actions = {
             STRATEGY_SIGNAL_1: tuple(apply_single_signal(states[STRATEGY_SIGNAL_1], item, accepted_type="SIGNAL_1") for item in grouped["SIGNAL_1"]),

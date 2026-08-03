@@ -10,6 +10,7 @@ import os
 import sys
 import time
 from datetime import datetime, time as clock_time, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 
 from src.analysis.feature.sma_feature import MinuteBar
+from src.analysis.feature.multi_ma_feature import MultiMaFeature
 from src.collector.raw.converters import kst_now
 from src.collector.raw.domestic_stock.stock_minute_collector import StockMinuteCollector
 from src.collector.raw.kis_client import KISClient
@@ -54,7 +56,8 @@ class Runtime:
         self.analysis = MultiMaAnalysisService()
         self.multi_repository = MultiMaRepository(pool)
         self.performance = MultiMaPerformanceService(MultiMaPerformanceRepository(pool))
-        self.states: dict[tuple[str, str], dict] = {}
+        self.states: dict[tuple[str, str, str, str, str], dict] = {}
+        self.previous_features: dict[tuple[str, str, str, str, str], MultiMaFeature] = {}
 
     def cycle(self, now: datetime) -> None:
         if not self.codes.switch_enabled("GLOBAL_COLLECT_YN"):
@@ -78,12 +81,30 @@ class Runtime:
         if not self.codes.switch_enabled("GLOBAL_ANALYSIS_YN"):
             return
         config = self.codes.active_ma_config("MA_3_5_10")
-        bars = self.minutes.completed_bars(stock_code=stock_code, before_time=before_time, limit=config.long_period, trading_venue=venue)
-        state_key = (stock_code, slot)
+        # One extra completed bar is required to calculate the current
+        # short-MA slope.  Signal comparison itself is against the prior
+        # feature of this exact observation slot (below).
+        bars = self.minutes.completed_bars(stock_code=stock_code, before_time=before_time, limit=config.long_period + 1, trading_venue=venue)
+        state_key = (stock_code, venue, slot, config.code, config.price_field)
         states = self.states.setdefault(state_key, new_slot_states())
-        result = self.analysis.analyze(completed_bars=bars, in_progress_bar=snapshot_bar, ma_config=config, states=states)
+        previous = self.previous_features.get(state_key)
+        if previous is None:
+            restore_key = MultiMaStateKey(stock_code, "KOSPI", venue, STRATEGY_CODES[0], slot, config.code, config.price_field)
+            restored = self.multi_repository.load_feature_state(restore_key)
+            if restored is not None:
+                processed_at, ma_short, ma_mid, ma_long, short_slope = restored
+                previous = MultiMaFeature(
+                    MinuteBar(processed_at, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+                    Decimal("0"), Decimal(ma_short), Decimal(ma_mid), Decimal(ma_long),
+                    None if short_slope is None else Decimal(short_slope),
+                )
+        result = self.analysis.analyze(
+            completed_bars=bars, in_progress_bar=snapshot_bar, ma_config=config,
+            states=states, previous_feature=previous,
+        )
         if result is None:
             return
+        self.previous_features[state_key] = result.feature
         accepted = {
             "SIGNAL_1_ONLY": {"SIGNAL_1"}, "SIGNAL_2_ONLY": {"SIGNAL_2"},
             "SIGNAL_3_ONLY": {"SIGNAL_3"}, "ACCUMULATED": {"SIGNAL_1", "SIGNAL_2", "SIGNAL_3"},

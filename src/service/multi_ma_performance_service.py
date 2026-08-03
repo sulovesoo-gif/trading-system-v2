@@ -16,7 +16,23 @@ class MultiMaPerformanceService:
         self.repository=repository; self.initial_capital=initial_capital; self.runtime: dict[object, PositionRuntime]={}
 
     def _state(self,key):
-        return self.runtime.setdefault(key, PositionRuntime(portfolio=Portfolio(self.initial_capital)))
+        state = self.runtime.get(key)
+        if state is not None:
+            return state
+        state = PositionRuntime(portfolio=Portfolio(self.initial_capital))
+        # Restore an already-open cycle after a service restart.  This keeps
+        # the next same-observation signal from creating a second OPEN trade.
+        if hasattr(self.repository, "get_open_trade"):
+            open_trade = self.repository.get_open_trade(key)
+            if open_trade is not None:
+                trade_id, cycle_no, direction, _time, _price, _ratio, _average = open_trade
+                state.trade_id, state.cycle_no = trade_id, cycle_no
+                if hasattr(self.repository, "get_trade_legs"):
+                    for signal_no, price, ratio in self.repository.get_trade_legs(trade_id):
+                        state.portfolio.enter(direction, Decimal(price), Decimal(ratio), signal_no)
+                        state.applied.add(signal_no)
+        self.runtime[key] = state
+        return state
 
     def process_signal(self,key,*,signal_no,direction,signal_time,price,reason):
         """한 신호를 한 번만 반영하고 필요 시 반대 포지션을 SIGNAL 청산한다."""
