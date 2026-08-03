@@ -60,14 +60,14 @@ class MultiMaPerformanceRepository:
 
     def save_signal(self, key: MultiMaPerformanceKey, *, signal_time, signal_no: str, direction: str, price: Decimal, reason: str) -> bool:
         sql = """INSERT INTO analysis_multi_ma_signal
-        (trade_date,stock_code,market_code,trading_venue,strategy_code,observation_code,analysis_slot,ma_config_code,price_field_code,signal_time,signal_no,direction,signal_price,reason)
-        VALUES (%s,%s,'KOSPI',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        (trade_date,stock_code,market_code,trading_venue,strategy_code,observation_code,analysis_slot,ma_config_code,price_field_code,signal_time,signal_no,signal_type,direction,signal_price,reason)
+        VALUES (%s,%s,'KOSPI',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT DO NOTHING RETURNING signal_id"""
         with self.pool.connection() as conn:
             with conn.transaction(), conn.cursor() as cur:
                 cur.execute(sql, (
                     *key.values(), key.observation_code, signal_time,
-                    signal_no, direction, price, reason,
+                    signal_no, signal_no, direction, price, reason,
                 ))
                 return cur.fetchone() is not None
 
