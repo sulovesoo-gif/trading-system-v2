@@ -78,9 +78,22 @@ def dashboard_payload(pool) -> dict:
         average = lambda period: None if len(values) < period else round(sum(values[-period:]) / period, 2)
         return {"timestamp": timestamp, "price": price, "ma_short": average(3), "ma_mid": average(5), "ma_long": average(10)}
     series = {"COMPLETE": [point(at, value) for at, value in completed_values]}
+    # The main chart intentionally has one shared official history.  Each
+    # observation may replace only the current, not-yet-completed minute.
+    current_observations: dict[str, dict] = {}
+    latest_completed_time = completed_values[-1][0] if completed_values else None
     for second in range(5, 60, 5):
         code = f"SEC_{second:02d}"
         series[code] = [point(row[0], row[2]) for row in snapshot_series if row[0].second == second]
+        candidates = [row for row in snapshot_series if row[0].second == second
+                      and (latest_completed_time is None or row[1] > latest_completed_time)]
+        if candidates:
+            snapshot_time, target_bar_time, price = candidates[-1]
+            current_observations[code] = {
+                "snapshot_time": snapshot_time,
+                "target_bar_time": target_bar_time,
+                "price": price,
+            }
     in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
     status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
@@ -90,7 +103,9 @@ def dashboard_payload(pool) -> dict:
         "order_enabled": False,
         "latest_completed": None if completed is None else dict(zip(("bar_time","stock_code","trading_venue","close_price"), completed)),
         "latest_snapshot": None if snapshot is None else dict(zip(("snapshot_time","target_bar_time","stock_code","trading_venue","close_price"), snapshot)),
-        "completed_count_today": len(completed_series), "snapshot_count_today": len(snapshot_series), "series": series,
+        "completed_count_today": len(completed_series), "snapshot_count_today": len(snapshot_series),
+        "main_completed_series": series["COMPLETE"], "current_observations": current_observations,
+        "series": series,
         "states": columns(("strategy_code","observation_code","position_direction","position_weight","last_processed_time"), states),
         "summaries": columns(("strategy_code","observation_code","total_profit_amount","total_profit_rate","trade_count","win_count","loss_count","win_rate","signal_exit_count","session_close_exit_count","signal_exit_profit","session_close_exit_profit","max_profit","max_loss"), summaries),
         "signals": columns(("signal_time","signal_no","direction","signal_price","observation_code","strategy_code","reason"), signals),
