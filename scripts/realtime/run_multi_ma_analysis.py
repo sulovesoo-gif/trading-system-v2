@@ -92,6 +92,9 @@ class Runtime:
         self.performance = MultiMaPerformanceService(MultiMaPerformanceRepository(pool))
         self.states: dict[tuple[str, str, str, str, str], dict] = {}
         self.previous_features: dict[tuple[str, str, str, str, str], MultiMaFeature] = {}
+        # A gap invalidates comparison with a feature persisted before that
+        # gap.  The first fully warmed-up feature after it is a new baseline.
+        self.gap_reset_pending: set[tuple[str, str, str, str, str]] = set()
         self.restore_feature_state = restore_feature_state
 
     def cycle(self, now: datetime) -> None:
@@ -123,28 +126,33 @@ class Runtime:
         # short-MA slope.  Signal comparison itself is against the prior
         # feature of this exact observation slot (below).
         bars = self.minutes.completed_bars(stock_code=stock_code, before_time=before_time, limit=config.long_period + 1, trading_venue=venue)
+        state_key = (stock_code, venue, slot, config.code, config.price_field)
         if _has_unexpected_data_gap(bars, snapshot_bar):
             print(f"DATA_GAP stock={stock_code} venue={venue} slot={slot} before={before_time}")
+            self.previous_features.pop(state_key, None)
+            self.gap_reset_pending.add(state_key)
             return
-        state_key = (stock_code, venue, slot, config.code, config.price_field)
         states = self.states.setdefault(state_key, new_slot_states())
-        previous = self.previous_features.get(state_key)
+        after_gap = state_key in self.gap_reset_pending
+        previous = None if after_gap else self.previous_features.get(state_key)
         if previous is None and self.restore_feature_state:
-            restore_key = MultiMaStateKey(stock_code, "KOSPI", venue, STRATEGY_CODES[0], slot, config.code, config.price_field)
-            restored = self.multi_repository.load_feature_state(restore_key)
-            if restored is not None:
-                processed_at, ma_short, ma_mid, ma_long, short_slope = restored
-                previous = MultiMaFeature(
-                    MinuteBar(processed_at, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
-                    Decimal("0"), Decimal(ma_short), Decimal(ma_mid), Decimal(ma_long),
-                    None if short_slope is None else Decimal(short_slope),
-                )
+            if not after_gap:
+                restore_key = MultiMaStateKey(stock_code, "KOSPI", venue, STRATEGY_CODES[0], slot, config.code, config.price_field)
+                restored = self.multi_repository.load_feature_state(restore_key)
+                if restored is not None:
+                    processed_at, ma_short, ma_mid, ma_long, short_slope = restored
+                    previous = MultiMaFeature(
+                        MinuteBar(processed_at, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+                        Decimal("0"), Decimal(ma_short), Decimal(ma_mid), Decimal(ma_long),
+                        None if short_slope is None else Decimal(short_slope),
+                    )
         result = self.analysis.analyze(
             completed_bars=bars, in_progress_bar=snapshot_bar, ma_config=config,
             states=states, previous_feature=previous,
         )
         if result is None:
             return
+        self.gap_reset_pending.discard(state_key)
         self.previous_features[state_key] = result.feature
         accepted = {
             "SIGNAL_1_ONLY": {"SIGNAL_1"}, "SIGNAL_2_ONLY": {"SIGNAL_2"},

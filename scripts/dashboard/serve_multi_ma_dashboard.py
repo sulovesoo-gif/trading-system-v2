@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +24,21 @@ KST = ZoneInfo("Asia/Seoul")
 
 def _json_default(value):
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _contiguous_average(points, period: int):
+    """Average only an exact, consecutive one-minute window.
+
+    Missing official bars must never be silently skipped to manufacture an MA.
+    This applies to the dashboard JSON as well as the runtime analyser.
+    """
+    if len(points) < period:
+        return None
+    window = points[-period:]
+    for previous, current in zip(window, window[1:]):
+        if current[0] - previous[0] != timedelta(minutes=1):
+            return None
+    return round(sum(value for _time, value in window) / period, 2)
 
 
 def dashboard_payload(pool) -> dict:
@@ -74,9 +89,18 @@ def dashboard_payload(pool) -> dict:
     now = datetime.now(KST)
     completed_values = [(row[0], float(row[4])) for row in completed_series]
     def point(timestamp, price):
-        values = [value for at, value in completed_values if at < timestamp] + [float(price)]
-        average = lambda period: None if len(values) < period else round(sum(values[-period:]) / period, 2)
-        return {"timestamp": timestamp, "price": price, "ma_short": average(3), "ma_mid": average(5), "ma_long": average(10)}
+        # timestamp is represented exactly once: a completed bar replaces the
+        # in-progress value for COMPLETE, while SEC observations append only
+        # their current target minute after prior completed bars.
+        values = [(at, value) for at, value in completed_values if at < timestamp]
+        values.append((timestamp, float(price)))
+        return {
+            "timestamp": timestamp,
+            "price": price,
+            "ma_short": _contiguous_average(values, 3),
+            "ma_mid": _contiguous_average(values, 5),
+            "ma_long": _contiguous_average(values, 10),
+        }
     series = {"COMPLETE": [point(at, value) for at, value in completed_values]}
     # The main chart intentionally has one shared official history.  Each
     # observation may replace only the current, not-yet-completed minute.
