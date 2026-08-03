@@ -24,3 +24,26 @@ class DashboardOptionalSeriesContractTest(unittest.TestCase):
         self.assertIn("Array.isArray(data[k])", html)
         self.assertIn("programMinuteSeries.length", html)
         self.assertIn("executionStrengthSeries.length", html)
+
+    def test_client_renders_optional_series_contract_when_fields_are_missing(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is unavailable")
+        html = ROOT / "reports" / "multi-ma" / "index.html"
+        # Execute the real normalizer in the script's lexical scope.  This
+        # protects the pre-market/API-error case where either optional array
+        # or its status field is absent from latest.json.
+        check = r"""
+const fs=require('fs'); const h=fs.readFileSync(process.argv[1], 'utf8');
+let s=[...h.matchAll(/<script>([\s\S]*?)<\/script>/g)][0][1];
+s=s.replace('init();poll();', `
+  for (const payload of [{}, {programMinuteSeries:[]},
+    {executionStrengthSeries:[]}, {programMinuteSeries:[],executionStrengthSeries:[]},
+    {programMinuteSeries:null,executionStrengthSeries:null,programStatus:null,executionStrengthStatus:null}]) {
+    normalize(payload);
+    if (!Array.isArray(data.programMinuteSeries) || !Array.isArray(data.executionStrengthSeries)) throw new Error('normalization failed');
+    if (!data.programStatus || !data.executionStrengthStatus) throw new Error('status default failed');
+  }`);
+new Function(s)();
+"""
+        subprocess.run([node, "-e", check, str(html)], check=True)
