@@ -16,6 +16,8 @@ ROOT = Path(__file__).parents[2]
 def integration_ready() -> tuple[bool, str]:
     if os.getenv("DB_INTEGRATION_TEST") != "1":
         return False, "DB_INTEGRATION_TEST=1 is required; destructive DDL is disabled."
+    if os.getenv("DB_RAW_DDL_INTEGRATION_TEST") != "1":
+        return False, "DB_RAW_DDL_INTEGRATION_TEST=1 is required because this test recreates RAW tables."
     required = ("DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD")
     missing = [name for name in required if not os.getenv(name)]
     if missing:
