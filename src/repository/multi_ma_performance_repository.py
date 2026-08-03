@@ -66,7 +66,10 @@ class MultiMaPerformanceRepository:
         with self.pool.connection() as conn:
             with conn.transaction(), conn.cursor() as cur:
                 cur.execute(sql, (
-                    *key.values(), key.observation_code, signal_time,
+                    key.trade_date, key.stock_code, key.trading_venue,
+                    key.strategy_code, key.observation_code,
+                    key.observation_code, key.ma_config_code,
+                    key.price_field_code, signal_time,
                     signal_no, signal_no, direction, price, reason,
                 ))
                 return cur.fetchone() is not None
