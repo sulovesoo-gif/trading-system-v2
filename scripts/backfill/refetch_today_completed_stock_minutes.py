@@ -27,7 +27,7 @@ from src.service.raw_ingestion_service import RawIngestionService
 
 
 def parse_kst(value: str) -> datetime:
-    return combine_kst_datetime(value[:10].replace("-", ""), value[11:].replace(":", ""))
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M")
 
 
 def main() -> int:
