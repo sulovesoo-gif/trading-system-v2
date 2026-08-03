@@ -80,15 +80,16 @@ def dashboard_payload(pool) -> dict:
         WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND trade_date=CURRENT_DATE
         ORDER BY total_profit_rate DESC""")
         summaries = cur.fetchall()
-        cur.execute("""SELECT signal_time,signal_no,direction,signal_price,observation_code,strategy_code,reason
+        cur.execute("""SELECT DISTINCT ON (strategy_code,observation_code,signal_time,signal_no,direction)
+        signal_id,signal_time,signal_no,direction,signal_price,observation_code,strategy_code,reason
         FROM analysis_multi_ma_signal WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND trade_date=CURRENT_DATE
-        ORDER BY signal_time""")
+        ORDER BY strategy_code,observation_code,signal_time,signal_no,direction,signal_id""")
         signals = cur.fetchall()
         cur.execute("""SELECT trade_id,cycle_no,entry_time,direction,entry_price,entry_ratio,average_entry_price,
         exit_time,exit_price,exit_type,exit_reason,realized_profit_amount,realized_profit_rate,
         strategy_code,observation_code,status
         FROM analysis_multi_ma_trade WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND trade_date=CURRENT_DATE
-        ORDER BY entry_time DESC LIMIT 100""")
+        ORDER BY entry_time""")
         trades = cur.fetchall()
         cur.execute("""SELECT leg.trade_id,leg.signal_no,leg.signal_time,leg.entry_price,leg.entry_ratio,
         leg.notional_amount FROM analysis_multi_ma_trade_leg leg
@@ -133,7 +134,7 @@ def dashboard_payload(pool) -> dict:
                 "target_bar_time": target_bar_time,
                 "price": price,
             }
-    signal_rows = columns(("signal_time", "signal_no", "direction", "signal_price", "observation_code", "strategy_code", "reason"), signals)
+    signal_rows = columns(("signal_id", "signal_time", "signal_no", "direction", "signal_price", "observation_code", "strategy_code", "reason"), signals)
     by_minute: dict[str, dict] = {}
     for bar_time, open_price, high_price, low_price, close_price, volume in completed_series:
         feature = point(bar_time, close_price)
@@ -167,10 +168,18 @@ def dashboard_payload(pool) -> dict:
                 **detail["official"],
             }
         for code, observation in detail["observations"].items():
-            observation["canonical_signals"] = [
+            matched = [
                 signal for signal in signal_rows
                 if signal["observation_code"] == code and signal["signal_time"] == detail["bar_time"]
             ]
+            # ACCUMULATED stores the same canonical event for its own
+            # independent strategy.  Detail display is signal-type oriented,
+            # so do not render the same event twice merely because two
+            # strategies consumed it.
+            unique: dict[tuple, dict] = {}
+            for signal in matched:
+                unique.setdefault((signal["signal_time"], signal["signal_no"], signal["direction"]), signal)
+            observation["canonical_signals"] = list(unique.values())
     in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
     status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
