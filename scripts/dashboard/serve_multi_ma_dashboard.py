@@ -37,10 +37,10 @@ def dashboard_payload(pool) -> dict:
         WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND collect_cycle='5SEC'
         ORDER BY snapshot_time DESC LIMIT 1""")
         snapshot = cur.fetchone()
-        cur.execute("""SELECT bar_time,close_price FROM raw_stock_minute WHERE stock_code='000660'
+        cur.execute("""SELECT bar_time,open_price,high_price,low_price,close_price,volume FROM raw_stock_minute WHERE stock_code='000660'
         AND trading_venue='INTEGRATED' AND collect_cycle='1MIN' AND bar_time::date=CURRENT_DATE ORDER BY bar_time""")
         completed_series = cur.fetchall()
-        cur.execute("""SELECT snapshot_time,target_bar_time,close_price FROM raw_stock_minute_snapshot WHERE stock_code='000660'
+        cur.execute("""SELECT snapshot_time,target_bar_time,open_price,high_price,low_price,close_price,volume FROM raw_stock_minute_snapshot WHERE stock_code='000660'
         AND trading_venue='INTEGRATED' AND collect_cycle='5SEC' AND snapshot_time::date=CURRENT_DATE ORDER BY snapshot_time""")
         snapshot_series = cur.fetchall()
         cur.execute("""SELECT strategy_code,observation_code,position_direction,position_weight,last_processed_time
@@ -56,7 +56,7 @@ def dashboard_payload(pool) -> dict:
         summaries = cur.fetchall()
         cur.execute("""SELECT signal_time,signal_no,direction,signal_price,observation_code,strategy_code,reason
         FROM analysis_multi_ma_signal WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND trade_date=CURRENT_DATE
-        ORDER BY signal_time DESC LIMIT 100""")
+        ORDER BY signal_time""")
         signals = cur.fetchall()
         cur.execute("""SELECT trade_id,cycle_no,entry_time,direction,entry_price,entry_ratio,average_entry_price,
         exit_time,exit_price,exit_type,exit_reason,realized_profit_amount,realized_profit_rate,
@@ -72,7 +72,7 @@ def dashboard_payload(pool) -> dict:
         legs = cur.fetchall()
     columns = lambda names, rows: [dict(zip(names, row)) for row in rows]
     now = datetime.now(KST)
-    completed_values = [(row[0], float(row[1])) for row in completed_series]
+    completed_values = [(row[0], float(row[4])) for row in completed_series]
     def point(timestamp, price):
         values = [value for at, value in completed_values if at < timestamp] + [float(price)]
         average = lambda period: None if len(values) < period else round(sum(values[-period:]) / period, 2)
@@ -84,16 +84,54 @@ def dashboard_payload(pool) -> dict:
     latest_completed_time = completed_values[-1][0] if completed_values else None
     for second in range(5, 60, 5):
         code = f"SEC_{second:02d}"
-        series[code] = [point(row[0], row[2]) for row in snapshot_series if row[0].second == second]
+        series[code] = [point(row[1], row[5]) for row in snapshot_series if row[0].second == second]
         candidates = [row for row in snapshot_series if row[0].second == second
                       and (latest_completed_time is None or row[1] > latest_completed_time)]
         if candidates:
-            snapshot_time, target_bar_time, price = candidates[-1]
+            snapshot_time, target_bar_time, _open, _high, _low, price, _volume = candidates[-1]
             current_observations[code] = {
                 "snapshot_time": snapshot_time,
                 "target_bar_time": target_bar_time,
                 "price": price,
             }
+    signal_rows = columns(("signal_time", "signal_no", "direction", "signal_price", "observation_code", "strategy_code", "reason"), signals)
+    by_minute: dict[str, dict] = {}
+    for bar_time, open_price, high_price, low_price, close_price, volume in completed_series:
+        feature = point(bar_time, close_price)
+        by_minute[bar_time.isoformat()] = {
+            "bar_time": bar_time,
+            "official": {
+                "open_price": open_price, "high_price": high_price,
+                "low_price": low_price, "close_price": close_price,
+                "volume": volume, **feature,
+            },
+            "observations": {},
+        }
+    for snapshot_time, target_bar_time, open_price, high_price, low_price, close_price, volume in snapshot_series:
+        second = snapshot_time.second
+        if second not in range(5, 60, 5):
+            continue
+        detail = by_minute.setdefault(target_bar_time.isoformat(), {
+            "bar_time": target_bar_time, "official": None, "observations": {},
+        })
+        code = f"SEC_{second:02d}"
+        detail["observations"][code] = {
+            "observation_time": snapshot_time,
+            "open_price": open_price, "high_price": high_price,
+            "low_price": low_price, "close_price": close_price,
+            "volume": volume, **point(target_bar_time, close_price),
+        }
+    for detail in by_minute.values():
+        if detail["official"] is not None:
+            detail["observations"]["COMPLETE"] = {
+                "observation_time": detail["bar_time"],
+                **detail["official"],
+            }
+        for code, observation in detail["observations"].items():
+            observation["canonical_signals"] = [
+                signal for signal in signal_rows
+                if signal["observation_code"] == code and signal["signal_time"] == detail["bar_time"]
+            ]
     in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
     status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
@@ -105,10 +143,10 @@ def dashboard_payload(pool) -> dict:
         "latest_snapshot": None if snapshot is None else dict(zip(("snapshot_time","target_bar_time","stock_code","trading_venue","close_price"), snapshot)),
         "completed_count_today": len(completed_series), "snapshot_count_today": len(snapshot_series),
         "main_completed_series": series["COMPLETE"], "current_observations": current_observations,
-        "series": series,
+        "series": series, "minute_details": list(by_minute.values()),
         "states": columns(("strategy_code","observation_code","position_direction","position_weight","last_processed_time"), states),
         "summaries": columns(("strategy_code","observation_code","total_profit_amount","total_profit_rate","trade_count","win_count","loss_count","win_rate","signal_exit_count","session_close_exit_count","signal_exit_profit","session_close_exit_profit","max_profit","max_loss"), summaries),
-        "signals": columns(("signal_time","signal_no","direction","signal_price","observation_code","strategy_code","reason"), signals),
+        "signals": signal_rows,
         "trades": columns(("trade_id","cycle_no","entry_time","direction","entry_price","entry_ratio","average_entry_price","exit_time","exit_price","exit_type","exit_reason","realized_profit_amount","realized_profit_rate","strategy_code","observation_code","status"), trades),
         "trade_legs": columns(("trade_id","signal_no","signal_time","entry_price","entry_ratio","notional_amount"), legs),
     }
