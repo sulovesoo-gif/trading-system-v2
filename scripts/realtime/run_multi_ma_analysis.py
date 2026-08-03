@@ -84,7 +84,9 @@ def _analysis_session_gap(bar_time: datetime) -> bool:
 def _has_unexpected_data_gap(bars, snapshot_bar=None) -> bool:
     series = list(bars) + ([] if snapshot_bar is None else [snapshot_bar])
     for previous, current in zip(series, series[1:]):
-        if _analysis_session_id(previous.bar_time) != _analysis_session_id(current.bar_time):
+        previous_session = _analysis_session_id(previous.bar_time)
+        current_session = _analysis_session_id(current.bar_time)
+        if previous_session is not None and current_session is not None and previous_session != current_session:
             # Session transitions are explicit reset boundaries, not errors.
             continue
         if current.bar_time - previous.bar_time <= timedelta(minutes=1):
