@@ -111,6 +111,8 @@ class TimescaleRawRepositoryIntegrationTest(unittest.TestCase):
             row["trading_venue"] = "KRX"
         if "snapshot_time" in row:
             row["snapshot_time"] = timestamp
+        if "target_bar_time" in row:
+            row["target_bar_time"] = timestamp
         if "bar_time" in row:
             row["bar_time"] = timestamp
         if "trade_date" in row:
