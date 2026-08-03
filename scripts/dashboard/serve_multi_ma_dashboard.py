@@ -209,6 +209,8 @@ def dashboard_payload(pool) -> dict:
             for signal in matched:
                 unique.setdefault((signal["signal_time"], signal["signal_no"], signal["direction"]), signal)
             observation["canonical_signals"] = list(unique.values())
+        program = next((row for row in program_rows if row["minute_time"] == detail["bar_time"]), None)
+        detail["program"] = program or {"status": "DATA_MISSING"}
     in_market = now.weekday() < 5 and now.time().strftime("%H:%M") >= "08:00" and now.time().strftime("%H:%M") <= "20:05"
     status = "DATA_MISSING" if in_market and (completed is None or snapshot is None) else ("OPEN" if in_market else "CLOSED")
     return {
