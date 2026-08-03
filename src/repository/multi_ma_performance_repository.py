@@ -150,14 +150,21 @@ class MultiMaPerformanceRepository:
         (trade_date,stock_code,market_code,trading_venue,strategy_code,observation_code,analysis_slot,ma_config_code,price_field_code,initial_capital,total_profit_amount,total_profit_rate,trade_count,win_count,loss_count,win_rate,signal_exit_count,session_close_exit_count,signal_exit_profit,session_close_exit_profit,max_profit,max_loss,calculated_at)
         SELECT %s,%s,'KOSPI',%s,%s,%s,%s,%s,%s,%s,total_profit,total_profit/%s*100,trade_count,win_count,loss_count,
           CASE WHEN trade_count=0 THEN 0 ELSE win_count::numeric/trade_count*100 END,signal_count,close_count,signal_profit,close_profit,max_profit,max_loss,CURRENT_TIMESTAMP FROM aggregate
-        ON CONFLICT (trade_date,stock_code,market_code,trading_venue,strategy_code,analysis_slot,ma_config_code,price_field_code) DO UPDATE SET
-          initial_capital=EXCLUDED.initial_capital,total_profit_amount=EXCLUDED.total_profit_amount,total_profit_rate=EXCLUDED.total_profit_rate,
-          trade_count=EXCLUDED.trade_count,win_count=EXCLUDED.win_count,loss_count=EXCLUDED.loss_count,win_rate=EXCLUDED.win_rate,
-          signal_exit_count=EXCLUDED.signal_exit_count,session_close_exit_count=EXCLUDED.session_close_exit_count,
-          signal_exit_profit=EXCLUDED.signal_exit_profit,session_close_exit_profit=EXCLUDED.session_close_exit_profit,
-          max_profit=EXCLUDED.max_profit,max_loss=EXCLUDED.max_loss,calculated_at=CURRENT_TIMESTAMP"""
+        """
         with self.pool.connection() as conn:
             with conn.transaction(), conn.cursor() as cur:
+                # Older deployments retain a legacy primary key while newer
+                # DDL adds an observation natural key.  Both identify the
+                # same derived summary here.  Rebuild is deterministic, so
+                # replacing that one row inside the transaction is safer
+                # than selecting only one of two unique arbiters.
+                cur.execute("""DELETE FROM analysis_multi_ma_summary
+                WHERE trade_date=%s AND stock_code=%s AND trading_venue=%s AND strategy_code=%s
+                  AND ma_config_code=%s AND price_field_code=%s
+                  AND (observation_code=%s OR (market_code='KOSPI' AND analysis_slot=%s))""", (
+                    key.trade_date, key.stock_code, key.trading_venue, key.strategy_code,
+                    key.ma_config_code, key.price_field_code, key.observation_code, key.observation_code,
+                ))
                 cur.execute(sql, (
                     *key.values(), key.trade_date, key.stock_code, key.trading_venue,
                     key.strategy_code, key.observation_code, key.observation_code,
