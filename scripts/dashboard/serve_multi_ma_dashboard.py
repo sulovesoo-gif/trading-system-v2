@@ -52,6 +52,27 @@ def _contiguous_average(points, period: int):
     return round(sum(value for _time, value in window) / period, 2)
 
 
+def build_program_minute_series(rows):
+    """Use the last raw snapshot in each minute; never manufacture a zero value."""
+    result, previous_time, previous_value, previous_session = [], None, None, None
+    for row in rows:
+        minute_time = row["minute_time"]
+        session = _analysis_session_id(minute_time)
+        if session is None:
+            continue
+        status, interval = "NORMAL", None
+        if session != previous_session:
+            status = "SESSION_START"
+        elif previous_time is None or minute_time - previous_time != timedelta(minutes=1):
+            status = "PROGRAM_DATA_GAP"
+        else:
+            interval = float(row["cumulative_net_buy_amount"]) - float(previous_value)
+        result.append({**row, "minute_time": minute_time, "source_snapshot_time": row["source_snapshot_time"],
+                       "minute_net_buy_amount": interval, "status": status})
+        previous_time, previous_value, previous_session = minute_time, row["cumulative_net_buy_amount"], session
+    return result
+
+
 def dashboard_payload(pool) -> dict:
     """대시보드에 필요한 읽기 전용 데이터만 반환한다. 실패는 호출자가 격리한다."""
     with pool.connection() as conn, conn.cursor() as cur:
@@ -69,6 +90,13 @@ def dashboard_payload(pool) -> dict:
         cur.execute("""SELECT snapshot_time,target_bar_time,open_price,high_price,low_price,close_price,volume FROM raw_stock_minute_snapshot WHERE stock_code='000660'
         AND trading_venue='INTEGRATED' AND collect_cycle='5SEC' AND snapshot_time::date=CURRENT_DATE ORDER BY snapshot_time""")
         snapshot_series = cur.fetchall()
+        cur.execute("""SELECT DISTINCT ON (date_trunc('minute', snapshot_time))
+        date_trunc('minute', snapshot_time) minute_time, snapshot_time, sell_amount, buy_amount,
+        net_buy_amount, net_buy_volume, net_buy_amount_change
+        FROM raw_program WHERE stock_code='000660' AND market_code='KOSPI' AND collect_cycle='1MIN'
+        AND snapshot_time::date=CURRENT_DATE
+        ORDER BY date_trunc('minute', snapshot_time), snapshot_time DESC""")
+        program_minutes = cur.fetchall()
         cur.execute("""SELECT strategy_code,observation_code,position_direction,position_weight,last_processed_time
         FROM analysis_multi_ma_state WHERE stock_code='000660' AND trading_venue='INTEGRATED'
         ORDER BY strategy_code,observation_code""")
@@ -100,6 +128,7 @@ def dashboard_payload(pool) -> dict:
     columns = lambda names, rows: [dict(zip(names, row)) for row in rows]
     now = datetime.now(KST)
     completed_values = [(row[0], float(row[4])) for row in completed_series]
+    program_rows = build_program_minute_series(columns(("minute_time", "source_snapshot_time", "cumulative_sell_amount", "cumulative_buy_amount", "cumulative_net_buy_amount", "cumulative_net_buy_volume", "api_net_buy_amount_change"), program_minutes))
     def point(timestamp, price):
         # timestamp is represented exactly once: a completed bar replaces the
         # in-progress value for COMPLETE, while SEC observations append only
@@ -191,6 +220,7 @@ def dashboard_payload(pool) -> dict:
         "latest_snapshot": None if snapshot is None else dict(zip(("snapshot_time","target_bar_time","stock_code","trading_venue","close_price"), snapshot)),
         "completed_count_today": len(completed_series), "snapshot_count_today": len(snapshot_series),
         "main_completed_series": series["COMPLETE"], "current_observations": current_observations,
+        "program_minutes": program_rows, "programMinuteSeries": program_rows,
         "series": series, "minute_details": list(by_minute.values()),
         "states": columns(("strategy_code","observation_code","position_direction","position_weight","last_processed_time"), states),
         "summaries": columns(("strategy_code","observation_code","total_profit_amount","total_profit_rate","trade_count","win_count","loss_count","win_rate","signal_exit_count","session_close_exit_count","signal_exit_profit","session_close_exit_profit","max_profit","max_loss"), summaries),

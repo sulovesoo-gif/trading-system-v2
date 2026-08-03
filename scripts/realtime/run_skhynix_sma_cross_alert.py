@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]; sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 from src.collector.raw.converters import kst_now
 from src.collector.raw.domestic_stock.stock_minute_collector import StockMinuteCollector
+from src.collector.raw.domestic_stock.program_collector import ProgramCollector
 from src.collector.raw.kis_client import KISClient
 from src.repository.common_code_repository import CommonCodeRepository
 from src.repository.database import DatabaseSettings, create_connection_pool
@@ -49,14 +50,25 @@ def main() -> int:
         alerts = None if args.dry_run else (NtfyAlertService(NtfySettings.from_environment()) if os.getenv("ALERT_NTFY_ENABLED", "false").lower() == "true" else EmailAlertService(EmailSettings.from_environment()))
         sma = SmaCrossSignalService(minute_repository=StockMinuteAnalysisRepository(pool), signal_repository=SmaCrossSignalRepository(pool), email_service=alerts)
         raw, codes, multi, collector = RawIngestionService(RawRepository(pool)), CommonCodeRepository(pool), MultiMaRuntime(pool), StockMinuteCollector(KISClient())
+        program_collector = ProgramCollector(KISClient())
         startup = kst_now(); last_sma = startup.replace(second=0, microsecond=0) - timedelta(minutes=1); last_dispatch = None; sma.restore_armed_state(stock_code="000660", before_time=startup)
         while True:
             now = kst_now()
             tick = now.replace(microsecond=0)
-            if not active(now) or now.second not in (*SCHEDULED_SNAPSHOT_SECONDS, 1) or tick == last_dispatch: time.sleep(.2); continue
+            schedule = codes.api_schedule("STOCK_PROGRAM_1MIN")
+            program_due = schedule.due(now)
+            if not active(now) or now.second not in (*SCHEDULED_SNAPSHOT_SECONDS, 1, schedule.execution_second if program_due else -1) or tick == last_dispatch: time.sleep(.2); continue
             last_dispatch = tick
             for stock in codes.enabled_minute_stocks():
                 venue = stock.default_market_code
+                if program_due and stock.analysis_yn and stock.program_collect_yn:
+                    try:
+                        raw.store(RawTable.PROGRAM, program_collector.collect(stock_code=stock.stock_code, market_code="KOSPI", trading_venue=venue))
+                    except Exception as error:
+                        print(f"KIS program collection failed: {type(error).__name__}")
+                    continue
+                if now.second not in (*SCHEDULED_SNAPSHOT_SECONDS, 1):
+                    continue
                 try:
                     rows = collector.collect(stock_code=stock.stock_code, market_code="KOSPI", trading_venue=venue, input_hour=now.strftime("%H%M%S"))
                 except Exception as error:

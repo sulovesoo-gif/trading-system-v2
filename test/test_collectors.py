@@ -56,13 +56,14 @@ class CollectorMappingTest(unittest.TestCase):
             "whol_smtn_ntby_tr_pbmn": "20", "whol_ntby_vol_icdc": "2",
             "whol_ntby_tr_pbmn_icdc": "3",
         }]})
-        rows = ProgramCollector(api, now_provider=lambda: NOW).collect(stock_code="000660", market_code="KOSPI")
+        rows = ProgramCollector(api, now_provider=lambda: NOW).collect(stock_code="000660", market_code="KOSPI", trading_venue="INTEGRATED")
         row = rows[0]
         self.assertEqual(row["snapshot_time"], datetime(2026, 7, 28, 10, 24))
         self.assertEqual(row["current_price"], 1615000)
         self.assertEqual(row["market_code"], "KOSPI")
         self.assertEqual(api.calls[0]["tr_id"], "FHPPG04650101")
         self.assertEqual(api.calls[0]["params"]["FID_INPUT_ISCD"], "000660")
+        self.assertEqual(api.calls[0]["params"]["FID_COND_MRKT_DIV_CODE"], "UN")
         self.assert_row_matches_ddl(row, "10_raw_program.sql")
 
     def test_market_investor_mapping(self):

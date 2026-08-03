@@ -11,12 +11,15 @@ class ProgramCollector(BaseCollector):
     tr_id = "FHPPG04650101"
 
     def collect(
-        self, *, stock_code: str, market_code: str, collect_cycle: str = "1MIN"
+        self, *, stock_code: str, market_code: str, trading_venue: str = "KRX", collect_cycle: str = "1MIN"
     ) -> list[dict[str, object]]:
+        venue_code = {"KRX": "J", "NXT": "NX", "INTEGRATED": "UN"}.get(trading_venue)
+        if venue_code is None:
+            raise ValueError(f"unsupported program trading venue: {trading_venue}")
         payload = self.client.get(
             path=self.path,
             tr_id=self.tr_id,
-            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+            params={"FID_COND_MRKT_DIV_CODE": venue_code, "FID_INPUT_ISCD": stock_code},
         )
         rows: list[dict[str, object]] = []
         required = ("bsop_hour", "stck_prpr", "prdy_vrss", "prdy_vrss_sign", "prdy_ctrt", "acml_vol", "whol_smtn_seln_vol", "whol_smtn_shnu_vol", "whol_smtn_ntby_qty", "whol_smtn_seln_tr_pbmn", "whol_smtn_shnu_tr_pbmn", "whol_smtn_ntby_tr_pbmn", "whol_ntby_vol_icdc", "whol_ntby_tr_pbmn_icdc")

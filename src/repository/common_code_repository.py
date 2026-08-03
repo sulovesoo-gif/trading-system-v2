@@ -18,6 +18,19 @@ class StockConfig:
     analysis_yn: bool
     alert_yn: bool
     default_market_code: str
+    program_collect_yn: bool
+
+@dataclass(frozen=True)
+class ApiScheduleConfig:
+    code: str
+    interval_unit: str
+    interval_value: int
+    execution_second: int
+    start_time: str
+    end_time: str
+    enabled: bool
+    def due(self, now) -> bool:
+        return self.enabled and self.interval_unit == "MIN" and now.second == self.execution_second and self.start_time <= now.strftime("%H:%M") <= self.end_time
 
 
 @dataclass(frozen=True)
@@ -48,11 +61,11 @@ class CommonCodeRepository:
 
     def enabled_minute_stocks(self) -> list[StockConfig]:
         sql = (
-            "SELECT code, code_name, attr1, attr2, attr4, attr5, attr7 "
+            "SELECT code, code_name, attr1, attr2, attr4, attr5, attr7, attr10 "
             "FROM common_code WHERE group_cd = 'STOCK' AND use_yn = 'Y' AND attr2 = 'Y' ORDER BY CAST(attr9 AS INTEGER), code"
         )
         return [
-            StockConfig(row[0], row[1], row[2], row[3] == "Y", row[4] == "Y", row[5] == "Y", row[6])
+            StockConfig(row[0], row[1], row[2], row[3] == "Y", row[4] == "Y", row[5] == "Y", row[6], row[7] == "Y")
             for row in self._fetchall(sql)
         ]
 
@@ -76,6 +89,12 @@ class CommonCodeRepository:
             "FROM common_code WHERE group_cd = 'STRATEGY' AND use_yn = 'Y' ORDER BY CAST(attr9 AS INTEGER), code"
         )
         return [dict(zip(("strategy_code", "strategy_yn", "analysis_yn", "alert_yn", "trade_yn", "stock_code", "market_code", "ma_config_code", "price_field_code"), row)) for row in rows]
+
+    def api_schedule(self, code: str) -> ApiScheduleConfig:
+        row = self._fetchone("SELECT code, attr1, attr2, attr5, attr6, attr7, attr8 FROM common_code WHERE group_cd = 'API_SCHEDULE' AND code = %s AND use_yn = 'Y'", (code,))
+        if row is None:
+            return ApiScheduleConfig(code, "MIN", 1, -1, "99:99", "00:00", False)
+        return ApiScheduleConfig(row[0], row[1], int(row[2]), int(row[3]), row[4], row[5], row[6] == "Y")
 
     def _fetchone(self, sql, params=()):
         with self.pool.connection() as connection:
