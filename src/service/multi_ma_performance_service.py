@@ -51,7 +51,11 @@ class MultiMaPerformanceService:
             state.portfolio.enter(direction,price,target,signal_no); state.applied={signal_no}
             self.repository.add_trade_leg(trade_id=state.trade_id,signal_no=signal_no,signal_time=signal_time,entry_price=price,entry_ratio=target,notional_amount=self.initial_capital*target)
         elif key.strategy_code=="ACCUMULATED" and signal_no not in state.applied:
-            increment=Decimal("1")/Decimal("3"); state.portfolio.enter(direction,price,increment,signal_no); state.applied.add(signal_no)
+            held = sum((leg.weight for leg in state.portfolio.legs), Decimal("0"))
+            increment = min(Decimal("1") / Decimal("3"), max(Decimal("0"), Decimal("1") - held))
+            if increment == 0:
+                return False
+            state.portfolio.enter(direction,price,increment,signal_no); state.applied.add(signal_no)
             self.repository.add_trade_leg(trade_id=state.trade_id,signal_no=signal_no,signal_time=signal_time,entry_price=price,entry_ratio=increment,notional_amount=self.initial_capital*increment)
         self._persist_state(key, state, signal_time)
         return True
