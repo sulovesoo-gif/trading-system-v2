@@ -33,6 +33,10 @@ class PerformanceServiceTest(unittest.TestCase):
         self.assertFalse(self.service.process_signal(self.key,signal_no='SIGNAL_1',direction='LONG',signal_time=self.when,price=Decimal('100'),reason='test'))
         self.assertEqual(len(self.repo.trades),1); self.assertEqual(len(self.repo.legs),1)
 
+    def test_accumulated_new_cycle_starts_at_one_third(self):
+        self.service.process_signal(self.key,signal_no='SIGNAL_1',direction='LONG',signal_time=self.when,price=Decimal('100'),reason='open')
+        self.assertEqual(self.repo.trades[0]['entry_ratio'], Decimal('1') / Decimal('3'))
+
     def test_opposite_signal_closes_then_creates_next_cycle(self):
         self.service.process_signal(self.key,signal_no='SIGNAL_1',direction='LONG',signal_time=self.when,price=Decimal('100'),reason='open')
         self.service.process_signal(self.key,signal_no='SIGNAL_2',direction='SHORT',signal_time=self.when.replace(minute=1),price=Decimal('90'),reason='reverse')

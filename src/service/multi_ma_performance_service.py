@@ -41,7 +41,10 @@ class MultiMaPerformanceService:
             key, signal_time=signal_time, signal_no=signal_no, direction=direction,
         )):
             return False
-        state=self._state(key); target=Decimal("1") if key.strategy_code != "ACCUMULATED" else Decimal(len(state.applied|{signal_no}))/Decimal("3")
+        state=self._state(key)
+        # A new accumulated cycle always starts with exactly one third.
+        # Stale applied signals from a prior cycle must never inflate it.
+        target=Decimal("1") if key.strategy_code != "ACCUMULATED" else Decimal("1") / Decimal("3")
         if state.portfolio.direction not in ("FLAT",direction): self._close(key,state,signal_time,price,"SIGNAL", "MULTIPLE_SIGNALS")
         if state.portfolio.direction=="FLAT":
             state.trade_id,state.cycle_no=self.repository.create_trade(key,direction=direction,entry_time=signal_time,entry_price=price,entry_ratio=target,average_entry_price=price)
