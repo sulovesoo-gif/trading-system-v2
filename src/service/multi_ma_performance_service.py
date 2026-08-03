@@ -42,9 +42,11 @@ class MultiMaPerformanceService:
     def process_signal(self,key,*,signal_no,direction,signal_time,price,reason):
         """한 신호를 한 번만 반영하고 필요 시 반대 포지션을 SIGNAL 청산한다."""
         saved = self.repository.save_signal(key,signal_time=signal_time,signal_no=signal_no,direction=direction,price=price,reason=reason)
-        if not saved and (not hasattr(self.repository, "signal_is_applied") or self.repository.signal_is_applied(
-            key, signal_time=signal_time, signal_no=signal_no, direction=direction,
-        )):
+        # The canonical-signal unique key is the replay boundary.  A rejected
+        # insert must never allocate, close, or resize a position again:
+        # otherwise a restarted replay can create cycles without a matching
+        # signal row.  Controlled replay starts from a clean derived scope.
+        if not saved:
             return False
         state=self._state(key)
         # A prior interrupted replay may have committed an OPEN trade before
