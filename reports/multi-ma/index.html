@@ -97,4 +97,12 @@ async function poll(){try{let r=await fetch('./data/latest.json?ts='+Date.now(),
  const old=render;render=function(){old();drawExecution()};
  const detailBase=renderMinuteDetail;renderMinuteDetail=function(){detailBase();if(!selectedMinute)return;let d=minuteDetail(selectedMinute),panel=document.getElementById('minuteDetail'),e=d?.execution_strength;if(!panel||!e)return;let p=document.createElement('p');p.className='muted';p.textContent=e.status==='DATA_MISSING'?'체결강도: DATA_MISSING':`체결강도 원문 ${e.source_snapshot_time} · 체결강도 ${n(e.execution_strength)} · 체결수량 ${n(e.execution_volume)} · 직전 연속분 ${n(e.previous_execution_strength)} · 변화 ${n(e.execution_strength_change)} · ${e.status}`;panel.appendChild(p)};
 })();
+</script><script>
+/* Analysis-session filter shares the exact market-time boundaries across views. */
+(function(){let sessionCode='ALL_INTEGRATED';function inSession(value){let d=date(value);if(!d)return false;let t=d.getHours()*60+d.getMinutes();if(sessionCode==='ALL_INTEGRATED')return(480<=t&&t<530)||(540<=t&&t<920)||(940<=t&&t<1200);if(sessionCode==='REGULAR')return 540<=t&&t<920;if(sessionCode==='NXT_PRE')return 480<=t&&t<530;return 940<=t&&t<1200}
+ const oldMain=mainAll;mainAll=function(){return oldMain().filter(x=>inSession(x.timestamp))};
+ const oldTrades=filteredTrades;filteredTrades=function(){return oldTrades().filter(t=>inSession(t.entry_time)&&(!t.exit_time||inSession(t.exit_time)))};
+ const oldSignals=filteredSignals;filteredSignals=function(){return oldSignals().filter(s=>inSession(s.signal_time))};
+ const oldControls=controls;controls=function(){oldControls();let host=document.querySelector('.controls fieldset:nth-child(2)')?.parentElement,select=document.getElementById('analysisSession');if(!select&&host){let label=document.createElement('label');label.innerHTML='분석 시간대 <select id="analysisSession"><option value="ALL_INTEGRATED">전체 통합 08:00~20:00</option><option value="REGULAR">정규장 09:00~15:19</option><option value="NXT_PRE">NXT 프리마켓 08:00~08:49</option><option value="NXT_AFTER">NXT 애프터마켓 15:40~19:59</option></select>';host.appendChild(label);select=document.getElementById('analysisSession')}if(select){select.value=sessionCode;select.onchange=e=>{sessionCode=e.target.value;start=0;tradePage=1;render()}}};
+})();
 </script></body></html>
