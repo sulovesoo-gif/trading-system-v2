@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Iterable
 
+from psycopg.types.json import Jsonb
+
 
 OBSERVATION_CODES = ("SEC_05", "SEC_10", "SEC_15", "SEC_20", "SEC_25", "SEC_30", "SEC_35", "SEC_40", "SEC_45", "SEC_50", "SEC_55", "COMPLETE")
 STRATEGY_CODES = ("SIGNAL_1", "SIGNAL_2", "SIGNAL_3", "ACCUMULATED")
@@ -45,7 +47,7 @@ class MultiMaPerformanceRepository:
         with self.pool.connection() as conn:
             with conn.transaction(), conn.cursor() as cur:
                 cur.execute(sql, (key.stock_code,key.trading_venue,key.strategy_code,key.observation_code,key.observation_code,key.ma_config_code,key.price_field_code,
-                                  key.trade_date,last_processed_time,direction,weight,list(sorted(applied_signals))))
+                                  key.trade_date,last_processed_time,direction,weight,Jsonb(list(sorted(applied_signals)))))
 
     def get_state(self, key: MultiMaPerformanceKey):
         with self.pool.connection() as conn:
@@ -80,6 +82,18 @@ class MultiMaPerformanceRepository:
             with conn.cursor() as cur:
                 cur.execute("SELECT signal_no,entry_price,entry_ratio FROM analysis_multi_ma_trade_leg WHERE trade_id=%s ORDER BY signal_time", (trade_id,))
                 return cur.fetchall()
+
+    def signal_is_applied(self, key: MultiMaPerformanceKey, *, signal_time, signal_no: str, direction: str) -> bool:
+        """Distinguish an idempotent replay from a prior partial write."""
+        sql = """SELECT 1 FROM analysis_multi_ma_trade_leg leg
+        JOIN analysis_multi_ma_trade trade ON trade.trade_id=leg.trade_id
+        WHERE trade_date=%s AND stock_code=%s AND trading_venue=%s AND strategy_code=%s
+          AND observation_code=%s AND ma_config_code=%s AND price_field_code=%s
+          AND leg.signal_time=%s AND leg.signal_no=%s AND trade.direction=%s LIMIT 1"""
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (*key.values(), signal_time, signal_no, direction))
+                return cur.fetchone() is not None
 
     def create_trade(self, key: MultiMaPerformanceKey, *, direction: str, entry_time, entry_price: Decimal, entry_ratio: Decimal, average_entry_price: Decimal):
         """설정 축 advisory lock 안에서 다음 cycle_no를 배정한다."""

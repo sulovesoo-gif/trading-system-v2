@@ -36,7 +36,11 @@ class MultiMaPerformanceService:
 
     def process_signal(self,key,*,signal_no,direction,signal_time,price,reason):
         """한 신호를 한 번만 반영하고 필요 시 반대 포지션을 SIGNAL 청산한다."""
-        if not self.repository.save_signal(key,signal_time=signal_time,signal_no=signal_no,direction=direction,price=price,reason=reason): return False
+        saved = self.repository.save_signal(key,signal_time=signal_time,signal_no=signal_no,direction=direction,price=price,reason=reason)
+        if not saved and (not hasattr(self.repository, "signal_is_applied") or self.repository.signal_is_applied(
+            key, signal_time=signal_time, signal_no=signal_no, direction=direction,
+        )):
+            return False
         state=self._state(key); target=Decimal("1") if key.strategy_code != "ACCUMULATED" else Decimal(len(state.applied|{signal_no}))/Decimal("3")
         if state.portfolio.direction not in ("FLAT",direction): self._close(key,state,signal_time,price,"SIGNAL", "MULTIPLE_SIGNALS")
         if state.portfolio.direction=="FLAT":
