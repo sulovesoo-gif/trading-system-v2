@@ -54,3 +54,30 @@ class PerformanceServiceTest(unittest.TestCase):
                 key=MultiMaPerformanceKey(date(2026,7,30),'000660','INTEGRATED',strategy,observation,'MA_3_5_10','CLOSE')
                 self.service._state(key)
         self.assertEqual(len(self.service.runtime),48)
+
+    def test_single_strategy_is_always_one_full_weight_leg(self):
+        key=MultiMaPerformanceKey(date(2026,7,30),'000660','INTEGRATED','SIGNAL_1','SEC_05','MA_3_5_10','CLOSE')
+        self.service.process_signal(key,signal_no='SIGNAL_1',direction='LONG',signal_time=self.when,price=Decimal('100'),reason='turn')
+        # A same-direction canonical event is audit-only: it cannot open a
+        # second cycle or create a split leg for a single-signal strategy.
+        self.service.process_signal(key,signal_no='SIGNAL_1',direction='LONG',signal_time=self.when.replace(minute=1),price=Decimal('101'),reason='repeat')
+        self.assertEqual(len(self.repo.trades),1)
+        self.assertEqual(len(self.repo.legs),1)
+        self.assertEqual(self.repo.trades[0]['entry_ratio'],Decimal('1'))
+        self.assertEqual(self.repo.legs[0]['entry_ratio'],Decimal('1'))
+
+    def test_single_strategy_reverse_closes_then_opens_one_full_leg(self):
+        key=MultiMaPerformanceKey(date(2026,7,30),'000660','INTEGRATED','SIGNAL_2','SEC_10','MA_3_5_10','CLOSE')
+        self.service.process_signal(key,signal_no='SIGNAL_2',direction='LONG',signal_time=self.when,price=Decimal('100'),reason='cross')
+        self.service.process_signal(key,signal_no='SIGNAL_2',direction='SHORT',signal_time=self.when.replace(minute=1),price=Decimal('99'),reason='reverse')
+        self.assertEqual(len(self.repo.closed),1)
+        self.assertEqual(len(self.repo.trades),2)
+        self.assertTrue(all(item['entry_ratio']==Decimal('1') for item in self.repo.trades))
+        self.assertTrue(all(item['entry_ratio']==Decimal('1') for item in self.repo.legs))
+
+    def test_accumulated_same_direction_uses_each_signal_once(self):
+        self.service.process_signal(self.key,signal_no='SIGNAL_1',direction='LONG',signal_time=self.when,price=Decimal('100'),reason='one')
+        self.service.process_signal(self.key,signal_no='SIGNAL_1',direction='LONG',signal_time=self.when.replace(minute=1),price=Decimal('101'),reason='repeat')
+        self.service.process_signal(self.key,signal_no='SIGNAL_2',direction='LONG',signal_time=self.when.replace(minute=2),price=Decimal('102'),reason='two')
+        self.assertEqual(len(self.repo.trades),1)
+        self.assertEqual([leg['signal_no'] for leg in self.repo.legs],['SIGNAL_1','SIGNAL_2'])

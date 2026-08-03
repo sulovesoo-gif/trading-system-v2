@@ -118,6 +118,7 @@ class Runtime:
             "SIGNAL_1_ONLY": {"SIGNAL_1"}, "SIGNAL_2_ONLY": {"SIGNAL_2"},
             "SIGNAL_3_ONLY": {"SIGNAL_3"}, "ACCUMULATED": {"SIGNAL_1", "SIGNAL_2", "SIGNAL_3"},
         }
+        accumulated_conflict = len({signal.direction for signal in result.signals}) > 1
         for strategy_code in STRATEGY_CODES:
             key = MultiMaStateKey(stock_code, "KOSPI", venue, strategy_code, slot, config.code, config.price_field)
             state = states[strategy_code]
@@ -128,6 +129,12 @@ class Runtime:
             )
             for signal in result.signals:
                 if signal.signal_type in accepted[strategy_code]:
+                    # ACCUMULATED may receive multiple signal types at one
+                    # observation.  Mixed LONG/SHORT directions are a data
+                    # conflict, not a deterministic reversal; keep its
+                    # existing position unchanged and leave an audit log.
+                    if strategy_code == "ACCUMULATED" and accumulated_conflict:
+                        continue
                     performance_strategy = strategy_code.replace("_ONLY", "")
                     performance_key = MultiMaPerformanceKey(
                         result.feature.bar.bar_time.date(), stock_code, venue, performance_strategy,
@@ -139,6 +146,8 @@ class Runtime:
                     )
         if result.signals:
             print(f"다중 MA 신호 stock={stock_code} venue={venue} slot={slot} time={result.feature.bar.bar_time} signals={[signal.signal_type + ':' + signal.direction for signal in result.signals]}")
+        if accumulated_conflict:
+            print(f"다중 MA ACCUMULATED conflict stock={stock_code} venue={venue} slot={slot} time={result.feature.bar.bar_time}")
 
 
 def next_tick(now: datetime) -> datetime:
