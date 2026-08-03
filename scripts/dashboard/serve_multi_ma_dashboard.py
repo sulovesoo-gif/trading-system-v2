@@ -48,18 +48,28 @@ def dashboard_payload(pool) -> dict:
         ORDER BY strategy_code,observation_code""")
         states = cur.fetchall()
         cur.execute("""SELECT strategy_code,observation_code,total_profit_amount,total_profit_rate,trade_count,
-        signal_exit_profit,session_close_exit_profit FROM analysis_multi_ma_summary
-        WHERE stock_code='000660' AND trading_venue='INTEGRATED' ORDER BY total_profit_rate DESC""")
+        win_count,loss_count,win_rate,signal_exit_count,session_close_exit_count,
+        signal_exit_profit,session_close_exit_profit,max_profit,max_loss
+        FROM analysis_multi_ma_summary
+        WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND trade_date=CURRENT_DATE
+        ORDER BY total_profit_rate DESC""")
         summaries = cur.fetchall()
         cur.execute("""SELECT signal_time,signal_no,direction,signal_price,observation_code,strategy_code,reason
-        FROM analysis_multi_ma_signal WHERE stock_code='000660' AND trading_venue='INTEGRATED'
+        FROM analysis_multi_ma_signal WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND trade_date=CURRENT_DATE
         ORDER BY signal_time DESC LIMIT 100""")
         signals = cur.fetchall()
-        cur.execute("""SELECT entry_time,direction,entry_price,entry_ratio,exit_time,exit_price,exit_type,exit_reason,
-        realized_profit_amount,realized_profit_rate,strategy_code,observation_code,status
-        FROM analysis_multi_ma_trade WHERE stock_code='000660' AND trading_venue='INTEGRATED'
+        cur.execute("""SELECT trade_id,cycle_no,entry_time,direction,entry_price,entry_ratio,average_entry_price,
+        exit_time,exit_price,exit_type,exit_reason,realized_profit_amount,realized_profit_rate,
+        strategy_code,observation_code,status
+        FROM analysis_multi_ma_trade WHERE stock_code='000660' AND trading_venue='INTEGRATED' AND trade_date=CURRENT_DATE
         ORDER BY entry_time DESC LIMIT 100""")
         trades = cur.fetchall()
+        cur.execute("""SELECT leg.trade_id,leg.signal_no,leg.signal_time,leg.entry_price,leg.entry_ratio,
+        leg.notional_amount FROM analysis_multi_ma_trade_leg leg
+        JOIN analysis_multi_ma_trade trade ON trade.trade_id=leg.trade_id
+        WHERE trade.stock_code='000660' AND trade.trading_venue='INTEGRATED' AND trade.trade_date=CURRENT_DATE
+        ORDER BY leg.trade_id,leg.signal_time""")
+        legs = cur.fetchall()
     columns = lambda names, rows: [dict(zip(names, row)) for row in rows]
     now = datetime.now(KST)
     completed_values = [(row[0], float(row[1])) for row in completed_series]
@@ -82,9 +92,10 @@ def dashboard_payload(pool) -> dict:
         "latest_snapshot": None if snapshot is None else dict(zip(("snapshot_time","target_bar_time","stock_code","trading_venue","close_price"), snapshot)),
         "completed_count_today": len(completed_series), "snapshot_count_today": len(snapshot_series), "series": series,
         "states": columns(("strategy_code","observation_code","position_direction","position_weight","last_processed_time"), states),
-        "summaries": columns(("strategy_code","observation_code","total_profit_amount","total_profit_rate","trade_count","signal_exit_profit","session_close_exit_profit"), summaries),
+        "summaries": columns(("strategy_code","observation_code","total_profit_amount","total_profit_rate","trade_count","win_count","loss_count","win_rate","signal_exit_count","session_close_exit_count","signal_exit_profit","session_close_exit_profit","max_profit","max_loss"), summaries),
         "signals": columns(("signal_time","signal_no","direction","signal_price","observation_code","strategy_code","reason"), signals),
-        "trades": columns(("entry_time","direction","entry_price","entry_ratio","exit_time","exit_price","exit_type","exit_reason","realized_profit_amount","realized_profit_rate","strategy_code","observation_code","status"), trades),
+        "trades": columns(("trade_id","cycle_no","entry_time","direction","entry_price","entry_ratio","average_entry_price","exit_time","exit_price","exit_type","exit_reason","realized_profit_amount","realized_profit_rate","strategy_code","observation_code","status"), trades),
+        "trade_legs": columns(("trade_id","signal_no","signal_time","entry_price","entry_ratio","notional_amount"), legs),
     }
 
 
