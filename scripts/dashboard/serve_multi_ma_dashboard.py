@@ -264,6 +264,15 @@ def atomic_write(path: Path, payload: dict) -> None:
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        # The dashboard shell changes independently from the JSON payload.
+        # Never let a browser retain a malformed or stale index.html after a
+        # deployment; JSON polling already carries its own cache-busting key.
+        request_path = self.path.split("?", 1)[0]
+        if request_path in ("/", "/index.html"):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        super().end_headers()
+
     def list_directory(self, path):
         self.send_error(403, "Directory listing disabled")
         return None

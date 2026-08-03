@@ -21,6 +21,6 @@ class DashboardOptionalSeriesContractTest(unittest.TestCase):
 
     def test_client_normalizes_missing_optional_arrays_before_length(self):
         html = (ROOT / "reports" / "multi-ma" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Array.isArray(data[key])", html)
+        self.assertIn("Array.isArray(data[k])", html)
         self.assertIn("programMinuteSeries.length", html)
         self.assertIn("executionStrengthSeries.length", html)
