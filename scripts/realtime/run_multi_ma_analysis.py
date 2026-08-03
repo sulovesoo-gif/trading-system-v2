@@ -69,6 +69,17 @@ def _analysis_session_gap(bar_time: datetime) -> bool:
     return clock_time(8, 50) <= bar_time.time() <= clock_time(8, 59, 59)
 
 
+def _has_unexpected_data_gap(bars, snapshot_bar=None) -> bool:
+    series = list(bars) + ([] if snapshot_bar is None else [snapshot_bar])
+    for previous, current in zip(series, series[1:]):
+        if current.bar_time - previous.bar_time <= timedelta(minutes=1):
+            continue
+        if previous.bar_time.time() == clock_time(8, 49) and current.bar_time.time() == clock_time(9, 0):
+            continue
+        return True
+    return False
+
+
 class Runtime:
     def __init__(self, pool, *, restore_feature_state: bool = True) -> None:
         self.pool = pool
@@ -112,6 +123,9 @@ class Runtime:
         # short-MA slope.  Signal comparison itself is against the prior
         # feature of this exact observation slot (below).
         bars = self.minutes.completed_bars(stock_code=stock_code, before_time=before_time, limit=config.long_period + 1, trading_venue=venue)
+        if _has_unexpected_data_gap(bars, snapshot_bar):
+            print(f"DATA_GAP stock={stock_code} venue={venue} slot={slot} before={before_time}")
+            return
         state_key = (stock_code, venue, slot, config.code, config.price_field)
         states = self.states.setdefault(state_key, new_slot_states())
         previous = self.previous_features.get(state_key)

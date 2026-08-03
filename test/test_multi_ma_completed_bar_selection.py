@@ -2,7 +2,8 @@ from datetime import datetime
 from decimal import Decimal
 import unittest
 
-from scripts.realtime.run_multi_ma_analysis import _previous_completed
+from scripts.realtime.run_multi_ma_analysis import _has_unexpected_data_gap, _previous_completed
+from src.analysis.feature.sma_feature import MinuteBar
 
 
 class CompletedMinuteSelectionTest(unittest.TestCase):
@@ -26,3 +27,7 @@ class CompletedMinuteSelectionTest(unittest.TestCase):
         row = self.row(); row["bar_time"] = datetime(2026, 8, 3, 15, 18)
         self.assertIsNone(_previous_completed([row], self.now))
 
+    def test_data_gap_blocks_analysis_until_contiguous_completed_bars_rebuild(self):
+        bar = lambda minute: MinuteBar(datetime(2026, 8, 3, 15, minute), *(Decimal("1"),) * 4)
+        self.assertTrue(_has_unexpected_data_gap([bar(19), bar(26)]))
+        self.assertFalse(_has_unexpected_data_gap([bar(18), bar(19)]))
