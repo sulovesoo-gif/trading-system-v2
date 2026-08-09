@@ -47,7 +47,8 @@ def application(pool, values):
     service = ResearchBackfillService(minute_collector=StockHistoricalMinuteCollector(client), daily_collector=StockDailyCollector(client), raw_ingestion=raw,
         calendar=KisTradingCalendar(HolidayCalendarCollector(client)))
     code = values['stock_code'][0].strip(); kind = values['kind'][0]
-    result = service.backfill_minutes(stock_code=code,start_date=start,end_date=end) if kind == 'minute' else service.backfill_daily(stock_code=code,start_date=start,end_date=end)
+    venue = 'INTEGRATED' if code in {'000660', '005930'} else 'KRX'
+    result = service.backfill_minutes(stock_code=code,start_date=start,end_date=end,venue=venue) if kind == 'minute' else service.backfill_daily(stock_code=code,start_date=start,end_date=end,venue=venue)
     response = {'backfill': result.__dict__ if hasattr(result, '__dict__') else result}
     if values.get('replay'):
         response['research_run_id'] = str(CompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end))
