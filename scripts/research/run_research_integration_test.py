@@ -29,7 +29,8 @@ def main():
         for feature in features:
             repo.save_feature(run_id=run_id, stock_code="TEST000", feature=feature, ma10_direction=CompleteReplay._ma10_direction(previous,feature)); previous=feature
         for signal in signals:
-            repo.save_signal(run_id=run_id,stock_code="TEST000",strategy_code="SIGNAL_1",signal=signal,pending=False,confirm_time=None,session_code="TEST")
+            repo.save_signal(run_id=run_id,stock_code="TEST000",strategy_code="SIGNAL_1",signal=signal,
+                             ma10_direction=None,pending=False,confirm_time=None,session_code="TEST")
         cycle_id = None
         for cycle in cycles:
             cycle_id=repo.save_cycle(run_id=run_id,trade_stock_code="TEST000",signal_source_stock_code="TEST000",cycle=cycle)
