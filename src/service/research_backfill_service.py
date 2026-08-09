@@ -63,9 +63,21 @@ class ResearchBackfillService:
                 result.append({"date": day.isoformat(), "status": "SKIPPED_NON_TRADING", "inserted": 0, "existing": 0})
                 day += timedelta(days=1); continue
             try:
-                rows = self.minute_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue,
-                                                     input_date=day.strftime("%Y%m%d"), input_hour="235959", previous_data_include_yn="N")
-                rows = [row for row in rows if row["bar_time"].date() == day]
+                cursor = datetime.combine(day, time(23, 59, 59))
+                rows: list[dict] = []
+                # KIS returns a bounded reverse-time page. Continue from one
+                # minute before the oldest row; never infer missing minutes.
+                for _page in range(20):
+                    page = self.minute_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue,
+                                                         input_date=cursor.strftime("%Y%m%d"), input_hour=cursor.strftime("%H%M%S"), previous_data_include_yn="N")
+                    same_day = [row for row in page if row["bar_time"].date() == day]
+                    rows.extend(same_day)
+                    if len(page) < 120 or not page:
+                        break
+                    cursor = min(row["bar_time"] for row in page) - timedelta(minutes=1)
+                    if cursor.date() != day:
+                        break
+                rows = list({row["bar_time"]: row for row in rows}.values())
                 saved = self.raw_ingestion.store(RawTable.STOCK_MINUTE, rows)
                 result.append({"date": day.isoformat(), "status": "SUCCESS", "requested": saved.requested_count,
                                "inserted": saved.inserted_count, "existing": saved.duplicate_count})
@@ -83,8 +95,8 @@ class CompleteResearchRunner:
         venue = "INTEGRATED" if stock_code in {"000660", "005930"} else "KRX"
         with self.pool.connection() as conn, conn.cursor() as cur:
             cur.execute("""SELECT bar_time,open_price,high_price,low_price,close_price FROM raw_stock_minute
-            WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI' AND trading_venue='INTEGRATED'
-              AND trading_venue=%s AND collect_cycle='1MIN' AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code,venue,start_date,end_date))
+            WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI' AND trading_venue=%s
+              AND collect_cycle='1MIN' AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code,venue,start_date,end_date))
             return [MinuteBar(*row) for row in cur.fetchall()]
 
     def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS):
