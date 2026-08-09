@@ -265,6 +265,86 @@ def atomic_write(path: Path, payload: dict) -> None:
     os.replace(temporary, path)
 
 
+def _research_filters(query: dict[str, list[str]], alias: str = "c") -> tuple[str, list]:
+    """Build only whitelisted, parameterized research-cycle filters."""
+    fields = {
+        "trade_stock_code": "trade_stock_code", "signal_source_stock_code": "signal_source_stock_code",
+        "strategy_code": "strategy_code", "observation_code": "observation_code", "direction": "direction",
+    }
+    where, params = [], []
+    for key, column in fields.items():
+        value = (query.get(key) or ["ALL"])[0]
+        if value and value != "ALL":
+            where.append(f"{alias}.{column}=%s"); params.append(value)
+    start, end = (query.get("start_date") or [None])[0], (query.get("end_date") or [None])[0]
+    if start: where.append(f"{alias}.trading_date >= %s"); params.append(start)
+    if end: where.append(f"{alias}.trading_date <= %s"); params.append(end)
+    return (" AND " + " AND ".join(where) if where else ""), params
+
+
+def research_performance_payload(pool, query: dict[str, list[str]]) -> dict:
+    """Read-only dynamic research performance; never uses deprecated period rows."""
+    condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT run_id,start_date,end_date,parameters FROM research_run
+                       WHERE status='COMPLETED' AND parameters->>'entry_condition'=%s
+                       ORDER BY end_date DESC,created_at DESC LIMIT 1""", (condition,))
+        run = cur.fetchone()
+        if run is None:
+            return {"entry_condition": condition, "status": "NO_COMPLETED_RUN", "summary": {}, "daily": [], "ranking": [], "comparison": {}}
+        run_id, start_date, end_date, parameters = run
+        where, values = _research_filters(query)
+        base = "FROM research_trade_cycle c WHERE c.run_id=%s AND c.exit_time IS NOT NULL" + where
+        cur.execute("""SELECT count(*),count(*) FILTER(WHERE realized_profit>0),count(*) FILTER(WHERE realized_profit<0),count(*) FILTER(WHERE realized_profit=0),
+                         coalesce(sum(realized_profit),0),coalesce(sum(invested_amount),0),coalesce(sum(gross_realized_profit),0),
+                         coalesce(sum(buy_fee+sell_fee+sell_tax),0),coalesce(avg(invested_return_rate),0),coalesce(avg(holding_seconds),0),
+                         coalesce(sum(realized_profit) FILTER(WHERE exit_type='SIGNAL'),0),coalesce(sum(realized_profit) FILTER(WHERE exit_type='SESSION_CLOSE'),0)
+                       """ + base, [run_id, *values])
+        summary = dict(zip(("closed_count","win_count","loss_count","flat_count","realized_profit","invested_amount","gross_realized_profit","total_trading_cost","avg_trade_return_rate","avg_holding_seconds","signal_exit_profit","session_close_profit"), cur.fetchone()))
+        summary["win_rate"] = 0 if not summary["closed_count"] else summary["win_count"] / summary["closed_count"] * 100
+        summary["invested_return_rate"] = 0 if not summary["invested_amount"] else summary["realized_profit"] / summary["invested_amount"] * 100
+        summary["capital_return_rate"] = summary["realized_profit"] / 10000000 * 100
+        daily_where, daily_values = _research_filters(query, "p")
+        cur.execute("""SELECT trading_date,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,daily_return_rate,daily_market_direction,
+                         closed_count,win_count,loss_count,flat_count,realized_profit,invested_amount,invested_return_rate,capital_return_rate,avg_trade_return_rate,avg_holding_seconds,signal_exit_profit,session_close_profit
+                       FROM research_performance_daily p WHERE p.run_id=%s""" + daily_where + " ORDER BY trading_date DESC LIMIT 500", [run_id, *daily_values])
+        names = ("trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","daily_return_rate","daily_market_direction","closed_count","win_count","loss_count","flat_count","realized_profit","invested_amount","invested_return_rate","capital_return_rate","avg_trade_return_rate","avg_holding_seconds","signal_exit_profit","session_close_profit")
+        daily = [dict(zip(names, row)) for row in cur.fetchall()]
+        cur.execute("""SELECT trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,count(*),count(*) FILTER(WHERE realized_profit>0),count(*) FILTER(WHERE realized_profit<0),
+                         coalesce(sum(realized_profit),0),coalesce(sum(buy_fee+sell_fee+sell_tax),0),coalesce(sum(invested_amount),0),
+                         coalesce(sum(realized_profit)/nullif(sum(invested_amount),0)*100,0),coalesce(sum(realized_profit)/10000000*100,0),coalesce(avg(invested_return_rate),0),coalesce(avg(holding_seconds),0)
+                       """ + base + " GROUP BY trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction ORDER BY 13 DESC,9 DESC LIMIT 20", [run_id, *values])
+        rank_names = ("trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","closed_count","win_count","loss_count","realized_profit","total_trading_cost","invested_amount","invested_return_rate","capital_return_rate","avg_trade_return_rate","avg_holding_seconds")
+        ranking = [dict(zip(rank_names, row)) for row in cur.fetchall()]
+        comparison = {}
+        for candidate in ("SIGNAL_ONLY", "MA10_CONFIRM"):
+            cur.execute("""SELECT run_id FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s AND parameters->>'entry_condition'=%s ORDER BY created_at DESC LIMIT 1""", (start_date, end_date, candidate))
+            other = cur.fetchone()
+            if other:
+                cur.execute("""SELECT count(*),count(*) FILTER(WHERE realized_profit>0),count(*) FILTER(WHERE realized_profit<0),coalesce(sum(realized_profit),0)
+                               FROM research_trade_cycle c WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + where, [other[0], *values])
+                closed, wins, losses, profit = cur.fetchone()
+                comparison[candidate] = {"run_id": other[0], "closed_count": closed, "win_count": wins, "loss_count": losses,
+                                          "win_rate": 0 if not closed else wins / closed * 100, "realized_profit": profit,
+                                          "capital_return_rate": profit / 10000000 * 100}
+    return {"status": "OK", "run_id": run_id, "start_date": start_date, "end_date": end_date, "entry_condition": condition,
+            "parameters": parameters, "summary": summary, "daily": daily, "ranking": ranking, "comparison": comparison}
+
+
+def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
+    run_id = (query.get("run_id") or [None])[0]
+    if not run_id:
+        return {"cycles": []}
+    where, values = _research_filters(query)
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
+                             c.entry_signal_time,c.entry_confirm_time,c.entry_time,c.entry_price,c.exit_time,c.exit_price,c.exit_type,c.quantity,c.invested_amount,
+                             c.gross_realized_profit,c.buy_fee,c.sell_fee,c.sell_tax,c.total_trading_cost,c.realized_profit,c.capital_return_rate
+                        FROM research_trade_cycle c WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + where + " ORDER BY c.entry_time DESC LIMIT 1000", [run_id, *values])
+        names = ("trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","entry_signal_time","entry_confirm_time","entry_time","entry_price","exit_time","exit_price","exit_type","quantity","invested_amount","gross_realized_profit","buy_fee","sell_fee","sell_tax","total_trading_cost","realized_profit","capital_return_rate")
+        return {"cycles": [dict(zip(names, row)) for row in cur.fetchall()]}
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     pool = None
 
@@ -286,7 +366,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_error(405, "Read-only dashboard")
 
     def do_GET(self):
-        if urlparse(self.path).path == "/admin/backfill":
+        parsed = urlparse(self.path)
+        if parsed.path == "/admin/backfill":
             body = RESEARCH_BACKFILL_PAGE.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -294,6 +375,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if parsed.path == "/research/performance/api":
+            try:
+                body = json.dumps(research_performance_payload(self.pool, parse_qs(parsed.query)), ensure_ascii=False, default=_json_default).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
+            except Exception as error:
+                logging.exception("research performance query failed")
+                body = json.dumps({"status": "ERROR", "error": f"{type(error).__name__}: {error}"}, ensure_ascii=False).encode("utf-8")
+                self.send_response(500); self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+            return
+        if parsed.path == "/research/performance/cycles":
+            body = json.dumps(research_cycle_payload(self.pool, parse_qs(parsed.query)), ensure_ascii=False, default=_json_default).encode("utf-8")
+            self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+            return
+        if parsed.path == "/research/performance":
+            self.path = "/research-performance.html"
         super().do_GET()
 
     def do_POST(self):
