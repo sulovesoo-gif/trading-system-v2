@@ -16,6 +16,7 @@ from src.analysis.feature.multi_ma_feature import MultiMaFeature, build_multi_ma
 from src.analysis.feature.sma_feature import MinuteBar
 
 CAPITAL = Decimal("10000000")
+MONEY = Decimal("0.01")
 SINGLE = {"SIGNAL_1": {"SIGNAL_1"}, "SIGNAL_2": {"SIGNAL_2"}, "SIGNAL_3": {"SIGNAL_3"}}
 ACCUMULATED = {
     "ACCUMULATED": {"SIGNAL_1", "SIGNAL_2", "SIGNAL_3"},
@@ -256,7 +257,13 @@ class CompleteReplay:
         profit = sum(((exit_price - leg.entry_price if position.direction == "LONG" else leg.entry_price - exit_price) * leg.quantity for leg in position.legs), Decimal("0"))
         invested = position.invested_amount
         quantity = sum(leg.quantity for leg in position.legs)
-        buy_fee = invested * self.fee_rate; sell_notional = exit_price * quantity; sell_fee = sell_notional * self.fee_rate; sell_tax = sell_notional * self.sell_tax_rate
+        # Persisted money is won-rounded.  Round each booked cost first so
+        # the DB-level audit identity holds exactly, not merely before scale.
+        profit = profit.quantize(MONEY)
+        buy_fee = (invested * self.fee_rate).quantize(MONEY)
+        sell_notional = exit_price * quantity
+        sell_fee = (sell_notional * self.fee_rate).quantize(MONEY)
+        sell_tax = (sell_notional * self.sell_tax_rate).quantize(MONEY)
         net = profit - buy_fee - sell_fee - sell_tax
         return ClosedCycle(code, position.direction, position.entry_signal.at, position.entry_confirm_time, position.average_entry_price,
                            signal_time, exit_time, exit_price, quantity, invested, net,

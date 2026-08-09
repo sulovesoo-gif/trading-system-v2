@@ -166,7 +166,10 @@ class CompleteResearchRunner:
                 for strategy in STRATEGIES:
                     for signal in signals:
                         if signal.signal_type in ( {strategy} if strategy.startswith("SIGNAL_") else ({"SIGNAL_1","SIGNAL_2","SIGNAL_3"} if strategy=="ACCUMULATED" else ({"SIGNAL_1","SIGNAL_2"} if strategy=="ACCUMULATED_1" else {"SIGNAL_2","SIGNAL_3"})) ):
-                            self.repository.save_signal(run_id=run_id, stock_code=pair.signal_source_stock_code, strategy_code=strategy, signal=signal, ma10_direction=direction_by_time.get(signal.at), pending=False, confirm_time=None, session_code=_session_id(signal.at))
+                            ma10_direction = direction_by_time.get(signal.at)
+                            pending = entry_condition == CompleteReplay.MA10_CONFIRM and ma10_direction != signal.direction
+                            confirm_time = signal.at if entry_condition == CompleteReplay.SIGNAL_ONLY or not pending else None
+                            self.repository.save_signal(run_id=run_id, stock_code=pair.signal_source_stock_code, strategy_code=strategy, signal=signal, ma10_direction=ma10_direction, pending=pending, confirm_time=confirm_time, session_code=_session_id(signal.at))
                     for cycle in (item for item in cycles if item.strategy_code == strategy):
                         cycle_id = self.repository.save_cycle(run_id=run_id, trade_stock_code=pair.trade_stock_code, signal_source_stock_code=pair.signal_source_stock_code, cycle=cycle)
                         for leg in cycle.legs: self.repository.save_leg(cycle_id=cycle_id, leg=leg)

@@ -30,9 +30,18 @@ def main():
             repo.save_feature(run_id=run_id, stock_code="TEST000", feature=feature, ma10_direction=CompleteReplay._ma10_direction(previous,feature)); previous=feature
         for signal in signals:
             repo.save_signal(run_id=run_id,stock_code="TEST000",strategy_code="SIGNAL_1",signal=signal,pending=False,confirm_time=None,session_code="TEST")
+        cycle_id = None
         for cycle in cycles:
             cycle_id=repo.save_cycle(run_id=run_id,trade_stock_code="TEST000",signal_source_stock_code="TEST000",cycle=cycle)
             for leg in cycle.legs: repo.save_leg(cycle_id=cycle_id,leg=leg)
+        if cycle_id is not None:
+            repo.save_position_daily(run_id=run_id, cycle_id=cycle_id, trading_date=today,
+                                    trade_stock_code="TEST000", signal_source_stock_code="TEST000",
+                                    strategy_code="SIGNAL_1", observation_code="COMPLETE", direction="LONG",
+                                    entry_date=today, entry_price=Decimal("100"), valuation_close_price=Decimal("101"),
+                                    quantity=1, invested_amount=Decimal("100"), unrealized_profit=Decimal("1"),
+                                    unrealized_return_rate=Decimal("1"), capital_return_rate=Decimal("0.00001"),
+                                    position_status="OPEN")
         repo.rebuild_performance(run_id=run_id,start_date=today,end_date=today)
         print(f"run_id={run_id} features={len(features)} signals={len(signals)} cycles={len(cycles)} top={len(repo.top_period(run_id=run_id))}")
     finally:
