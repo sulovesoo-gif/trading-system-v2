@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 from uuid import UUID
+from psycopg.types.json import Jsonb
 
 
 class ResearchRepository:
@@ -12,7 +13,7 @@ class ResearchRepository:
     def create_run(self, *, run_id: UUID, start_date: date, end_date: date, parameters: dict, status: str = "RUNNING") -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
             cur.execute("""INSERT INTO research_run(run_id,start_date,end_date,status,parameters)
-            VALUES (%s,%s,%s,%s,%s) ON CONFLICT (run_id) DO NOTHING""", (run_id, start_date, end_date, status, parameters))
+            VALUES (%s,%s,%s,%s,%s) ON CONFLICT (run_id) DO NOTHING""", (run_id, start_date, end_date, status, Jsonb(parameters)))
 
     def finish_run(self, run_id: UUID, status: str) -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
