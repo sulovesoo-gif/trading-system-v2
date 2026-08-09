@@ -11,6 +11,7 @@ import time
 from datetime import datetime, time as clock_time, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 from src.repository.database import DatabaseSettings, create_connection_pool
+from scripts.admin.serve_research_backfill_admin import PAGE as RESEARCH_BACKFILL_PAGE, application as run_research_backfill
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -264,6 +266,8 @@ def atomic_write(path: Path, payload: dict) -> None:
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    pool = None
+
     def end_headers(self):
         # The dashboard shell changes independently from the JSON payload.
         # Never let a browser retain a malformed or stale index.html after a
@@ -280,7 +284,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         logging.info("http %s", format % args)
     def _read_only(self):
         self.send_error(405, "Read-only dashboard")
-    do_POST = _read_only
+
+    def do_GET(self):
+        if urlparse(self.path).path == "/admin/backfill":
+            body = RESEARCH_BACKFILL_PAGE.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/admin/backfill":
+            return self._read_only()
+        length = int(self.headers.get("Content-Length", "0"))
+        values = parse_qs(self.rfile.read(length).decode("utf-8"))
+        try:
+            payload, status = run_research_backfill(self.pool, values), 200
+        except Exception as error:
+            logging.exception("research backfill request failed")
+            payload, status = {"error": f"{type(error).__name__}: {error}"}, 400
+        body = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     do_PUT = _read_only
     do_PATCH = _read_only
     do_DELETE = _read_only
@@ -311,6 +344,7 @@ def main() -> int:
     thread = threading.Thread(target=exporter, args=(pool, output, stop), daemon=True)
     thread.start()
     try:
+        DashboardHandler.pool = pool
         handler = lambda *a, **k: DashboardHandler(*a, directory=str(reports), **k)
         ThreadingHTTPServer((args.bind, args.port), handler).serve_forever()
     finally:
