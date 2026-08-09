@@ -80,10 +80,11 @@ class CompleteResearchRunner:
         self.pool, self.repository = pool, repository
 
     def _bars(self, stock_code: str, start_date: date, end_date: date) -> list[MinuteBar]:
+        venue = "INTEGRATED" if stock_code in {"000660", "005930"} else "KRX"
         with self.pool.connection() as conn, conn.cursor() as cur:
             cur.execute("""SELECT bar_time,open_price,high_price,low_price,close_price FROM raw_stock_minute
             WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI' AND trading_venue='INTEGRATED'
-              AND collect_cycle='1MIN' AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code,start_date,end_date))
+              AND trading_venue=%s AND collect_cycle='1MIN' AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code,venue,start_date,end_date))
             return [MinuteBar(*row) for row in cur.fetchall()]
 
     def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS):
@@ -101,12 +102,23 @@ class CompleteResearchRunner:
                     previous = feature
             for pair in pairs:
                 if pair.transform == "CONSENSUS":
-                    # A consensus is not silently approximated by an individual source.
-                    continue
-                source_features = replay.features(all_bars[pair.signal_source_stock_code])
-                signals = replay.canonical_signals(source_features)
+                    left, right = pair.signal_source_stock_code.split("+")
+                    source_features = replay.features(all_bars[left])
+                    right_signals = replay.canonical_signals(replay.features(all_bars[right]))
+                    right_by_key = {(event.at, event.signal_type, event.direction) for event in right_signals}
+                    # Official agreement: underlying LONG + inverse SHORT opens
+                    # leverage LONG, and the exact opposite opens leverage SHORT.
+                    signals = []
+                    for event in replay.canonical_signals(source_features):
+                        expected = "SHORT" if event.direction == "LONG" else "LONG"
+                        if (event.at, event.signal_type, expected) in right_by_key:
+                            signals.append(event)
+                else:
+                    source_features = replay.features(all_bars[pair.signal_source_stock_code])
+                    signals = replay.canonical_signals(source_features)
                 target_prices = {bar.bar_time: bar.close_price for bar in all_bars[pair.trade_stock_code]}
-                cycles = replay.replay(features=source_features, signals=signals, target_prices=target_prices, direction_transform=pair.transform)
+                cycles = replay.replay(features=source_features, signals=signals, target_prices=target_prices,
+                                       direction_transform="DIRECT" if pair.transform == "CONSENSUS" else pair.transform)
                 for strategy in STRATEGIES:
                     for signal in signals:
                         if signal.signal_type in ( {strategy} if strategy.startswith("SIGNAL_") else ({"SIGNAL_1","SIGNAL_2","SIGNAL_3"} if strategy=="ACCUMULATED" else ({"SIGNAL_1","SIGNAL_2"} if strategy=="ACCUMULATED_1" else {"SIGNAL_2","SIGNAL_3"})) ):
