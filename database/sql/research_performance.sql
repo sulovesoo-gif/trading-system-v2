@@ -17,7 +17,8 @@ SELECT trade_stock_code, signal_source_stock_code, strategy_code, observation_co
        SUM(realized_profit) AS realized_profit, SUM(invested_amount) AS invested_amount,
        COALESCE(SUM(realized_profit)/NULLIF(SUM(invested_amount),0)*100,0) AS invested_return_rate,
        SUM(realized_profit)/10000000*100 AS capital_return_rate,
-       AVG(avg_trade_return_rate) AS avg_trade_return_rate, AVG(avg_holding_seconds) AS avg_holding_seconds,
+       COALESCE(SUM(avg_trade_return_rate * closed_count)/NULLIF(SUM(closed_count),0),0) AS avg_trade_return_rate,
+       COALESCE(SUM(avg_holding_seconds * closed_count)/NULLIF(SUM(closed_count),0),0) AS avg_holding_seconds,
        SUM(signal_exit_profit) AS signal_exit_profit, SUM(session_close_profit) AS session_close_profit
 FROM research_performance_daily
 WHERE run_id = :run_id AND trading_date BETWEEN :start_date AND :end_date

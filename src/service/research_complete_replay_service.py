@@ -106,15 +106,21 @@ def _session_id(value: datetime) -> str | None:
 
 
 class CompleteReplay:
-    """Replay COMPLETE bars with MA10_CONFIRM entry gating.
+    """Replay COMPLETE bars with an explicit, reproducible entry policy.
 
     Every non-contiguous minute/session is a hard feature boundary.  MA values
     never bridge lunch/auction/NXT gaps merely because rows happen to be next
     to each other in SQL order.
     """
-    def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE", fee_rate: Decimal = Decimal("0"), sell_tax_rate: Decimal = Decimal("0")):
+    SIGNAL_ONLY = "SIGNAL_ONLY"
+    MA10_CONFIRM = "MA10_CONFIRM"
+
+    def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE", fee_rate: Decimal = Decimal("0"), sell_tax_rate: Decimal = Decimal("0"), slippage_rate: Decimal = Decimal("0"), entry_condition: str = MA10_CONFIRM):
         self.short, self.mid, self.long, self.price_field = short, mid, long, price_field
+        if entry_condition not in {self.SIGNAL_ONLY, self.MA10_CONFIRM}:
+            raise ValueError(f"unsupported entry_condition: {entry_condition}")
         self.fee_rate, self.sell_tax_rate = fee_rate, sell_tax_rate
+        self.slippage_rate, self.entry_condition = slippage_rate, entry_condition
 
     def features(self, bars: Iterable[MinuteBar]) -> list[MultiMaFeature]:
         ordered = sorted(bars, key=lambda item: item.bar_time)
@@ -194,7 +200,10 @@ class CompleteReplay:
             if position is None:
                 candidate = next((event for event in events if event.direction == direction), None)
                 if candidate and price is not None:
-                    if ma_direction == direction:
+                    if self.entry_condition == self.SIGNAL_ONLY:
+                        position = self._open(code, candidate, now, price, events)
+                        pending = None
+                    elif ma_direction == direction:
                         position = self._open(code, candidate, now, price, events)
                         pending = None
                     else:
@@ -233,13 +242,17 @@ class CompleteReplay:
             legs = [self._leg(event, at, price, Decimal("1") / Decimal("3")) for event in unique.values()]
         return Position(signal.direction, signal, at, legs)
 
-    @staticmethod
-    def _leg(signal: ResearchSignal, at: datetime, price: Decimal, ratio: Decimal) -> ResearchLeg:
+    def _leg(self, signal: ResearchSignal, at: datetime, price: Decimal, ratio: Decimal) -> ResearchLeg:
+        # A configurable slippage policy changes the executable price, never
+        # the RAW/feature price.  Zero is a valid explicit research policy.
+        adjusted = price * (Decimal("1") + self.slippage_rate if signal.direction == "LONG" else Decimal("1") - self.slippage_rate)
+        price = adjusted
         quantity = int((CAPITAL * ratio) // price)
         invested = price * quantity
         return ResearchLeg(signal.signal_type, signal.at, at, price, ratio, quantity, invested)
 
     def _close(self, code: str, position: Position, *, signal_time: datetime, exit_time: datetime, exit_price: Decimal, exit_type: str) -> ClosedCycle:
+        exit_price = exit_price * (Decimal("1") - self.slippage_rate if position.direction == "LONG" else Decimal("1") + self.slippage_rate)
         profit = sum(((exit_price - leg.entry_price if position.direction == "LONG" else leg.entry_price - exit_price) * leg.quantity for leg in position.legs), Decimal("0"))
         invested = position.invested_amount
         quantity = sum(leg.quantity for leg in position.legs)

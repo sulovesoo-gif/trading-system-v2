@@ -32,6 +32,7 @@ PAGE = """<!doctype html><meta charset='utf-8'><title>Research Backfill</title>
 <form method='post' action='/admin/backfill'><label>종목코드 <input name='stock_code' value='000660' required></label>
 <label>종류 <select name='kind'><option value='minute'>분봉</option><option value='daily'>일봉</option></select></label>
 <label>시작일 <input type='date' name='start_date' required></label><label>종료일 <input type='date' name='end_date' required></label>
+<label>진입 조건 <select name='entry_condition'><option value='MA10_CONFIRM' selected>MA10_CONFIRM</option><option value='SIGNAL_ONLY'>SIGNAL_ONLY</option></select></label>
 <button name='action' value='backfill'>RAW 백필 실행</button><button name='action' value='replay'>일별 COMPLETE 전략 재생 실행</button></form>"""
 
 def _load_env(path: Path | None = None):
@@ -54,7 +55,8 @@ def application(pool, values):
         result = service.backfill_minutes(stock_code=code,start_date=start,end_date=end,venue=venue) if kind == 'minute' else service.backfill_daily(stock_code=code,start_date=start,end_date=end,venue=venue)
         response['backfill'] = result.__dict__ if hasattr(result, '__dict__') else result
     elif action == 'replay':
-        response['research_run_id'] = str(CompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end))
+        entry_condition = values.get('entry_condition', ['MA10_CONFIRM'])[0]
+        response['research_run_id'] = str(CompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end, entry_condition=entry_condition))
         response['raw_api_calls'] = 0
     else: raise ValueError('unknown action')
     return response

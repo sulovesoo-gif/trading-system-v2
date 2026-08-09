@@ -73,13 +73,54 @@ class ResearchRepository:
               coalesce(sum(realized_profit) FILTER (WHERE exit_type='SIGNAL'),0),coalesce(sum(realized_profit) FILTER (WHERE exit_type='SESSION_CLOSE'),0)
             FROM research_trade_cycle WHERE run_id=%s AND exit_time IS NOT NULL
             GROUP BY run_id,trading_date,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction""", (run_id,))
+            # A daily market label is research traceability, not a strategy
+            # input.  Use the target instrument's first/last official bar of
+            # the same trading day; absent RAW deliberately remains NULL.
+            cur.execute("""WITH targets AS (
+                SELECT DISTINCT trading_date,trade_stock_code FROM research_performance_daily WHERE run_id=%s
+              ), day_price AS (
+                SELECT t.trading_date,t.trade_stock_code,
+                  (SELECT b.open_price FROM raw_stock_minute b
+                   WHERE b.stock_code=t.trade_stock_code AND b.market_code='KOSPI' AND b.data_source='KIS'
+                     AND b.collect_cycle='1MIN' AND b.bar_time::date=t.trading_date
+                     AND b.trading_venue=CASE WHEN t.trade_stock_code IN ('000660','005930') THEN 'INTEGRATED' ELSE 'KRX' END
+                   ORDER BY b.bar_time ASC LIMIT 1) AS opening_price,
+                  (SELECT b.close_price FROM raw_stock_minute b
+                   WHERE b.stock_code=t.trade_stock_code AND b.market_code='KOSPI' AND b.data_source='KIS'
+                     AND b.collect_cycle='1MIN' AND b.bar_time::date=t.trading_date
+                     AND b.trading_venue=CASE WHEN t.trade_stock_code IN ('000660','005930') THEN 'INTEGRATED' ELSE 'KRX' END
+                   ORDER BY b.bar_time DESC LIMIT 1) AS closing_price
+                FROM targets t
+              )
+              UPDATE research_performance_daily p
+                 SET daily_return_rate=(d.closing_price-d.opening_price)/NULLIF(d.opening_price,0)*100,
+                     daily_market_direction=CASE WHEN d.closing_price>d.opening_price THEN 'UP'
+                                                  WHEN d.closing_price<d.opening_price THEN 'DOWN' ELSE 'FLAT' END
+                FROM day_price d
+               WHERE p.run_id=%s AND p.trading_date=d.trading_date AND p.trade_stock_code=d.trade_stock_code
+                 AND d.opening_price IS NOT NULL AND d.closing_price IS NOT NULL""", (run_id, run_id))
 
     def top_period(self, *, run_id: UUID, limit: int = 10):
         with self.pool.connection() as conn, conn.cursor() as cur:
             cur.execute("""SELECT run_id,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,
               SUM(closed_count),SUM(win_count),SUM(loss_count),SUM(flat_count),SUM(realized_profit),SUM(invested_amount),
               COALESCE(SUM(realized_profit)/NULLIF(SUM(invested_amount),0)*100,0),COALESCE(SUM(realized_profit)/10000000*100,0),
-              AVG(avg_trade_return_rate),AVG(avg_holding_seconds),SUM(signal_exit_profit),SUM(session_close_profit)
+              COALESCE(SUM(avg_trade_return_rate*closed_count)/NULLIF(SUM(closed_count),0),0),
+              COALESCE(SUM(avg_holding_seconds*closed_count)/NULLIF(SUM(closed_count),0),0),SUM(signal_exit_profit),SUM(session_close_profit)
               FROM research_performance_daily WHERE run_id=%s GROUP BY run_id,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction
               ORDER BY COALESCE(SUM(realized_profit)/10000000*100,0) DESC LIMIT %s""", (run_id,limit))
             return cur.fetchall()
+
+    def save_position_daily(self, *, run_id: UUID, cycle_id: int, trading_date: date,
+                            trade_stock_code: str, signal_source_stock_code: str,
+                            strategy_code: str, observation_code: str, direction: str,
+                            entry_date: date, entry_price, valuation_close_price, quantity: int,
+                            invested_amount, unrealized_profit, unrealized_return_rate,
+                            capital_return_rate, position_status: str) -> None:
+        """Persistence hook for a future daily strategy; it never changes intraday performance."""
+        with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+            cur.execute("""INSERT INTO research_position_daily
+              (run_id,cycle_id,trading_date,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,entry_date,entry_price,valuation_close_price,quantity,invested_amount,unrealized_profit,unrealized_return_rate,capital_return_rate,position_status)
+              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              ON CONFLICT (run_id,cycle_id,trading_date) DO UPDATE SET valuation_close_price=EXCLUDED.valuation_close_price,unrealized_profit=EXCLUDED.unrealized_profit,unrealized_return_rate=EXCLUDED.unrealized_return_rate,capital_return_rate=EXCLUDED.capital_return_rate,position_status=EXCLUDED.position_status""",
+                        (run_id,cycle_id,trading_date,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,entry_date,entry_price,valuation_close_price,quantity,invested_amount,unrealized_profit,unrealized_return_rate,capital_return_rate,position_status))

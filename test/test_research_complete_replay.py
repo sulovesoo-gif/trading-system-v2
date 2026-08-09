@@ -67,3 +67,26 @@ class CompleteReplayTest(unittest.TestCase):
         short = ResearchSignal(points[2].bar.bar_time, "SIGNAL_1", "SHORT", points[2])
         cycles = CompleteReplay().replay(features=points, signals=[long, short], target_prices={item.bar.bar_time: item.value for item in points})
         self.assertFalse(any(item.strategy_code == "SIGNAL_1" and item.direction == "LONG" for item in cycles))
+
+    def test_signal_only_enters_at_signal_without_ma10_pending(self):
+        start = datetime(2026, 8, 3, 9, 10)
+        def feature(offset, ma10):
+            bar = MinuteBar(start + timedelta(minutes=offset), Decimal("100"), Decimal("100"), Decimal("100"), Decimal("100"))
+            return MultiMaFeature(bar, Decimal("100"), Decimal("100"), Decimal("100"), Decimal(ma10), Decimal("1"))
+        points = [feature(0, 100), feature(1, 100), feature(2, 101)]
+        signal = ResearchSignal(points[1].bar.bar_time, "SIGNAL_1", "LONG", points[1])
+        cycles = CompleteReplay(entry_condition=CompleteReplay.SIGNAL_ONLY).replay(
+            features=points, signals=[signal], target_prices={item.bar.bar_time: item.value for item in points})
+        s1 = next(item for item in cycles if item.strategy_code == "SIGNAL_1")
+        self.assertEqual(s1.entry_signal_time, points[1].bar.bar_time)
+        self.assertEqual(s1.entry_confirm_time, points[1].bar.bar_time)
+
+    def test_net_profit_reconciles_with_explicit_costs(self):
+        start = datetime(2026, 8, 3, 9, 10)
+        points = [MultiMaFeature(MinuteBar(start + timedelta(minutes=index), *(Decimal(value),) * 4), Decimal(value), Decimal(value), Decimal(value), Decimal("100"), Decimal("1"))
+                  for index, value in enumerate([100, 100, 110])]
+        signal = ResearchSignal(points[1].bar.bar_time, "SIGNAL_1", "LONG", points[1])
+        cycles = CompleteReplay(entry_condition=CompleteReplay.SIGNAL_ONLY, fee_rate=Decimal("0.001"), sell_tax_rate=Decimal("0.002")).replay(
+            features=points, signals=[signal], target_prices={item.bar.bar_time: item.value for item in points})
+        cycle = next(item for item in cycles if item.strategy_code == "SIGNAL_1")
+        self.assertEqual(cycle.gross_realized_profit - cycle.buy_fee - cycle.sell_fee - cycle.sell_tax, cycle.realized_profit)

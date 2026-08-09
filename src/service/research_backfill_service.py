@@ -4,7 +4,7 @@ The service is intentionally not imported by any realtime runner.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -12,6 +12,26 @@ from uuid import uuid4
 from src.analysis.feature.sma_feature import MinuteBar
 from src.repository.raw_specs import RawTable
 from src.service.research_complete_replay_service import CompleteReplay, STRATEGIES, _session_id
+
+
+@dataclass(frozen=True)
+class ResearchCostPolicy:
+    """Run-snapshotted costs; environment overrides preserve account-specific rates."""
+    version: str = "KIS_BanKIS_2026_08"
+    stock_fee_rate: Decimal = Decimal("0.000140527")
+    etf_etn_fee_rate: Decimal = Decimal("0.000146527")
+    stock_sell_tax_rate: Decimal = Decimal("0")
+    etf_etn_sell_tax_rate: Decimal = Decimal("0")
+    slippage_rate: Decimal = Decimal("0")
+
+    def for_stock(self, stock_code: str) -> tuple[Decimal, Decimal]:
+        # The official research universe contains one common share and ETF
+        # products.  New instruments must choose a policy explicitly.
+        return ((self.stock_fee_rate, self.stock_sell_tax_rate)
+                if stock_code == "000660" else (self.etf_etn_fee_rate, self.etf_etn_sell_tax_rate))
+
+    def snapshot(self) -> dict[str, str]:
+        return {key: str(value) for key, value in asdict(self).items()}
 
 
 @dataclass(frozen=True)
@@ -99,11 +119,19 @@ class CompleteResearchRunner:
               AND collect_cycle='1MIN' AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code,venue,start_date,end_date))
             return [MinuteBar(*row) for row in cur.fetchall()]
 
-    def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS):
+    def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS,
+            entry_condition: str = CompleteReplay.MA10_CONFIRM,
+            cost_policy: ResearchCostPolicy | None = None):
+        if entry_condition not in {CompleteReplay.SIGNAL_ONLY, CompleteReplay.MA10_CONFIRM}:
+            raise ValueError(f"unsupported entry_condition: {entry_condition}")
+        cost_policy = cost_policy or ResearchCostPolicy()
         run_id = uuid4()
         self.repository.create_run(run_id=run_id, start_date=start_date, end_date=end_date,
-                                   parameters={"observation": "COMPLETE", "capital": "10000000", "entry_condition": "MA10_CONFIRM", "cost_policy_version": "KIS_BanKIS_2026_08", "pairs": [pair.name for pair in pairs]})
-        replay = CompleteReplay()
+                                   parameters={"observation": "COMPLETE", "capital": "10000000", "entry_condition": entry_condition,
+                                               "cost_policy_version": cost_policy.version, "cost_policy": cost_policy.snapshot(),
+                                               "fee_rate": str(cost_policy.stock_fee_rate), "slippage_rate": str(cost_policy.slippage_rate),
+                                               "pairs": [pair.name for pair in pairs]})
+        replay = CompleteReplay(entry_condition=entry_condition)
         try:
             all_bars = {code: self._bars(code, start_date, end_date) for code in {part for pair in pairs for part in pair.signal_source_stock_code.split("+")} | {pair.trade_stock_code for pair in pairs}}
             for source, bars in all_bars.items():
@@ -130,7 +158,10 @@ class CompleteResearchRunner:
                     signals = replay.canonical_signals(source_features)
                 direction_by_time = {feature.bar.bar_time: replay._ma10_direction(previous, feature) for previous, feature in zip([None, *source_features], source_features)}
                 target_prices = {bar.bar_time: bar.close_price for bar in all_bars[pair.trade_stock_code]}
-                cycles = replay.replay(features=source_features, signals=signals, target_prices=target_prices,
+                fee_rate, sell_tax_rate = cost_policy.for_stock(pair.trade_stock_code)
+                pair_replay = CompleteReplay(entry_condition=entry_condition, fee_rate=fee_rate,
+                                              sell_tax_rate=sell_tax_rate, slippage_rate=cost_policy.slippage_rate)
+                cycles = pair_replay.replay(features=source_features, signals=signals, target_prices=target_prices,
                                        direction_transform="DIRECT" if pair.transform == "CONSENSUS" else pair.transform)
                 for strategy in STRATEGIES:
                     for signal in signals:
