@@ -1,0 +1,241 @@
+"""Research-only COMPLETE replay.
+
+This module deliberately shares the live canonical signal function.  It never
+touches RAW, alerts, system switches, or order clients.
+"""
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Iterable
+
+from src.analysis.event.multi_ma_event import detect_signals
+from src.analysis.feature.multi_ma_feature import MultiMaFeature, build_multi_ma_features
+from src.analysis.feature.sma_feature import MinuteBar
+
+CAPITAL = Decimal("10000000")
+SINGLE = {"SIGNAL_1": {"SIGNAL_1"}, "SIGNAL_2": {"SIGNAL_2"}, "SIGNAL_3": {"SIGNAL_3"}}
+ACCUMULATED = {
+    "ACCUMULATED": {"SIGNAL_1", "SIGNAL_2", "SIGNAL_3"},
+    "ACCUMULATED_1": {"SIGNAL_1", "SIGNAL_2"},
+    "ACCUMULATED_2": {"SIGNAL_2", "SIGNAL_3"},
+}
+STRATEGIES = tuple((*SINGLE, *ACCUMULATED))
+
+
+@dataclass(frozen=True)
+class ResearchSignal:
+    at: datetime
+    signal_type: str
+    direction: str
+    feature: MultiMaFeature
+
+
+@dataclass(frozen=True)
+class ResearchLeg:
+    signal_type: str
+    signal_time: datetime
+    entry_time: datetime
+    entry_price: Decimal
+    ratio: Decimal
+    quantity: int
+    invested_amount: Decimal
+
+
+@dataclass
+class Position:
+    direction: str
+    entry_signal: ResearchSignal
+    entry_confirm_time: datetime
+    legs: list[ResearchLeg] = field(default_factory=list)
+
+    @property
+    def ratio(self) -> Decimal:
+        return sum((leg.ratio for leg in self.legs), Decimal("0"))
+
+    @property
+    def invested_amount(self) -> Decimal:
+        return sum((leg.invested_amount for leg in self.legs), Decimal("0"))
+
+    @property
+    def average_entry_price(self) -> Decimal:
+        if not self.legs:
+            return Decimal("0")
+        return sum((leg.entry_price * leg.invested_amount for leg in self.legs), Decimal("0")) / self.invested_amount
+
+
+@dataclass(frozen=True)
+class ClosedCycle:
+    strategy_code: str
+    direction: str
+    entry_signal_time: datetime
+    entry_confirm_time: datetime
+    entry_price: Decimal
+    exit_signal_time: datetime
+    exit_time: datetime
+    exit_price: Decimal
+    quantity: int
+    invested_amount: Decimal
+    realized_profit: Decimal
+    invested_return_rate: Decimal
+    capital_return_rate: Decimal
+    exit_type: str
+    data_status: str
+    legs: tuple[ResearchLeg, ...]
+
+
+def _session_id(value: datetime) -> str | None:
+    moment = value.time()
+    if moment.hour == 8 and moment.minute < 50:
+        return "NXT_PREMARKET"
+    if (moment.hour, moment.minute) >= (9, 0) and (moment.hour, moment.minute) <= (15, 19):
+        return "KRX_REGULAR"
+    if (moment.hour, moment.minute) >= (15, 40) and (moment.hour, moment.minute) <= (20, 0):
+        return "NXT_AFTERMARKET"
+    return None
+
+
+class CompleteReplay:
+    """Replay COMPLETE bars with MA10_CONFIRM entry gating.
+
+    Every non-contiguous minute/session is a hard feature boundary.  MA values
+    never bridge lunch/auction/NXT gaps merely because rows happen to be next
+    to each other in SQL order.
+    """
+    def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE"):
+        self.short, self.mid, self.long, self.price_field = short, mid, long, price_field
+
+    def features(self, bars: Iterable[MinuteBar]) -> list[MultiMaFeature]:
+        ordered = sorted(bars, key=lambda item: item.bar_time)
+        groups: list[list[MinuteBar]] = []
+        for bar in ordered:
+            if _session_id(bar.bar_time) is None:
+                continue
+            if not groups or bar.bar_time.date() != groups[-1][-1].bar_time.date() or _session_id(bar.bar_time) != _session_id(groups[-1][-1].bar_time) or bar.bar_time - groups[-1][-1].bar_time != timedelta(minutes=1):
+                groups.append([bar])
+            else:
+                groups[-1].append(bar)
+        return [feature for group in groups for feature in build_multi_ma_features(group, short_period=self.short, mid_period=self.mid, long_period=self.long, price_field=self.price_field)]
+
+    def run(self, bars: list[MinuteBar]) -> tuple[list[MultiMaFeature], list[ResearchSignal], list[ClosedCycle]]:
+        features = self.features(bars)
+        target_prices = {bar.bar_time: bar.close_price for bar in bars}
+        signals = self.canonical_signals(features)
+        cycles = self.replay(features=features, signals=signals, target_prices=target_prices)
+        return features, signals, cycles
+
+    @staticmethod
+    def canonical_signals(features: list[MultiMaFeature]) -> list[ResearchSignal]:
+        result: list[ResearchSignal] = []
+        for previous, current in zip(features, features[1:]):
+            if previous.bar.bar_time.date() != current.bar.bar_time.date() or _session_id(previous.bar.bar_time) != _session_id(current.bar.bar_time) or current.bar.bar_time - previous.bar.bar_time != timedelta(minutes=1):
+                continue
+            result.extend(ResearchSignal(current.bar.bar_time, item.signal_type, item.direction, current) for item in detect_signals(previous, current))
+        return result
+
+    def replay(self, *, features: list[MultiMaFeature], signals: list[ResearchSignal], target_prices: dict[datetime, Decimal], direction_transform: str = "DIRECT") -> list[ClosedCycle]:
+        """Run all six official strategies. target_prices must be exact-time only."""
+        output: list[ClosedCycle] = []
+        by_time: dict[datetime, list[ResearchSignal]] = defaultdict(list)
+        for signal in signals:
+            direction = ({"LONG": "SHORT", "SHORT": "LONG"}.get(signal.direction, signal.direction)
+                         if direction_transform == "INVERT" else signal.direction)
+            by_time[signal.at].append(ResearchSignal(signal.at, signal.signal_type, direction, signal.feature))
+        for code in STRATEGIES:
+            output.extend(self._replay_strategy(code, features, by_time, target_prices))
+        return output
+
+    def _replay_strategy(self, code: str, features: list[MultiMaFeature], by_time: dict[datetime, list[ResearchSignal]], target_prices: dict[datetime, Decimal]) -> list[ClosedCycle]:
+        allowed = SINGLE.get(code) or ACCUMULATED[code]
+        position: Position | None = None
+        pending: ResearchSignal | None = None
+        closed: list[ClosedCycle] = []
+        previous: MultiMaFeature | None = None
+        for feature in features:
+            now = feature.bar.bar_time
+            boundary = previous is None or now - previous.bar.bar_time != timedelta(minutes=1) or now.date() != previous.bar.bar_time.date() or _session_id(now) != _session_id(previous.bar.bar_time)
+            if boundary:
+                if position is not None and previous is not None:
+                    previous_price = target_prices.get(previous.bar.bar_time)
+                    if previous_price is not None:
+                        closed.append(self._close(code, position, signal_time=previous.bar.bar_time, exit_time=previous.bar.bar_time, exit_price=previous_price, exit_type="SESSION_CLOSE"))
+                    position = None
+                # Do not carry a pending signal across a gap/session.
+                pending = None
+            ma_direction = self._ma10_direction(previous, feature)
+            events = [event for event in by_time.get(now, ()) if event.signal_type in allowed]
+            directions = {event.direction for event in events}
+            if len(directions) > 1:
+                previous = feature
+                continue  # Explicit conflict: keep position, never guess ordering.
+            direction = next(iter(directions), None)
+            price = target_prices.get(now)
+            if direction and pending and direction != pending.direction:
+                pending = None
+            # A valid reverse always exits the entire old virtual position.
+            if position and direction and direction != position.direction:
+                if price is not None:
+                    closed.append(self._close(code, position, signal_time=now, exit_time=now, exit_price=price, exit_type="SIGNAL"))
+                    position = None
+                else:
+                    previous = feature
+                    continue  # exact target price is mandatory; no substitution.
+            if position is None:
+                candidate = next((event for event in events if event.direction == direction), None)
+                if candidate and price is not None:
+                    if ma_direction == direction:
+                        position = self._open(code, candidate, now, price, events)
+                        pending = None
+                    else:
+                        pending = candidate
+                elif pending and price is not None and ma_direction == pending.direction:
+                    position = self._open(code, pending, now, price, [pending])
+                    pending = None
+            elif code in ACCUMULATED and direction == position.direction and price is not None:
+                used = {leg.signal_type for leg in position.legs}
+                fresh = [event for event in events if event.signal_type not in used]
+                for event in fresh:
+                    position.legs.append(self._leg(event, now, price, Decimal("1") / Decimal("3")))
+            previous = feature
+        if position and features:
+            last = features[-1]
+            price = target_prices.get(last.bar.bar_time)
+            if price is not None:
+                closed.append(self._close(code, position, signal_time=last.bar.bar_time, exit_time=last.bar.bar_time, exit_price=price, exit_type="SESSION_CLOSE"))
+        return closed
+
+    @staticmethod
+    def _ma10_direction(previous: MultiMaFeature | None, current: MultiMaFeature) -> str | None:
+        if previous is None or previous.ma_long is None or current.ma_long is None:
+            return None
+        if current.ma_long > previous.ma_long:
+            return "LONG"
+        if current.ma_long < previous.ma_long:
+            return "SHORT"
+        return None
+
+    def _open(self, code: str, signal: ResearchSignal, at: datetime, price: Decimal, same_time_events: list[ResearchSignal]) -> Position:
+        if code in SINGLE:
+            legs = [self._leg(signal, at, price, Decimal("1"))]
+        else:
+            unique = {event.signal_type: event for event in same_time_events if event.direction == signal.direction}
+            legs = [self._leg(event, at, price, Decimal("1") / Decimal("3")) for event in unique.values()]
+        return Position(signal.direction, signal, at, legs)
+
+    @staticmethod
+    def _leg(signal: ResearchSignal, at: datetime, price: Decimal, ratio: Decimal) -> ResearchLeg:
+        quantity = int((CAPITAL * ratio) // price)
+        invested = price * quantity
+        return ResearchLeg(signal.signal_type, signal.at, at, price, ratio, quantity, invested)
+
+    @staticmethod
+    def _close(code: str, position: Position, *, signal_time: datetime, exit_time: datetime, exit_price: Decimal, exit_type: str) -> ClosedCycle:
+        profit = sum(((exit_price - leg.entry_price if position.direction == "LONG" else leg.entry_price - exit_price) * leg.quantity for leg in position.legs), Decimal("0"))
+        invested = position.invested_amount
+        quantity = sum(leg.quantity for leg in position.legs)
+        return ClosedCycle(code, position.direction, position.entry_signal.at, position.entry_confirm_time, position.average_entry_price,
+                           signal_time, exit_time, exit_price, quantity, invested, profit,
+                           Decimal("0") if not invested else profit / invested * Decimal("100"), profit / CAPITAL * Decimal("100"),
+                           exit_type, "NORMAL", tuple(position.legs))
