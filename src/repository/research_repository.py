@@ -76,21 +76,26 @@ class ResearchRepository:
             # A daily market label is research traceability, not a strategy
             # input.  Use the target instrument's first/last official bar of
             # the same trading day; absent RAW deliberately remains NULL.
-            cur.execute("""WITH targets AS (
-                SELECT DISTINCT trading_date,trade_stock_code FROM research_performance_daily WHERE run_id=%s
+            cur.execute("""WITH targets AS MATERIALIZED (
+                SELECT DISTINCT trading_date,trade_stock_code
+                  FROM research_performance_daily WHERE run_id=%s
+              ), ranked_bars AS (
+                SELECT t.trading_date,t.trade_stock_code,b.open_price,b.close_price,
+                       row_number() OVER (PARTITION BY t.trading_date,t.trade_stock_code ORDER BY b.bar_time) AS first_rank,
+                       row_number() OVER (PARTITION BY t.trading_date,t.trade_stock_code ORDER BY b.bar_time DESC) AS last_rank
+                  FROM targets t
+                  JOIN raw_stock_minute b
+                    ON b.stock_code=t.trade_stock_code
+                   AND b.bar_time >= t.trading_date::timestamp
+                   AND b.bar_time < (t.trading_date + INTERVAL '1 day')::timestamp
+                   AND b.market_code='KOSPI' AND b.data_source='KIS' AND b.collect_cycle='1MIN'
+                   AND b.trading_venue=CASE WHEN t.trade_stock_code IN ('000660','005930') THEN 'INTEGRATED' ELSE 'KRX' END
               ), day_price AS (
-                SELECT t.trading_date,t.trade_stock_code,
-                  (SELECT b.open_price FROM raw_stock_minute b
-                   WHERE b.stock_code=t.trade_stock_code AND b.market_code='KOSPI' AND b.data_source='KIS'
-                     AND b.collect_cycle='1MIN' AND b.bar_time::date=t.trading_date
-                     AND b.trading_venue=CASE WHEN t.trade_stock_code IN ('000660','005930') THEN 'INTEGRATED' ELSE 'KRX' END
-                   ORDER BY b.bar_time ASC LIMIT 1) AS opening_price,
-                  (SELECT b.close_price FROM raw_stock_minute b
-                   WHERE b.stock_code=t.trade_stock_code AND b.market_code='KOSPI' AND b.data_source='KIS'
-                     AND b.collect_cycle='1MIN' AND b.bar_time::date=t.trading_date
-                     AND b.trading_venue=CASE WHEN t.trade_stock_code IN ('000660','005930') THEN 'INTEGRATED' ELSE 'KRX' END
-                   ORDER BY b.bar_time DESC LIMIT 1) AS closing_price
-                FROM targets t
+                SELECT trading_date,trade_stock_code,
+                       max(open_price) FILTER (WHERE first_rank=1) AS opening_price,
+                       max(close_price) FILTER (WHERE last_rank=1) AS closing_price
+                  FROM ranked_bars
+                 GROUP BY trading_date,trade_stock_code
               )
               UPDATE research_performance_daily p
                  SET daily_return_rate=(d.closing_price-d.opening_price)/NULLIF(d.opening_price,0)*100,
