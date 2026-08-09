@@ -1,7 +1,9 @@
 from datetime import date, datetime
 import unittest
 
-from src.service.research_backfill_service import ResearchBackfillService, OFFICIAL_PAIRS
+from decimal import Decimal
+
+from src.service.research_backfill_service import ResearchBackfillService, OFFICIAL_PAIRS, ResearchCostPolicy
 
 
 class _Calendar:
@@ -38,3 +40,8 @@ class ResearchBackfillServiceTest(unittest.TestCase):
         self.assertEqual(len(OFFICIAL_PAIRS), 10)
         self.assertTrue(all(pair.trade_stock_code for pair in OFFICIAL_PAIRS))
         self.assertEqual(OFFICIAL_PAIRS[0].trade_stock_code, '000660')
+
+    def test_cost_policy_selects_stock_and_etf_rates_separately(self):
+        policy = ResearchCostPolicy()
+        self.assertEqual(policy.for_stock('000660')[0], Decimal('0.000140527'))
+        self.assertEqual(policy.for_stock('0193T0')[0], Decimal('0.000146527'))
