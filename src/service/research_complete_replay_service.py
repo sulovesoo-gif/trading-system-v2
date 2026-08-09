@@ -84,6 +84,14 @@ class ClosedCycle:
     exit_type: str
     data_status: str
     legs: tuple[ResearchLeg, ...]
+    gross_realized_profit: Decimal = Decimal("0")
+    buy_fee: Decimal = Decimal("0")
+    sell_fee: Decimal = Decimal("0")
+    sell_tax: Decimal = Decimal("0")
+
+    @property
+    def total_trading_cost(self) -> Decimal:
+        return self.buy_fee + self.sell_fee + self.sell_tax
 
 
 def _session_id(value: datetime) -> str | None:
@@ -104,8 +112,9 @@ class CompleteReplay:
     never bridge lunch/auction/NXT gaps merely because rows happen to be next
     to each other in SQL order.
     """
-    def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE"):
+    def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE", fee_rate: Decimal = Decimal("0"), sell_tax_rate: Decimal = Decimal("0")):
         self.short, self.mid, self.long, self.price_field = short, mid, long, price_field
+        self.fee_rate, self.sell_tax_rate = fee_rate, sell_tax_rate
 
     def features(self, bars: Iterable[MinuteBar]) -> list[MultiMaFeature]:
         ordered = sorted(bars, key=lambda item: item.bar_time)
@@ -230,12 +239,13 @@ class CompleteReplay:
         invested = price * quantity
         return ResearchLeg(signal.signal_type, signal.at, at, price, ratio, quantity, invested)
 
-    @staticmethod
-    def _close(code: str, position: Position, *, signal_time: datetime, exit_time: datetime, exit_price: Decimal, exit_type: str) -> ClosedCycle:
+    def _close(self, code: str, position: Position, *, signal_time: datetime, exit_time: datetime, exit_price: Decimal, exit_type: str) -> ClosedCycle:
         profit = sum(((exit_price - leg.entry_price if position.direction == "LONG" else leg.entry_price - exit_price) * leg.quantity for leg in position.legs), Decimal("0"))
         invested = position.invested_amount
         quantity = sum(leg.quantity for leg in position.legs)
+        buy_fee = invested * self.fee_rate; sell_notional = exit_price * quantity; sell_fee = sell_notional * self.fee_rate; sell_tax = sell_notional * self.sell_tax_rate
+        net = profit - buy_fee - sell_fee - sell_tax
         return ClosedCycle(code, position.direction, position.entry_signal.at, position.entry_confirm_time, position.average_entry_price,
-                           signal_time, exit_time, exit_price, quantity, invested, profit,
-                           Decimal("0") if not invested else profit / invested * Decimal("100"), profit / CAPITAL * Decimal("100"),
-                           exit_type, "NORMAL", tuple(position.legs))
+                           signal_time, exit_time, exit_price, quantity, invested, net,
+                           Decimal("0") if not invested else net / invested * Decimal("100"), net / CAPITAL * Decimal("100"),
+                           exit_type, "NORMAL", tuple(position.legs), profit, buy_fee, sell_fee, sell_tax)

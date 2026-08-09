@@ -12,8 +12,9 @@ class ResearchRepository:
 
     def create_run(self, *, run_id: UUID, start_date: date, end_date: date, parameters: dict, status: str = "RUNNING") -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
-            cur.execute("""INSERT INTO research_run(run_id,start_date,end_date,status,parameters)
-            VALUES (%s,%s,%s,%s,%s) ON CONFLICT (run_id) DO NOTHING""", (run_id, start_date, end_date, status, Jsonb(parameters)))
+            cur.execute("""INSERT INTO research_run(run_id,start_date,end_date,status,cost_policy_version,fee_rate,slippage_rate,parameters)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (run_id) DO NOTHING""", (run_id, start_date, end_date, status,
+                        parameters.get("cost_policy_version", "UNSPECIFIED"), parameters.get("fee_rate", 0), parameters.get("slippage_rate", 0), Jsonb(parameters)))
 
     def finish_run(self, run_id: UUID, status: str) -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
@@ -27,13 +28,13 @@ class ResearchRepository:
                         (run_id, feature.bar.bar_time.date(), stock_code, feature.bar.bar_time, feature.value,
                          feature.ma_short, feature.ma_mid, feature.ma_long, ma10_direction, data_status))
 
-    def save_signal(self, *, run_id: UUID, stock_code: str, strategy_code: str, signal, pending: bool, confirm_time, session_code: str | None, data_status: str = "NORMAL") -> None:
+    def save_signal(self, *, run_id: UUID, stock_code: str, strategy_code: str, signal, ma10_direction: str | None, pending: bool, confirm_time, session_code: str | None, data_status: str = "NORMAL") -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
             cur.execute("""INSERT INTO research_signal_event(run_id,trading_date,signal_source_stock_code,observation_code,signal_time,strategy_code,signal_type,direction,signal_price,ma3,ma5,ma10,ma10_direction,pending_yn,pending_started_at,confirm_time,session_code,data_status)
             VALUES (%s,%s,%s,'COMPLETE',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (run_id,signal_source_stock_code,observation_code,signal_time,strategy_code,signal_type,direction) DO NOTHING""",
                         (run_id, signal.at.date(), stock_code, signal.at, strategy_code, signal.signal_type, signal.direction,
-                         signal.feature.value, signal.feature.ma_short, signal.feature.ma_mid, signal.feature.ma_long, None,
+                         signal.feature.value, signal.feature.ma_short, signal.feature.ma_mid, signal.feature.ma_long, ma10_direction,
                          "Y" if pending else "N", signal.at if pending else None, confirm_time, session_code, data_status))
 
     def save_cycle(self, *, run_id: UUID, trade_stock_code: str, signal_source_stock_code: str, cycle) -> int:
@@ -47,7 +48,10 @@ class ResearchRepository:
               cycle.entry_price, cycle.exit_signal_time, cycle.exit_time, cycle.exit_price, cycle.exit_type, cycle.quantity,
               cycle.invested_amount, cycle.realized_profit, cycle.invested_return_rate, cycle.capital_return_rate,
               int((cycle.exit_time-cycle.entry_confirm_time).total_seconds()), cycle.data_status))
-            return cur.fetchone()[0]
+            cycle_id = cur.fetchone()[0]
+            cur.execute("UPDATE research_trade_cycle SET gross_realized_profit=%s,buy_fee=%s,sell_fee=%s,sell_tax=%s,total_trading_cost=%s WHERE cycle_id=%s",
+                        (cycle.gross_realized_profit, cycle.buy_fee, cycle.sell_fee, cycle.sell_tax, cycle.total_trading_cost, cycle_id))
+            return cycle_id
 
     def save_leg(self, *, cycle_id: int, leg) -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
@@ -69,15 +73,13 @@ class ResearchRepository:
               coalesce(sum(realized_profit) FILTER (WHERE exit_type='SIGNAL'),0),coalesce(sum(realized_profit) FILTER (WHERE exit_type='SESSION_CLOSE'),0)
             FROM research_trade_cycle WHERE run_id=%s AND exit_time IS NOT NULL
             GROUP BY run_id,trading_date,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction""", (run_id,))
-            cur.execute("DELETE FROM research_performance_period WHERE run_id=%s AND start_date=%s AND end_date=%s", (run_id,start_date,end_date))
-            cur.execute("""INSERT INTO research_performance_period
-            SELECT run_id,%s,%s,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,
-              sum(closed_count),sum(win_count),sum(loss_count),sum(flat_count),sum(realized_profit),sum(invested_amount),
-              coalesce(sum(realized_profit)/nullif(sum(invested_amount),0)*100,0),coalesce(sum(realized_profit)/10000000*100,0),
-              avg(avg_trade_return_rate),avg(avg_holding_seconds),sum(signal_exit_profit),sum(session_close_profit)
-            FROM research_performance_daily WHERE run_id=%s GROUP BY run_id,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction""", (start_date,end_date,run_id))
 
     def top_period(self, *, run_id: UUID, limit: int = 10):
         with self.pool.connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT * FROM research_performance_period WHERE run_id=%s ORDER BY capital_return_rate DESC LIMIT %s", (run_id,limit))
+            cur.execute("""SELECT run_id,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,
+              SUM(closed_count),SUM(win_count),SUM(loss_count),SUM(flat_count),SUM(realized_profit),SUM(invested_amount),
+              COALESCE(SUM(realized_profit)/NULLIF(SUM(invested_amount),0)*100,0),COALESCE(SUM(realized_profit)/10000000*100,0),
+              AVG(avg_trade_return_rate),AVG(avg_holding_seconds),SUM(signal_exit_profit),SUM(session_close_profit)
+              FROM research_performance_daily WHERE run_id=%s GROUP BY run_id,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction
+              ORDER BY COALESCE(SUM(realized_profit)/10000000*100,0) DESC LIMIT %s""", (run_id,limit))
             return cur.fetchall()

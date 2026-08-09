@@ -102,7 +102,7 @@ class CompleteResearchRunner:
     def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS):
         run_id = uuid4()
         self.repository.create_run(run_id=run_id, start_date=start_date, end_date=end_date,
-                                   parameters={"observation": "COMPLETE", "capital": "10000000", "pairs": [pair.name for pair in pairs]})
+                                   parameters={"observation": "COMPLETE", "capital": "10000000", "entry_condition": "MA10_CONFIRM", "cost_policy_version": "KIS_BanKIS_2026_08", "pairs": [pair.name for pair in pairs]})
         replay = CompleteReplay()
         try:
             all_bars = {code: self._bars(code, start_date, end_date) for code in {part for pair in pairs for part in pair.signal_source_stock_code.split("+")} | {pair.trade_stock_code for pair in pairs}}
@@ -128,13 +128,14 @@ class CompleteResearchRunner:
                 else:
                     source_features = replay.features(all_bars[pair.signal_source_stock_code])
                     signals = replay.canonical_signals(source_features)
+                direction_by_time = {feature.bar.bar_time: replay._ma10_direction(previous, feature) for previous, feature in zip([None, *source_features], source_features)}
                 target_prices = {bar.bar_time: bar.close_price for bar in all_bars[pair.trade_stock_code]}
                 cycles = replay.replay(features=source_features, signals=signals, target_prices=target_prices,
                                        direction_transform="DIRECT" if pair.transform == "CONSENSUS" else pair.transform)
                 for strategy in STRATEGIES:
                     for signal in signals:
                         if signal.signal_type in ( {strategy} if strategy.startswith("SIGNAL_") else ({"SIGNAL_1","SIGNAL_2","SIGNAL_3"} if strategy=="ACCUMULATED" else ({"SIGNAL_1","SIGNAL_2"} if strategy=="ACCUMULATED_1" else {"SIGNAL_2","SIGNAL_3"})) ):
-                            self.repository.save_signal(run_id=run_id, stock_code=pair.signal_source_stock_code, strategy_code=strategy, signal=signal, pending=False, confirm_time=None, session_code=_session_id(signal.at))
+                            self.repository.save_signal(run_id=run_id, stock_code=pair.signal_source_stock_code, strategy_code=strategy, signal=signal, ma10_direction=direction_by_time.get(signal.at), pending=False, confirm_time=None, session_code=_session_id(signal.at))
                     for cycle in (item for item in cycles if item.strategy_code == strategy):
                         cycle_id = self.repository.save_cycle(run_id=run_id, trade_stock_code=pair.trade_stock_code, signal_source_stock_code=pair.signal_source_stock_code, cycle=cycle)
                         for leg in cycle.legs: self.repository.save_leg(cycle_id=cycle_id, leg=leg)
