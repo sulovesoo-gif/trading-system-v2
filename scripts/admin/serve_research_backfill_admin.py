@@ -34,8 +34,8 @@ PAGE = """<!doctype html><meta charset='utf-8'><title>Research Backfill</title>
 <label>시작일 <input type='date' name='start_date' required></label><label>종료일 <input type='date' name='end_date' required></label>
 <label><input type='checkbox' name='replay'> 백필 후 COMPLETE 전략 재생</label><button>실행</button></form>"""
 
-def _load_env():
-    path = ROOT / '.env'
+def _load_env(path: Path | None = None):
+    path = path or ROOT / '.env'
     if path.exists():
         for line in path.read_text(encoding='utf-8').splitlines():
             if '=' in line and not line.lstrip().startswith('#'):
@@ -68,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('--bind',default='127.0.0.1'); parser.add_argument('--port',type=int,default=8091); args=parser.parse_args(); _load_env()
+    parser=argparse.ArgumentParser(); parser.add_argument('--bind',default='127.0.0.1'); parser.add_argument('--port',type=int,default=8091); parser.add_argument('--env-file', type=Path); args=parser.parse_args(); _load_env(args.env_file)
     pool=create_connection_pool(DatabaseSettings.from_environment()); Handler.pool=pool
     try: ThreadingHTTPServer((args.bind,args.port), Handler).serve_forever()
     finally: pool.close()
