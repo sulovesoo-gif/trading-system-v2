@@ -658,23 +658,45 @@ def _daily_stateless_rows(pool, query: dict[str, list[str]], condition: str) -> 
     warmup = period - 1
     with pool.connection() as conn, conn.cursor() as cur:
         stock_names = _research_stock_names(cur)
-        # One set-based RAW read: each stock gets exactly N-1 prior *trading*
-        # bars plus the requested display/aggregation range.  Weekends and
-        # holidays therefore never affect warmup length.
-        cur.execute("""WITH ranked AS (
+        # One set-based RAW read: warmup is ranked *before the requested
+        # start*, not before the end.  Thus it is exactly N-1 actual KRX
+        # trading bars regardless of display-period length, weekends or
+        # holidays.  MA is calculated only after these two sets are united.
+        cur.execute("""WITH warmup_ranked AS (
               SELECT stock_code,trade_date,open_price,high_price,low_price,close_price,
-                     row_number() OVER (PARTITION BY stock_code ORDER BY trade_date DESC) AS prior_rank
+                     row_number() OVER (PARTITION BY stock_code ORDER BY trade_date DESC) AS warmup_rank
                 FROM raw_stock_daily
                WHERE stock_code = ANY(%s) AND data_source='KIS' AND market_code='KOSPI'
                  AND trading_venue='KRX' AND collect_cycle='DAILY'
-                 AND close_price IS NOT NULL AND trade_date <= %s
+                 AND close_price IS NOT NULL AND trade_date < %s
+            ), selected AS (
+              SELECT stock_code,trade_date,open_price,high_price,low_price,close_price
+                FROM raw_stock_daily
+               WHERE stock_code = ANY(%s) AND data_source='KIS' AND market_code='KOSPI'
+                 AND trading_venue='KRX' AND collect_cycle='DAILY'
+                 AND close_price IS NOT NULL AND trade_date BETWEEN %s AND %s
             ) SELECT stock_code,trade_date,open_price,high_price,low_price,close_price
-                  FROM ranked
-                 WHERE trade_date >= %s OR prior_rank <= %s
-                 ORDER BY stock_code,trade_date""", (codes, requested_end, requested_start, warmup))
+                  FROM warmup_ranked WHERE warmup_rank <= %s
+                 UNION ALL
+                SELECT stock_code,trade_date,open_price,high_price,low_price,close_price FROM selected
+                 ORDER BY stock_code,trade_date""", (codes, requested_start, codes, requested_start, requested_end, warmup))
         bars_by_code: dict[str, list[MinuteBar]] = {code: [] for code in codes}
         for code, day, opening, high, low, close in cur.fetchall():
             bars_by_code[str(code)].append(MinuteBar(datetime.combine(day, clock_time(15, 19)), opening, high, low, close))
+
+    # A COMPLETE result may never invent a missing/future daily bar.  All
+    # official strategy pairs require their source and target prices, so use
+    # the last date completed by every required stock and disclose it to UI.
+    available_dates = [
+        {bar.bar_time.date() for bar in bars if requested_start <= bar.bar_time.date() <= requested_end}
+        for bars in bars_by_code.values()
+    ]
+    common_dates = set.intersection(*available_dates) if available_dates else set()
+    calculated_end = max(common_dates) if common_dates else requested_start - timedelta(days=1)
+    if calculated_end < requested_start:
+        bars_by_code = {code: [bar for bar in bars if bar.bar_time.date() < requested_start] for code, bars in bars_by_code.items()}
+    else:
+        bars_by_code = {code: [bar for bar in bars if bar.bar_time.date() <= calculated_end] for code, bars in bars_by_code.items()}
 
     replay_template = DailyCompleteReplay(entry_condition=condition, confirm_period=period)
     features_by_code = {code: replay_template.features(bars) for code, bars in bars_by_code.items()}
@@ -780,8 +802,9 @@ def _daily_stateless_rows(pool, query: dict[str, list[str]], condition: str) -> 
     open_positions = [row for row in open_rows if row["is_latest"]]
     ranking.sort(key=lambda row: (row.get("total_valuation_return_rate", Decimal("0")), row.get("total_valuation_profit", Decimal("0"))), reverse=True)
     return {"status": "OK", "calculation_source": "RAW_STATELESS", "run_id": None,
-            "start_date": requested_start, "end_date": requested_end,
-            "selected_start_date": requested_start, "selected_end_date": requested_end,
+            "start_date": requested_start, "end_date": calculated_end,
+            "selected_start_date": requested_start, "selected_end_date": calculated_end,
+            "requested_end_date": requested_end,
             "entry_condition": condition, "timeframe": "DAILY",
             "parameters": {"timeframe": "DAILY", "ma_period": period, "entry_condition": condition,
                            "warmup_policy": "TRADING_BARS_DYNAMIC", "calculation_source": "RAW_STATELESS"},
