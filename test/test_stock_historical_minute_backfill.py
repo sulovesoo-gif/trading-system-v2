@@ -67,7 +67,7 @@ def minute_output(hour="101500"):
 
 class StockHistoricalMinuteCollectorTest(unittest.TestCase):
     def test_maps_output2_rows_and_uses_krx_request(self):
-        client = FakeClient({"output1": {}, "output2": [minute_output(), minute_output("101600")]})
+        client = FakeClient({"output1": {"stck_prdy_clpr": "99000"}, "output2": [minute_output(), minute_output("101600")]})
         rows = StockHistoricalMinuteCollector(client, now_provider=lambda: NOW).collect(
             stock_code="000660",
             market_code="KOSPI",
@@ -82,6 +82,7 @@ class StockHistoricalMinuteCollectorTest(unittest.TestCase):
         self.assertEqual(rows[0]["raw_payload"], minute_output())
         self.assertEqual(client.calls[0]["tr_id"], "FHKST03010230")
         self.assertEqual(client.calls[0]["params"]["FID_COND_MRKT_DIV_CODE"], "J")
+        self.assertEqual(rows[0]["previous_close_price"], Decimal("99000"))
 
     def test_uses_next_continuation_header_only_when_requested(self):
         client = FakeClient({"output2": []})

@@ -46,6 +46,8 @@ class StockHistoricalMinuteCollector(BaseCollector):
             },
             extra_headers={"tr_cont": continuation} if continuation else None,
         )
+        output1 = payload.get("output1")
+        previous_close_price = to_decimal(output1.get("stck_prdy_clpr")) if isinstance(output1, dict) else None
 
         rows: list[dict[str, object]] = []
         for output in self.output_list(payload, "output2"):
@@ -79,6 +81,8 @@ class StockHistoricalMinuteCollector(BaseCollector):
                     "high_price": to_decimal(output.get("stck_hgpr")),
                     "low_price": to_decimal(output.get("stck_lwpr")),
                     "close_price": to_decimal(output.get("stck_prpr")),
+                    # KIS provides this response-wide reference only in output1.
+                    "previous_close_price": previous_close_price,
                     "volume": to_int(output.get("cntg_vol")),
                     "accumulated_amount": to_decimal(output.get("acml_tr_pbmn")),
                     "raw_payload": output,

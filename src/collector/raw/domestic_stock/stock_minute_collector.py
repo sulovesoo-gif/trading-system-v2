@@ -31,6 +31,8 @@ class StockMinuteCollector(BaseCollector):
                 "FID_ETC_CLS_CODE": etc_classification_code,
             },
         )
+        output1 = payload.get("output1")
+        previous_close_price = to_decimal(output1.get("stck_prdy_clpr")) if isinstance(output1, dict) else None
         rows: list[dict[str, object]] = []
         for output in self.output_list(payload, "output2"):
             self.require_fields(output, ("stck_bsop_date", "stck_cntg_hour", "stck_oprc", "stck_hgpr", "stck_lwpr", "stck_prpr", "cntg_vol", "acml_tr_pbmn"))
@@ -46,6 +48,9 @@ class StockMinuteCollector(BaseCollector):
                     "high_price": to_decimal(output.get("stck_hgpr")),
                     "low_price": to_decimal(output.get("stck_lwpr")),
                     "close_price": to_decimal(output.get("stck_prpr")),
+                    # output1 is a response-wide KIS official previous close;
+                    # output2 contains no per-minute prdy_ctrt or previous-close field.
+                    "previous_close_price": previous_close_price,
                     "volume": to_int(output.get("cntg_vol")),
                     "accumulated_amount": to_decimal(output.get("acml_tr_pbmn")),
                     "raw_payload": output,

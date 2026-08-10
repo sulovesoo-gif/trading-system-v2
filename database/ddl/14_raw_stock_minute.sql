@@ -23,6 +23,7 @@ CREATE TABLE raw_stock_minute
     high_price                  NUMERIC(18,2),
     low_price                   NUMERIC(18,2),
     close_price                 NUMERIC(18,2),
+    previous_close_price        NUMERIC(18,2),
     volume                      BIGINT,
     accumulated_amount          NUMERIC(20,2),
 
@@ -57,5 +58,6 @@ COMMENT ON COLUMN raw_stock_minute.data_source IS '데이터 제공처';
 COMMENT ON COLUMN raw_stock_minute.market_code IS '시장코드';
 COMMENT ON COLUMN raw_stock_minute.collect_cycle IS '수집주기';
 COMMENT ON COLUMN raw_stock_minute.stock_code IS '종목코드';
+COMMENT ON COLUMN raw_stock_minute.previous_close_price IS '해당 거래일 KIS 기준 전일 종가(output1.stck_prdy_clpr)';
 COMMENT ON COLUMN raw_stock_minute.raw_payload IS '이 행에 대응하는 KIS API 원문 객체';
 COMMENT ON COLUMN raw_stock_minute.created_at IS '레코드 생성 시간(KST)';

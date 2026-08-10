@@ -116,11 +116,12 @@ class CollectorMappingTest(unittest.TestCase):
         self.assert_row_matches_ddl(execution, "13_raw_stock_execution.sql")
 
     def test_stock_minute_and_daily_mapping(self):
-        minute = collector(StockMinuteCollector, {"output2": [{
+        minute = collector(StockMinuteCollector, {"output1": {"stck_prdy_clpr": "99"}, "output2": [{
             "stck_bsop_date": "20260728", "stck_cntg_hour": "101500", "stck_oprc": "10",
             "stck_hgpr": "12", "stck_lwpr": "9", "stck_prpr": "11", "cntg_vol": "2", "acml_tr_pbmn": "22",
         }]}).collect(stock_code="005930", market_code="KOSPI", input_hour="103000")
         self.assertEqual(minute[0]["bar_time"], datetime(2026, 7, 28, 10, 15))
+        self.assertEqual(minute[0]["previous_close_price"], Decimal("99"))
         self.assert_row_matches_ddl(minute[0], "14_raw_stock_minute.sql")
         daily = collector(StockDailyCollector, {"output2": [{
             "stck_bsop_date": "20260727", "stck_oprc": "10", "stck_hgpr": "12", "stck_lwpr": "9",
