@@ -145,6 +145,7 @@ class CompleteResearchRunner:
     def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS,
             entry_condition: str = CompleteReplay.MA10_CONFIRM,
             confirm_period: int = 10,
+            direction_mode: str = "LONG_SHORT",
             cost_policy: ResearchCostPolicy | None = None):
         if entry_condition not in {CompleteReplay.SIGNAL_ONLY, CompleteReplay.MA10_CONFIRM, CompleteReplay.MA_CONFIRM, CompleteReplay.MA_CONFIRM_INTEGRATED, CompleteReplay.MA_AT_SIGNAL}:
             raise ValueError(f"unsupported entry_condition: {entry_condition}")
@@ -155,6 +156,7 @@ class CompleteResearchRunner:
         self.repository.create_run(run_id=run_id, start_date=start_date, end_date=end_date,
                                    parameters={"observation": "COMPLETE", "timeframe": self.timeframe, "session_mode": self.session_mode, "capital": "10000000", "entry_condition": entry_condition,
                                                "ma_period": None if entry_condition == CompleteReplay.SIGNAL_ONLY else confirm_period,
+                                               "direction_mode": direction_mode,
                                                "cost_policy_version": cost_policy.version, "cost_policy": cost_policy.snapshot(),
                                                "fee_rate": str(cost_policy.stock_fee_rate), "slippage_rate": str(cost_policy.slippage_rate),
                                                "pairs": [pair.name for pair in pairs]})

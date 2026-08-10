@@ -135,6 +135,22 @@ class CompleteReplayTest(unittest.TestCase):
         self.assertEqual(cycle.entry_price, prices[entry.at])
         self.assertEqual(cycle.exit_price, prices[exit_.at])
 
+    def test_long_short_mode_reverses_at_the_same_trade_price(self):
+        start = datetime(2026, 1, 2, 15, 19)
+        points = [MultiMaFeature(MinuteBar(start + timedelta(days=index), *(Decimal(100 + index),) * 4), Decimal(100 + index), Decimal(100), Decimal(100), Decimal(100 + index), Decimal("1")) for index in range(4)]
+        events = [ResearchSignal(points[0].bar.bar_time, "SIGNAL_1", "LONG", points[0]),
+                  ResearchSignal(points[1].bar.bar_time, "SIGNAL_1", "SHORT", points[1]),
+                  ResearchSignal(points[2].bar.bar_time, "SIGNAL_1", "LONG", points[2])]
+        replay = DailyCompleteReplay(entry_condition=CompleteReplay.SIGNAL_ONLY)
+        replay.replay(features=points, signals=events, target_prices={point.bar.bar_time: point.value for point in points})
+        s1 = [cycle for cycle in replay.open_cycles if cycle.strategy_code == "SIGNAL_1"]
+        self.assertEqual(len(s1), 1)
+        self.assertEqual(s1[0].direction, "LONG")
+        closed = [cycle for cycle in replay.replay(features=points, signals=events, target_prices={point.bar.bar_time: point.value for point in points}) if cycle.strategy_code == "SIGNAL_1"]
+        self.assertEqual([cycle.direction for cycle in closed], ["LONG", "SHORT"])
+        self.assertEqual(closed[0].exit_time, closed[1].entry_confirm_time)
+        self.assertEqual(closed[0].exit_price, closed[1].entry_price)
+
     def test_regular_after_continuous_preserves_regular_ma_state(self):
         regular = [MinuteBar(datetime(2026, 8, 3, 15, 10) + timedelta(minutes=index), *(Decimal(100 + index),) * 4) for index in range(10)]
         after = [MinuteBar(datetime(2026, 8, 3, 15, 40) + timedelta(minutes=index), *(Decimal(110 + index),) * 4) for index in range(2)]
