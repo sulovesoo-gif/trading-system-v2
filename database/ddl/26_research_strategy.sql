@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS research_feature (
     run_id UUID NOT NULL REFERENCES research_run(run_id) ON DELETE CASCADE,
     trading_date DATE NOT NULL, stock_code VARCHAR(20) NOT NULL,
     observation_code VARCHAR(20) NOT NULL, observation_time TIMESTAMP NOT NULL,
-    price NUMERIC(18,2) NOT NULL, ma3 NUMERIC(18,8), ma5 NUMERIC(18,8), ma10 NUMERIC(18,8),
+    price NUMERIC(18,2) NOT NULL, ma3 NUMERIC(18,8), ma5 NUMERIC(18,8), ma10 NUMERIC(18,8), ma20 NUMERIC(18,8),
     ma10_direction VARCHAR(10), data_status VARCHAR(30) NOT NULL,
     PRIMARY KEY (run_id, stock_code, observation_code, observation_time)
 );
@@ -104,6 +104,7 @@ ALTER TABLE research_trade_cycle ADD COLUMN IF NOT EXISTS buy_fee NUMERIC(20,2) 
 ALTER TABLE research_trade_cycle ADD COLUMN IF NOT EXISTS sell_fee NUMERIC(20,2) NOT NULL DEFAULT 0;
 ALTER TABLE research_trade_cycle ADD COLUMN IF NOT EXISTS sell_tax NUMERIC(20,2) NOT NULL DEFAULT 0;
 ALTER TABLE research_trade_cycle ADD COLUMN IF NOT EXISTS total_trading_cost NUMERIC(20,2) NOT NULL DEFAULT 0;
+ALTER TABLE research_feature ADD COLUMN IF NOT EXISTS ma20 NUMERIC(18,8);
 
 COMMENT ON TABLE research_run IS '연구 재생 실행 단위. 비용 정책 snapshot과 기간을 고정한다.';
 COMMENT ON TABLE research_feature IS 'RAW 공식 시장 데이터에서 재생 가능한 파생 feature. RAW를 대체하지 않는다.';

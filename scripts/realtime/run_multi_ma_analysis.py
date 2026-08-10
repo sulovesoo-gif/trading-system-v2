@@ -141,7 +141,7 @@ class Runtime:
         # One extra completed bar is required to calculate the current
         # short-MA slope.  Signal comparison itself is against the prior
         # feature of this exact observation slot (below).
-        bars = self.minutes.completed_bars(stock_code=stock_code, before_time=before_time, limit=config.long_period + 1, trading_venue=venue)
+        bars = self.minutes.completed_bars(stock_code=stock_code, before_time=before_time, limit=max(config.long_period, 20) + 1, trading_venue=venue)
         # Auction / pre-after-market minutes are not analyzable bars.  A new
         # continuous session must warm up from its own completed minutes.
         bars = [bar for bar in bars if _analysis_session_id(bar.bar_time) == session_id]

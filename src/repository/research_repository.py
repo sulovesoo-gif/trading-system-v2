@@ -22,11 +22,11 @@ class ResearchRepository:
 
     def save_feature(self, *, run_id: UUID, stock_code: str, feature, ma10_direction: str | None, data_status: str = "NORMAL") -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
-            cur.execute("""INSERT INTO research_feature(run_id,trading_date,stock_code,observation_code,observation_time,price,ma3,ma5,ma10,ma10_direction,data_status)
-            VALUES (%s,%s,%s,'COMPLETE',%s,%s,%s,%s,%s,%s,%s)
+            cur.execute("""INSERT INTO research_feature(run_id,trading_date,stock_code,observation_code,observation_time,price,ma3,ma5,ma10,ma20,ma10_direction,data_status)
+            VALUES (%s,%s,%s,'COMPLETE',%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (run_id,stock_code,observation_code,observation_time) DO NOTHING""",
                         (run_id, feature.bar.bar_time.date(), stock_code, feature.bar.bar_time, feature.value,
-                         feature.ma_short, feature.ma_mid, feature.ma_long, ma10_direction, data_status))
+                         feature.ma_short, feature.ma_mid, feature.ma_long, feature.ma20, ma10_direction, data_status))
 
     def save_signal(self, *, run_id: UUID, stock_code: str, strategy_code: str, signal, ma10_direction: str | None, pending: bool, confirm_time, session_code: str | None, data_status: str = "NORMAL") -> None:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:

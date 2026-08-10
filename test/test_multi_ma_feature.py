@@ -3,7 +3,7 @@ from decimal import Decimal
 import unittest
 
 from src.analysis.event.multi_ma_event import detect_signals
-from src.analysis.feature.multi_ma_feature import MultiMaFeature, build_multi_ma_features, price_value
+from src.analysis.feature.multi_ma_feature import MultiMaFeature, build_daily_ma_features, build_multi_ma_features, price_value
 from src.analysis.feature.sma_feature import MinuteBar
 
 
@@ -24,6 +24,20 @@ class MultiMaFeatureTest(unittest.TestCase):
         self.assertEqual(features[0].ma_short, Decimal("108"))
         self.assertEqual(features[0].ma_mid, Decimal("107"))
         self.assertEqual(features[0].ma_long, Decimal("104.5"))
+        self.assertIsNone(features[0].ma20)
+
+    def test_ma20_warms_up_without_changing_existing_mas(self):
+        features = build_multi_ma_features([bar(i, str(100 + i)) for i in range(20)], short_period=3, mid_period=5, long_period=10, price_field="CLOSE")
+        self.assertEqual(features[0].ma_short, Decimal("108"))
+        self.assertEqual(features[0].ma_mid, Decimal("107"))
+        self.assertEqual(features[0].ma_long, Decimal("104.5"))
+        self.assertIsNone(features[9].ma20)
+        self.assertEqual(features[-1].ma20, Decimal("109.5"))
+
+    def test_daily_ma20_uses_twenty_existing_trading_days(self):
+        start = datetime(2026, 7, 1)
+        bars = [MinuteBar(start + timedelta(days=index + (index // 5) * 2), *(Decimal(100 + index),) * 4) for index in range(20)]
+        self.assertEqual(build_daily_ma_features(bars)[-1].ma20, Decimal("109.5"))
 
     def test_signal_two_crosses_once(self):
         previous = MultiMaFeature(bar(0, "10"), Decimal("10"), Decimal("9"), Decimal("10"), Decimal("11"), Decimal("0"))

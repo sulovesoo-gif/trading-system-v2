@@ -17,6 +17,8 @@ class MultiMaFeature:
     ma_mid: Decimal
     ma_long: Decimal
     short_slope: Decimal | None
+    # Observation-only MA20. Canonical SIGNAL_1/2/3 remain MA3/MA5/MA10 based.
+    ma20: Decimal | None = None
 
 
 def price_value(bar: MinuteBar, field: str) -> Decimal:
@@ -44,6 +46,14 @@ def build_multi_ma_features(bars: Sequence[MinuteBar], *, short_period: int, mid
         short = sum(values[index - short_period + 1:index + 1]) / Decimal(short_period)
         mid = sum(values[index - mid_period + 1:index + 1]) / Decimal(mid_period)
         long = sum(values[index - long_period + 1:index + 1]) / Decimal(long_period)
+        ma20 = sum(values[index - 19:index + 1]) / Decimal("20") if index >= 19 else None
         prior = result[-1].ma_short if result else None
-        result.append(MultiMaFeature(bars[index], values[index], short, mid, long, None if prior is None else short - prior))
+        result.append(MultiMaFeature(bars[index], values[index], short, mid, long, None if prior is None else short - prior, ma20))
     return result
+
+
+def build_daily_ma_features(bars: Sequence[MinuteBar], *, price_field: str = "CLOSE") -> list[MultiMaFeature]:
+    """Build MA3/5/10/20 from ordered existing daily bars only."""
+    return build_multi_ma_features(
+        bars, short_period=3, mid_period=5, long_period=10, price_field=price_field,
+    )

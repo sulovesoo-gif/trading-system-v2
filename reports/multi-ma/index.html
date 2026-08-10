@@ -118,4 +118,39 @@ const previous=tables;tables=function(){previous();let tbody=document.getElement
  mainChart=function(){originalMain();let svg=document.getElementById('main'),slots=visibleSlots();if(!svg||!slots.length)return;let points=slots.map(x=>x.point||{timestamp:x.barTime,price:null,ma_short:null,ma_mid:null,ma_long:null}),scaleInfo=scale(points,1100,340);slots.forEach(slot=>slot.xCenter=scaleInfo.xTime(slot.barTime));svg.onclick=e=>{let rect=svg.getBoundingClientRect(),viewWidth=svg.viewBox.baseVal.width||1100,canvasX=(e.clientX-rect.left)*viewWidth/rect.width,plotLeft=54,plotRight=1080,plotX=Math.max(plotLeft,Math.min(plotRight,canvasX)),slot=nearestSlot(slots,plotX);selectedMinute=slot.barTime;localStorage.setItem('multiMaSelectedMinute',selectedMinute);popup(slot);render()}}
  const oldRender=render;render=function(){oldRender();let panel=document.getElementById('minuteDetail');if(panel)panel.remove();let buttons=document.getElementById('selectLatest')?.parentElement;if(buttons&&buttons.querySelector('#selectLatest'))buttons.remove();let all=[...document.querySelectorAll('h2')],heading=all.find(x=>x.textContent.trim()==='거래 결과');if(heading){let nodes=[heading],node=heading.nextElementSibling;while(node&&node.tagName!=='H2'){nodes.push(node);node=node.nextElementSibling}nodes.forEach(n=>document.body.appendChild(n))}let status=document.getElementById('status');if(status&&!document.getElementById('sourceLabel')){let p=document.createElement('p');p.id='sourceLabel';p.className='muted';p.textContent='거래 대상: SK하이닉스(000660) · 신호 원천: 자기 종목';status.after(p)}};
 })();
+</script><script>
+/* MA20 is observational only: it shares the existing price/slot series and
+   never participates in canonical signal generation. */
+(function(){
+  const style=document.createElement('style');
+  style.textContent='.ma20{color:#7047a8}';document.head.appendChild(style);
+  const baseMainAll=mainAll;
+  mainAll=function(){
+    const rows=baseMainAll();
+    const last=rows.at(-1);
+    if(last&&last.in_progress&&last.ma20==null){
+      const values=rows.map(x=>Number(x.price));
+      last.ma20=values.length<20?null:values.slice(-20).reduce((a,b)=>a+b,0)/20;
+    }
+    return rows;
+  };
+  const baseMainChart=mainChart;
+  mainChart=function(){
+    baseMainChart();
+    const svg=document.getElementById('main'),slots=visibleSlots();
+    if(!svg||!slots.length)return;
+    const points=slots.map(slot=>slot.point||{timestamp:slot.barTime,price:null,ma_short:null,ma_mid:null,ma_long:null,ma20:null});
+    const s=scale(points,1100,340);
+    const d=path(points,'ma20',s);
+    if(d)svg.insertAdjacentHTML('beforeend',`<path class="ma20" d="${d}" stroke="currentColor" fill="none" stroke-width="2"/>`);
+  };
+  const baseRender=render;
+  render=function(){
+    baseRender();
+    const legend=document.querySelector('.legend');
+    if(legend&&!legend.querySelector('.ma20')){const item=document.createElement('span');item.className='ma20';item.textContent='MA20';legend.insertBefore(item,legend.querySelector('.buy'));}
+    const selection=document.getElementById('selection'),point=mainAll().at(-1);
+    if(selection&&point&&!selection.textContent.includes('MA20'))selection.textContent+=` · MA20 ${n(point.ma20)}`;
+  };
+})();
 </script></body></html>

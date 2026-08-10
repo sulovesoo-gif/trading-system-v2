@@ -166,6 +166,7 @@ def dashboard_payload(pool) -> dict:
             "ma_short": _contiguous_average(values, 3),
             "ma_mid": _contiguous_average(values, 5),
             "ma_long": _contiguous_average(values, 10),
+            "ma20": _contiguous_average(values, 20),
         }
     series = {"COMPLETE": [point(at, value) for at, value in completed_values]}
     # The main chart intentionally has one shared official history.  Each

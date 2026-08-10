@@ -17,6 +17,12 @@ class DashboardSeriesTest(unittest.TestCase):
         self.assertEqual(_contiguous_average(points, 3), 1584666.67)
         self.assertEqual(_contiguous_average(points, 5), 1583000.0)
 
+    def test_ma20_requires_twenty_contiguous_completed_minutes(self):
+        start = datetime(2026, 8, 3, 9)
+        points = [(start + timedelta(minutes=offset), 100 + offset) for offset in range(20)]
+        self.assertEqual(_contiguous_average(points, 20), 109.5)
+        self.assertIsNone(_contiguous_average(points[:-1], 20))
+
     def test_aftermarket_is_a_new_session(self):
         self.assertEqual(_analysis_session_id(datetime(2026, 8, 3, 15, 19)), "KRX_REGULAR")
         self.assertIsNone(_analysis_session_id(datetime(2026, 8, 3, 15, 30)))
