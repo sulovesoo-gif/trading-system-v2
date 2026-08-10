@@ -185,17 +185,29 @@ class CompleteReplay:
             result.extend(ResearchSignal(current.bar.bar_time, item.signal_type, item.direction, current) for item in detect_signals(previous, current))
         return result
 
+    @staticmethod
+    def _trade_direction(direction: str | None, direction_transform: str) -> str | None:
+        """Express both signal and confirmation slope in the trade coordinate.
+
+        An inverse product reverses the source signal *and* the source MA
+        slope.  Comparing a transformed candidate with an untransformed MA
+        direction would otherwise make MA confirmation impossible exactly when
+        the source is trending in the intended inverse-product direction.
+        """
+        if direction_transform == "INVERT":
+            return {"LONG": "SHORT", "SHORT": "LONG"}.get(direction, direction)
+        return direction
+
     def replay(self, *, features: list[MultiMaFeature], signals: list[ResearchSignal], target_prices: dict[datetime, Decimal], direction_transform: str = "DIRECT") -> list[ClosedCycle]:
         """Run all six official strategies. target_prices must be exact-time only."""
         output: list[ClosedCycle] = []
         by_time: dict[datetime, list[ResearchSignal]] = defaultdict(list)
         for signal in signals:
-            direction = ({"LONG": "SHORT", "SHORT": "LONG"}.get(signal.direction, signal.direction)
-                         if direction_transform == "INVERT" else signal.direction)
+            direction = self._trade_direction(signal.direction, direction_transform)
             by_time[signal.at].append(ResearchSignal(signal.at, signal.signal_type, direction, signal.feature))
         self.open_cycles: list[OpenCycle] = []
         for code in STRATEGIES:
-            closed, open_position = self._replay_strategy(code, features, by_time, target_prices)
+            closed, open_position = self._replay_strategy(code, features, by_time, target_prices, direction_transform)
             output.extend(closed)
             if open_position is not None:
                 self.open_cycles.append(OpenCycle(code, open_position.direction, open_position.entry_signal.at,
@@ -203,7 +215,7 @@ class CompleteReplay:
                     sum(leg.quantity for leg in open_position.legs), open_position.invested_amount, tuple(open_position.legs)))
         return output
 
-    def _replay_strategy(self, code: str, features: list[MultiMaFeature], by_time: dict[datetime, list[ResearchSignal]], target_prices: dict[datetime, Decimal]) -> tuple[list[ClosedCycle], Position | None]:
+    def _replay_strategy(self, code: str, features: list[MultiMaFeature], by_time: dict[datetime, list[ResearchSignal]], target_prices: dict[datetime, Decimal], direction_transform: str = "DIRECT") -> tuple[list[ClosedCycle], Position | None]:
         allowed = SINGLE.get(code) or ACCUMULATED[code]
         position: Position | None = None
         pending: ResearchSignal | None = None
@@ -220,7 +232,7 @@ class CompleteReplay:
                     position = None
                 # Do not carry a pending signal across a gap/session.
                 pending = None
-            ma_direction = self._ma10_direction(previous, feature)
+            ma_direction = self._trade_direction(self._ma10_direction(previous, feature), direction_transform)
             events = [event for event in by_time.get(now, ()) if event.signal_type in allowed]
             directions = {event.direction for event in events}
             if len(directions) > 1:

@@ -90,6 +90,36 @@ class CompleteReplayTest(unittest.TestCase):
             features=points, signals=[signal], target_prices={point.bar.bar_time: point.value for point in points})
         self.assertFalse(any(cycle.strategy_code == "SIGNAL_1" for cycle in cycles))
 
+    def test_inverse_trade_transforms_ma_confirmation_with_signal(self):
+        """Inverse LONG from a source SHORT must see an inverse LONG MA slope."""
+        start = datetime(2026, 8, 3, 9, 10)
+        points = [MultiMaFeature(MinuteBar(start + timedelta(minutes=index), *(Decimal("100"),) * 4),
+                                 Decimal("100"), Decimal("100"), Decimal("100"), Decimal(value), Decimal("1"))
+                  for index, value in enumerate((100, 99, 98))]
+        source_short = ResearchSignal(points[1].bar.bar_time, "SIGNAL_1", "SHORT", points[1])
+        prices = {point.bar.bar_time: point.value for point in points}
+        for condition in (CompleteReplay.MA_CONFIRM_INTEGRATED, CompleteReplay.MA_AT_SIGNAL, CompleteReplay.SIGNAL_ONLY):
+            with self.subTest(entry_condition=condition):
+                cycles = CompleteReplay(entry_condition=condition).replay(
+                    features=points, signals=[source_short], target_prices=prices, direction_transform="INVERT")
+                cycle = next(item for item in cycles if item.strategy_code == "SIGNAL_1")
+                self.assertEqual(cycle.direction, "LONG")
+                self.assertEqual(cycle.entry_confirm_time, points[1].bar.bar_time)
+
+    def test_inverse_pending_confirms_when_transformed_ma_turns(self):
+        start = datetime(2026, 8, 3, 9, 10)
+        points = [MultiMaFeature(MinuteBar(start + timedelta(minutes=index), *(Decimal("100"),) * 4),
+                                 Decimal("100"), Decimal("100"), Decimal("100"), Decimal(value), Decimal("1"))
+                  for index, value in enumerate((100, 101, 100))]
+        source_short = ResearchSignal(points[1].bar.bar_time, "SIGNAL_1", "SHORT", points[1])
+        cycles = CompleteReplay(entry_condition=CompleteReplay.MA_CONFIRM_INTEGRATED).replay(
+            features=points, signals=[source_short], target_prices={point.bar.bar_time: point.value for point in points},
+            direction_transform="INVERT")
+        cycle = next(item for item in cycles if item.strategy_code == "SIGNAL_1")
+        self.assertEqual(cycle.direction, "LONG")
+        self.assertEqual(cycle.entry_signal_time, points[1].bar.bar_time)
+        self.assertEqual(cycle.entry_confirm_time, points[2].bar.bar_time)
+
     def test_net_profit_reconciles_with_explicit_costs(self):
         start = datetime(2026, 8, 3, 9, 10)
         points = [MultiMaFeature(MinuteBar(start + timedelta(minutes=index), *(Decimal(value),) * 4), Decimal(value), Decimal(value), Decimal(value), Decimal("100"), Decimal("1"))
