@@ -265,8 +265,13 @@ def atomic_write(path: Path, payload: dict) -> None:
     os.replace(temporary, path)
 
 
-def _research_filters(query: dict[str, list[str]], alias: str = "c") -> tuple[str, list]:
-    """Build only whitelisted, parameterized research-cycle filters."""
+def _research_filters(
+    query: dict[str, list[str]],
+    alias: str = "c",
+    *,
+    entry_condition: str | None = None,
+) -> tuple[str, list]:
+    """Build only whitelisted, parameterized filters over stored closed cycles."""
     fields = {
         "trade_stock_code": "trade_stock_code", "signal_source_stock_code": "signal_source_stock_code",
         "strategy_code": "strategy_code", "observation_code": "observation_code", "direction": "direction",
@@ -279,53 +284,92 @@ def _research_filters(query: dict[str, list[str]], alias: str = "c") -> tuple[st
     start, end = (query.get("start_date") or [None])[0], (query.get("end_date") or [None])[0]
     if start: where.append(f"{alias}.trading_date >= %s"); params.append(start)
     if end: where.append(f"{alias}.trading_date <= %s"); params.append(end)
+    session = (query.get("analysis_session") or ["ALL_INTEGRATED"])[0]
+    session_ranges = {
+        "NXT_PRE": ("08:00", "08:50"),
+        "REGULAR": ("09:00", "15:20"),
+        "NXT_AFTER": ("15:40", "20:01"),
+    }
+    if session in session_ranges:
+        lower, upper = session_ranges[session]
+        where.append(f"{alias}.entry_time::time >= %s::time AND {alias}.entry_time::time < %s::time")
+        params.extend((lower, upper))
+    if entry_condition == "MA10_READY_AT_SIGNAL":
+        where.append(f"{alias}.entry_signal_time = {alias}.entry_confirm_time")
     return (" AND " + " AND ".join(where) if where else ""), params
+
+
+def _research_run_condition(entry_condition: str) -> str:
+    """Map a display-only entry mode to the persisted replay run policy."""
+    return "MA10_CONFIRM" if entry_condition == "MA10_READY_AT_SIGNAL" else entry_condition
 
 
 def research_performance_payload(pool, query: dict[str, list[str]]) -> dict:
     """Read-only dynamic research performance; never uses deprecated period rows."""
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
+    if condition not in {"SIGNAL_ONLY", "MA10_READY_AT_SIGNAL", "MA10_CONFIRM"}:
+        condition = "MA10_CONFIRM"
+    run_condition = _research_run_condition(condition)
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute("""SELECT run_id,start_date,end_date,parameters FROM research_run
                        WHERE status='COMPLETED' AND parameters->>'entry_condition'=%s
-                       ORDER BY end_date DESC,created_at DESC LIMIT 1""", (condition,))
+                       ORDER BY end_date DESC,created_at DESC LIMIT 1""", (run_condition,))
         run = cur.fetchone()
         if run is None:
             return {"entry_condition": condition, "status": "NO_COMPLETED_RUN", "summary": {}, "daily": [], "ranking": [], "comparison": {}}
         run_id, start_date, end_date, parameters = run
-        where, values = _research_filters(query)
+        where, values = _research_filters(query, entry_condition=condition)
         base = "FROM research_trade_cycle c WHERE c.run_id=%s AND c.exit_time IS NOT NULL" + where
         cur.execute("""SELECT count(*),count(*) FILTER(WHERE realized_profit>0),count(*) FILTER(WHERE realized_profit<0),count(*) FILTER(WHERE realized_profit=0),
                          coalesce(sum(realized_profit),0),coalesce(sum(invested_amount),0),coalesce(sum(gross_realized_profit),0),
-                         coalesce(sum(buy_fee+sell_fee+sell_tax),0),coalesce(avg(invested_return_rate),0),coalesce(avg(holding_seconds),0),
+                         coalesce(sum(total_trading_cost),0),coalesce(avg(invested_return_rate),0),coalesce(avg(holding_seconds),0),
                          coalesce(sum(realized_profit) FILTER(WHERE exit_type='SIGNAL'),0),coalesce(sum(realized_profit) FILTER(WHERE exit_type='SESSION_CLOSE'),0)
                        """ + base, [run_id, *values])
         summary = dict(zip(("closed_count","win_count","loss_count","flat_count","realized_profit","invested_amount","gross_realized_profit","total_trading_cost","avg_trade_return_rate","avg_holding_seconds","signal_exit_profit","session_close_profit"), cur.fetchone()))
         summary["win_rate"] = 0 if not summary["closed_count"] else summary["win_count"] / summary["closed_count"] * 100
         summary["invested_return_rate"] = 0 if not summary["invested_amount"] else summary["realized_profit"] / summary["invested_amount"] * 100
         summary["capital_return_rate"] = summary["realized_profit"] / 10000000 * 100
-        daily_where, daily_values = _research_filters(query, "p")
-        cur.execute("""SELECT trading_date,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,daily_return_rate,daily_market_direction,
-                         closed_count,win_count,loss_count,flat_count,realized_profit,invested_amount,invested_return_rate,capital_return_rate,avg_trade_return_rate,avg_holding_seconds,signal_exit_profit,session_close_profit
-                       FROM research_performance_daily p WHERE p.run_id=%s""" + daily_where + " ORDER BY trading_date DESC LIMIT 500", [run_id, *daily_values])
-        names = ("trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","daily_return_rate","daily_market_direction","closed_count","win_count","loss_count","flat_count","realized_profit","invested_amount","invested_return_rate","capital_return_rate","avg_trade_return_rate","avg_holding_seconds","signal_exit_profit","session_close_profit")
+        summary["gross_invested_return_rate"] = 0 if not summary["invested_amount"] else summary["gross_realized_profit"] / summary["invested_amount"] * 100
+        summary["gross_capital_return_rate"] = summary["gross_realized_profit"] / 10000000 * 100
+        daily_where, daily_values = _research_filters(query, "c", entry_condition=condition)
+        cur.execute("""SELECT c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
+                         max(p.daily_return_rate),max(p.daily_market_direction),
+                         count(*),count(*) FILTER(WHERE c.realized_profit>0),count(*) FILTER(WHERE c.realized_profit<0),count(*) FILTER(WHERE c.realized_profit=0),
+                         coalesce(sum(c.gross_realized_profit),0),coalesce(sum(c.total_trading_cost),0),coalesce(sum(c.realized_profit),0),coalesce(sum(c.invested_amount),0),
+                         coalesce(sum(c.gross_realized_profit)/nullif(sum(c.invested_amount),0)*100,0),
+                         coalesce(sum(c.realized_profit)/nullif(sum(c.invested_amount),0)*100,0),
+                         coalesce(sum(c.gross_realized_profit)/10000000*100,0),coalesce(sum(c.realized_profit)/10000000*100,0),
+                         coalesce(avg(c.invested_return_rate),0),coalesce(avg(c.holding_seconds),0),
+                         coalesce(sum(c.realized_profit) FILTER(WHERE c.exit_type='SIGNAL'),0),coalesce(sum(c.realized_profit) FILTER(WHERE c.exit_type='SESSION_CLOSE'),0)
+                       FROM research_trade_cycle c
+                       LEFT JOIN research_performance_daily p ON p.run_id=c.run_id AND p.trading_date=c.trading_date
+                         AND p.trade_stock_code=c.trade_stock_code AND p.signal_source_stock_code=c.signal_source_stock_code
+                         AND p.strategy_code=c.strategy_code AND p.observation_code=c.observation_code AND p.direction=c.direction
+                       WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + daily_where + " GROUP BY c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.observation_code,c.direction ORDER BY c.trading_date DESC LIMIT 500", [run_id, *daily_values])
+        names = ("trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","daily_return_rate","daily_market_direction","closed_count","win_count","loss_count","flat_count","gross_realized_profit","total_trading_cost","realized_profit","invested_amount","gross_invested_return_rate","invested_return_rate","gross_capital_return_rate","capital_return_rate","avg_trade_return_rate","avg_holding_seconds","signal_exit_profit","session_close_profit")
         daily = [dict(zip(names, row)) for row in cur.fetchall()]
         cur.execute("""SELECT trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction,count(*),count(*) FILTER(WHERE realized_profit>0),count(*) FILTER(WHERE realized_profit<0),
-                         coalesce(sum(realized_profit),0),coalesce(sum(buy_fee+sell_fee+sell_tax),0),coalesce(sum(invested_amount),0),
-                         coalesce(sum(realized_profit)/nullif(sum(invested_amount),0)*100,0),coalesce(sum(realized_profit)/10000000*100,0),coalesce(avg(invested_return_rate),0),coalesce(avg(holding_seconds),0)
-                       """ + base + " GROUP BY trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction ORDER BY 13 DESC,9 DESC LIMIT 20", [run_id, *values])
-        rank_names = ("trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","closed_count","win_count","loss_count","realized_profit","total_trading_cost","invested_amount","invested_return_rate","capital_return_rate","avg_trade_return_rate","avg_holding_seconds")
+                         coalesce(sum(gross_realized_profit),0),coalesce(sum(total_trading_cost),0),coalesce(sum(realized_profit),0),coalesce(sum(invested_amount),0),
+                         coalesce(sum(gross_realized_profit)/nullif(sum(invested_amount),0)*100,0),coalesce(sum(realized_profit)/nullif(sum(invested_amount),0)*100,0),
+                         coalesce(sum(gross_realized_profit)/10000000*100,0),coalesce(sum(realized_profit)/10000000*100,0),
+                         coalesce(avg(invested_return_rate),0),coalesce(avg(holding_seconds),0)
+                       """ + base + " GROUP BY trade_stock_code,signal_source_stock_code,strategy_code,observation_code,direction ORDER BY 15 DESC,11 DESC LIMIT 20", [run_id, *values])
+        rank_names = ("trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","closed_count","win_count","loss_count","gross_realized_profit","total_trading_cost","realized_profit","invested_amount","gross_invested_return_rate","invested_return_rate","gross_capital_return_rate","capital_return_rate","avg_trade_return_rate","avg_holding_seconds")
         ranking = [dict(zip(rank_names, row)) for row in cur.fetchall()]
         comparison = {}
-        for candidate in ("SIGNAL_ONLY", "MA10_CONFIRM"):
-            cur.execute("""SELECT run_id FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s AND parameters->>'entry_condition'=%s ORDER BY created_at DESC LIMIT 1""", (start_date, end_date, candidate))
+        for candidate in ("SIGNAL_ONLY", "MA10_READY_AT_SIGNAL", "MA10_CONFIRM"):
+            cur.execute("""SELECT run_id FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s AND parameters->>'entry_condition'=%s ORDER BY created_at DESC LIMIT 1""", (start_date, end_date, _research_run_condition(candidate)))
             other = cur.fetchone()
             if other:
-                cur.execute("""SELECT count(*),count(*) FILTER(WHERE realized_profit>0),count(*) FILTER(WHERE realized_profit<0),coalesce(sum(realized_profit),0)
-                               FROM research_trade_cycle c WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + where, [other[0], *values])
-                closed, wins, losses, profit = cur.fetchone()
+                candidate_where, candidate_values = _research_filters(query, entry_condition=candidate)
+                cur.execute("""SELECT count(*),count(*) FILTER(WHERE realized_profit>0),count(*) FILTER(WHERE realized_profit<0),
+                               coalesce(sum(gross_realized_profit),0),coalesce(sum(total_trading_cost),0),coalesce(sum(realized_profit),0)
+                               FROM research_trade_cycle c WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + candidate_where, [other[0], *candidate_values])
+                closed, wins, losses, gross_profit, total_cost, profit = cur.fetchone()
                 comparison[candidate] = {"run_id": other[0], "closed_count": closed, "win_count": wins, "loss_count": losses,
-                                          "win_rate": 0 if not closed else wins / closed * 100, "realized_profit": profit,
+                                          "win_rate": 0 if not closed else wins / closed * 100,
+                                          "gross_realized_profit": gross_profit, "total_trading_cost": total_cost, "realized_profit": profit,
+                                          "gross_capital_return_rate": gross_profit / 10000000 * 100,
                                           "capital_return_rate": profit / 10000000 * 100}
     return {"status": "OK", "run_id": run_id, "start_date": start_date, "end_date": end_date, "entry_condition": condition,
             "parameters": parameters, "summary": summary, "daily": daily, "ranking": ranking, "comparison": comparison}
@@ -335,7 +379,8 @@ def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
     run_id = (query.get("run_id") or [None])[0]
     if not run_id:
         return {"cycles": []}
-    where, values = _research_filters(query)
+    condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
+    where, values = _research_filters(query, entry_condition=condition)
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute("""SELECT c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
                              c.entry_signal_time,c.entry_confirm_time,c.entry_time,c.entry_price,c.exit_time,c.exit_price,c.exit_type,c.quantity,c.invested_amount,
