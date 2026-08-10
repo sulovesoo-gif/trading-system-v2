@@ -491,7 +491,11 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         ranking = _projected_groups(rows, ("trade_stock_code","signal_source_stock_code","strategy_code","observation_code","analysis_direction"))
         for item in ranking: item["direction"] = item.pop("analysis_direction")
         ranking.sort(key=lambda item: (item["invested_return_rate"],item["realized_profit"]), reverse=True)
-        ranking = ranking[:int((query.get("rank_limit") or ["20"])[0] if (query.get("rank_limit") or ["20"])[0] in {"10","20"} else "20")]
+        # Research grids sort the complete filtered result client-side; their
+        # fixed-height containers provide the visual 20-row viewport.
+        rank_limit = (query.get("rank_limit") or ["20"])[0]
+        if rank_limit != "ALL":
+            ranking = ranking[:int(rank_limit if rank_limit in {"10", "20"} else "20")]
         comparison = {}
         comparison_modes = ("SIGNAL_ONLY", "MA_CONFIRM") if timeframe == "DAILY" else ("SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM")
         for candidate in comparison_modes:
@@ -534,7 +538,10 @@ def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
             return {"cycles": []}
         rows = _projected_cycles(cur, run_id, found[0], query, condition)
         rows.sort(key=lambda item: item["entry_time"], reverse=True)
-        return {"cycles": rows[:1000]}
+        # Detail grids request ALL explicitly so a header sort is applied to
+        # the complete filtered set, not only a visible subset.
+        limit = (query.get("limit") or ["1000"])[0]
+        return {"cycles": rows if limit == "ALL" else rows[:1000]}
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
