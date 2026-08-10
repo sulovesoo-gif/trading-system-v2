@@ -43,6 +43,8 @@ function summary(s){
 async function load(){
   const response=await fetch(`/research/performance/api?${q()}`,{cache:'no-store'});
   const data=await response.json();
+  if(!$('startDate').value&&data.selected_start_date)$('startDate').value=data.selected_start_date;
+  if(!$('endDate').value&&data.selected_end_date)$('endDate').value=data.selected_end_date;
   $('run').textContent=data.status==='OK'?`run ${data.run_id} · ${data.start_date} ~ ${data.end_date} · ${labels[data.entry_condition]||data.entry_condition}`:(data.error||'완료 run 없음');
   if(data.status!=='OK')return;
   summary(data.summary);

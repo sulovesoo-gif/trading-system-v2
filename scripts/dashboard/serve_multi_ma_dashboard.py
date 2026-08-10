@@ -443,7 +443,21 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         run = cur.fetchone()
         if run is None: return {"status":"NO_COMPLETED_RUN","entry_condition":condition,"summary":{},"daily":[],"ranking":[],"comparison":{}}
         run_id,start_date,end_date,parameters = run
-        rows = _projected_cycles(cur, run_id, parameters, query, condition)
+        # A completed long-range run can contain hundreds of thousands of
+        # cycles.  Keep the first interactive view bounded; an explicit date
+        # selection always wins and remains a full dynamic period query.
+        effective_query = {key: list(value) for key, value in query.items()}
+        requested_start = (effective_query.get("start_date") or [""])[0]
+        requested_end = (effective_query.get("end_date") or [""])[0]
+        if not (requested_start or requested_end):
+            effective_start = max(start_date, end_date - timedelta(days=6))
+            effective_query["start_date"] = [effective_start.isoformat()]
+            effective_query["end_date"] = [end_date.isoformat()]
+        else:
+            effective_start = requested_start or start_date.isoformat()
+            effective_query["start_date"] = [effective_start]
+            effective_query["end_date"] = [requested_end or end_date.isoformat()]
+        rows = _projected_cycles(cur, run_id, parameters, effective_query, condition)
         summary = aggregate_projected(rows)
         daily = _projected_groups(rows, ("trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","analysis_direction"))
         for item in daily:
@@ -458,8 +472,9 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             cur.execute("""SELECT run_id,parameters FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s
               AND parameters->>'entry_condition'=%s ORDER BY created_at DESC LIMIT 1""", (start_date,end_date,_research_run_condition(candidate)))
             other = cur.fetchone()
-            if other: comparison[candidate] = aggregate_projected(_projected_cycles(cur, other[0], other[1], query, candidate))
+            if other: comparison[candidate] = aggregate_projected(_projected_cycles(cur, other[0], other[1], effective_query, candidate))
     return {"status":"OK","run_id":run_id,"start_date":start_date,"end_date":end_date,"entry_condition":condition,
+            "selected_start_date":effective_query["start_date"][0],"selected_end_date":effective_query["end_date"][0],
             "parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison}
 
 
