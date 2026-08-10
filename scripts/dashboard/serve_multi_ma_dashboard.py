@@ -503,8 +503,17 @@ def _projected_cycles(cur, run_id, parameters: dict, query: dict[str, list[str]]
     for row in rows:
         row["trade_set"] = trade_set
         row["analysis_direction"] = "SHORT" if trade_set != "ALL" and row["trade_stock_code"] == "0197X0" else row["direction"]
-    direction = (query.get("direction") or ["ALL"])[0]
-    rows = [row for row in rows if direction == "ALL" or row["analysis_direction"] == direction]
+    # The research UI exposes analysis modes, not a standalone SHORT strategy.
+    # A LONG+SHORT view combines persisted directional cycles and must never
+    # be labelled as merely SHORT.  Legacy values remain readable for old URLs.
+    direction_mode = (query.get("direction") or ["LONG"])[0]
+    if direction_mode == "LONG":
+        rows = [row for row in rows if row["analysis_direction"] == "LONG"]
+    elif direction_mode in {"LONG_SHORT", "ALL"}:
+        for row in rows:
+            row["analysis_direction"] = "LONG_SHORT"
+    elif direction_mode == "SHORT":
+        rows = [row for row in rows if row["analysis_direction"] == "SHORT"]
     limit = (query.get("trade_limit") or ["ALL"])[0]
     if limit in {"1", "3", "5", "10"}:
         count, selected = {}, []

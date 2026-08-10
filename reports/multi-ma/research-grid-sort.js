@@ -13,6 +13,18 @@
     return name ? name + "(" + key + ")" : key;
   }
 
+  function signalSourceLabel(code) {
+    var value = code === null || code === undefined ? "" : String(code);
+    return value.split("+").filter(function (part) { return part !== ""; })
+      .map(stockLabel).join(" + ");
+  }
+
+  function signalSourceSortKey(code) {
+    var value = code === null || code === undefined ? "" : String(code);
+    return value.split("+").filter(function (part) { return part !== ""; })
+      .map(stockSortKey).join(" + ");
+  }
+
   function stockSortKey(code) {
     var key = code === null || code === undefined ? "" : String(code);
     return (stockNames[key] || key) + "\u0000" + key;
@@ -25,9 +37,9 @@
     var entryCode = row.signal_source_stock_code;
     var exitCode = row.exit_signal_source_stock_code;
     result.signal_source_label = exitCode && exitCode !== entryCode
-      ? stockLabel(entryCode) + " \u2192 " + stockLabel(exitCode)
-      : stockLabel(entryCode);
-    result.signal_source_sort = stockSortKey(entryCode) + "\u0000" + (exitCode ? stockSortKey(exitCode) : "");
+      ? signalSourceLabel(entryCode) + " \u2192 " + signalSourceLabel(exitCode)
+      : signalSourceLabel(entryCode);
+    result.signal_source_sort = signalSourceSortKey(entryCode) + "\u0000" + (exitCode ? signalSourceSortKey(exitCode) : "");
     return result;
   }
 
@@ -100,6 +112,7 @@
   root.ResearchGridSort = {
     bind: bind, compareRows: compareRows, sortValue: sortValue,
     setStockNames: setStockNames, stockLabel: stockLabel,
+    signalSourceLabel: signalSourceLabel,
     stockSortKey: stockSortKey, decorateStockRow: decorateStockRow
   };
 }(window));

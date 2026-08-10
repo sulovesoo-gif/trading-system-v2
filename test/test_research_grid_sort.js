@@ -31,6 +31,10 @@ const decorated = window.ResearchGridSort.decorateStockRow({
   exit_signal_source_stock_code: "0197X0"
 });
 assert.strictEqual(decorated.signal_source_label, "KODEX SK hynix leverage(0193T0) \u2192 SOL SK hynix inverse 2X(0197X0)");
+const consensus = window.ResearchGridSort.decorateStockRow({
+  trade_stock_code: "0193T0", signal_source_stock_code: "000660+0197X0"
+});
+assert.strictEqual(consensus.signal_source_label, "SK hynix(000660) + SOL SK hynix inverse 2X(0197X0)");
 const stockName = { field: "trade_stock_sort", sortType: "string" };
 assert.deepStrictEqual(sorted([
   window.ResearchGridSort.decorateStockRow({ trade_stock_code: "000660" }),
