@@ -38,3 +38,18 @@ VALUES
 ON CONFLICT (group_cd, code) DO UPDATE SET code_name = EXCLUDED.code_name, sort_order = EXCLUDED.sort_order,
 attr1 = EXCLUDED.attr1, attr2 = EXCLUDED.attr2, attr3 = EXCLUDED.attr3, attr4 = EXCLUDED.attr4, attr5 = EXCLUDED.attr5,
 attr6 = EXCLUDED.attr6, attr7 = EXCLUDED.attr7, attr8 = EXCLUDED.attr8, attr9 = EXCLUDED.attr9, use_yn = EXCLUDED.use_yn, updated_at = CURRENT_TIMESTAMP;
+
+INSERT INTO common_code_group (group_cd, group_name, description, attr1, attr2, use_yn)
+VALUES ('STOCK_DAILY', 'Daily official collection targets', 'Post-close official daily RAW targets', 'market code', 'trading venue', 'Y')
+ON CONFLICT (group_cd) DO UPDATE SET group_name=EXCLUDED.group_name, description=EXCLUDED.description, updated_at=CURRENT_TIMESTAMP;
+
+INSERT INTO common_code (group_cd, code, code_name, sort_order, attr1, attr2, use_yn)
+VALUES ('STOCK_DAILY', '000660', 'SK hynix', 1, 'KOSPI', 'KRX', 'Y')
+ON CONFLICT (group_cd, code) DO UPDATE SET code_name=EXCLUDED.code_name, sort_order=EXCLUDED.sort_order,
+  attr1=EXCLUDED.attr1, attr2=EXCLUDED.attr2, use_yn=EXCLUDED.use_yn, updated_at=CURRENT_TIMESTAMP;
+
+INSERT INTO common_code (group_cd, code, code_name, sort_order, attr1, attr2, attr5, attr6, attr7, attr8, attr9, use_yn)
+VALUES ('API_SCHEDULE', 'STOCK_DAILY_CLOSE', 'Official daily collection', 5, 'MIN', '1', '05', '20:06', '20:06', 'Y', 'OFFICIAL_DAILY', 'Y')
+ON CONFLICT (group_cd, code) DO UPDATE SET code_name=EXCLUDED.code_name, sort_order=EXCLUDED.sort_order,
+  attr1=EXCLUDED.attr1, attr2=EXCLUDED.attr2, attr5=EXCLUDED.attr5, attr6=EXCLUDED.attr6,
+  attr7=EXCLUDED.attr7, attr8=EXCLUDED.attr8, attr9=EXCLUDED.attr9, use_yn=EXCLUDED.use_yn, updated_at=CURRENT_TIMESTAMP;

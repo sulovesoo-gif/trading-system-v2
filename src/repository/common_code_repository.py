@@ -20,6 +20,14 @@ class StockConfig:
     default_market_code: str
     program_collect_yn: bool
 
+
+@dataclass(frozen=True)
+class StockDailyConfig:
+    stock_code: str
+    stock_name: str
+    market_code: str
+    trading_venue: str
+
 @dataclass(frozen=True)
 class ApiScheduleConfig:
     code: str
@@ -72,6 +80,16 @@ class CommonCodeRepository:
             StockConfig(row[0], row[1], row[2], row[3] == "Y", row[4] == "Y", row[5] == "Y", row[6], row[7] == "Y")
             for row in self._fetchall(sql)
         ]
+
+    def enabled_daily_stocks(self) -> list[StockDailyConfig]:
+        """Official daily RAW collection targets declared by STOCK_DAILY."""
+        rows = self._fetchall(
+            "SELECT code, code_name, COALESCE(NULLIF(BTRIM(attr1), ''), 'KOSPI'), "
+            "COALESCE(NULLIF(BTRIM(attr2), ''), 'KRX') "
+            "FROM common_code WHERE group_cd='STOCK_DAILY' AND use_yn='Y' "
+            "ORDER BY sort_order, code"
+        )
+        return [StockDailyConfig(row[0], row[1] or row[0], row[2], row[3]) for row in rows]
 
     def active_ma_config(self, code: str) -> MaConfig:
         row = self._fetchone(
