@@ -11,11 +11,14 @@ from typing import Iterable, Mapping
 
 STOCK_TARGET_CAPITAL = Decimal("10000000")
 ETF_TARGET_CAPITAL = Decimal("1000000")
+DAILY_TARGET_CAPITAL = Decimal("30000000")
 TARGET_CAPITAL_BY_STOCK = {"000660": STOCK_TARGET_CAPITAL, "0193T0": ETF_TARGET_CAPITAL, "0197X0": ETF_TARGET_CAPITAL}
 
 
-def target_capital(stock_code: str) -> Decimal:
-    """Official research scale: common share 10m KRW, ETF/ETN 1m KRW."""
+def target_capital(stock_code: str, *, timeframe: str = "MINUTE") -> Decimal:
+    """Official scale: daily is 30m per held product; minute remains unchanged."""
+    if timeframe == "DAILY":
+        return DAILY_TARGET_CAPITAL
     return TARGET_CAPITAL_BY_STOCK.get(stock_code, ETF_TARGET_CAPITAL)
 
 
@@ -23,13 +26,13 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def project_cycle(cycle: Mapping, *, fee_rate: Decimal, sell_tax_rate: Decimal) -> dict:
+def project_cycle(cycle: Mapping, *, fee_rate: Decimal, sell_tax_rate: Decimal, timeframe: str = "MINUTE") -> dict:
     """Recalculate one stored closed cycle at its instrument target capital.
 
     Accumulated legs retain their persisted ratios and entry prices.  The
     projection never substitutes prices and has no database side effect.
     """
-    capital = target_capital(str(cycle["trade_stock_code"]))
+    capital = target_capital(str(cycle["trade_stock_code"]), timeframe=timeframe)
     direction = str(cycle["direction"])
     exit_price = Decimal(str(cycle["exit_price"]))
     legs = cycle.get("legs") or [{"entry_price": cycle["entry_price"], "entry_ratio": Decimal("1")}]
@@ -51,7 +54,7 @@ def project_cycle(cycle: Mapping, *, fee_rate: Decimal, sell_tax_rate: Decimal) 
     total_cost = buy_fee + sell_fee + sell_tax
     net = gross - total_cost
     result = dict(cycle)
-    result.update(target_capital=capital, quantity=quantity, invested_amount=invested,
+    result.update(timeframe=timeframe, target_capital=capital, quantity=quantity, invested_amount=invested,
                   gross_realized_profit=gross, buy_fee=buy_fee, sell_fee=sell_fee,
                   sell_tax=sell_tax, total_trading_cost=total_cost, realized_profit=net,
                   gross_invested_return_rate=Decimal("0") if not invested else gross / invested * 100,

@@ -46,7 +46,7 @@ async function load(){
   const data=await response.json();
   if(!$('startDate').value&&data.selected_start_date)$('startDate').value=data.selected_start_date;
   if(!$('endDate').value&&data.selected_end_date)$('endDate').value=data.selected_end_date;
-  $('run').textContent=data.status==='OK'?`run ${data.run_id} · ${data.start_date} ~ ${data.end_date} · ${labels[data.entry_condition]||data.entry_condition}`:(data.error||'완료 run 없음');
+  $('run').textContent=data.status==='OK'?`run ${data.run_id} · ${data.selected_start_date||data.start_date} ~ ${data.selected_end_date||data.end_date} · ${data.timeframe==='DAILY'?'일봉: 거래당 목표 3,000만원':'분봉: 본주 1,000만원 / ETF·ETN 100만원'} · ${labels[data.entry_condition]||data.entry_condition}`:(data.error||'완료 run 없음');
   if(data.status!=='OK')return;
   summary(data.summary);
   $('compare').innerHTML=['SIGNAL_ONLY','MA10_READY_AT_SIGNAL','MA10_CONFIRM'].map(key=>{const item=data.comparison[key];return row([labels[key],item?.closed_count??'–',pct(item?.win_rate),won(item?.gross_realized_profit),won(item?.total_trading_cost),won(item?.realized_profit),pct(item?.gross_capital_return_rate),pct(item?.capital_return_rate)]);}).join('');
@@ -56,5 +56,7 @@ async function load(){
   document.querySelectorAll('#rank tr,#daily tbody tr').forEach(element=>element.ondblclick=()=>window.open(`/research-cycle-detail.html?${q()}&run_id=${data.run_id}`,'research_cycle_'+data.run_id,'width=1100,height=760,resizable=yes,scrollbars=yes'));
 }
 $('load').onclick=load;load();
+function syncTimeframe(){const daily=$('timeframe').value==='DAILY';$('tradeLimit').disabled=daily;$('tradeLimit').value=daily?'ALL':$('tradeLimit').value;$('session').disabled=daily;}
+$('timeframe').onchange=()=>{syncTimeframe();load()};syncTimeframe();
 document.querySelectorAll('#rank').forEach(body=>body.closest('table').querySelectorAll('th').forEach((head,index)=>head.onclick=()=>{const key=rankKeys[index];if(!key||key==='rank')return;rankSort={key,desc:rankSort.key===key?!rankSort.desc:true};renderRank()}));
 </script></body></html>

@@ -419,10 +419,12 @@ def _projected_cycles(cur, run_id, parameters: dict, query: dict[str, list[str]]
             key = (row["trading_date"],row["strategy_code"],trade_set); count[key] = count.get(key, 0) + 1
             if count[key] <= int(limit): selected.append(row)
         rows = selected
+    timeframe = (query.get("timeframe") or [(parameters or {}).get("timeframe", "MINUTE")])[0]
+    if timeframe not in {"MINUTE", "DAILY"}: timeframe = "MINUTE"
     result = []
     for row in rows:
         fee, tax = _projection_rates(parameters, row["trade_stock_code"])
-        result.append(project_cycle(row, fee_rate=fee, sell_tax_rate=tax))
+        result.append(project_cycle(row, fee_rate=fee, sell_tax_rate=tax, timeframe=timeframe))
     return result
 
 

@@ -20,6 +20,12 @@ class ResearchPerformanceProjectionTest(unittest.TestCase):
         self.assertEqual(item["target_capital"], Decimal("1000000"))
         self.assertEqual(item["quantity"], 100)
 
+    def test_daily_uses_thirty_million_for_all_instruments(self):
+        for code in ("000660", "0193T0", "0197X0"):
+            item = project_cycle(self.cycle(code), fee_rate=Decimal("0"), sell_tax_rate=Decimal("0"), timeframe="DAILY")
+            self.assertEqual(item["target_capital"], Decimal("30000000"))
+            self.assertEqual(item["quantity"], 3000)
+
     def test_accumulated_uses_persisted_leg_ratios(self):
         legs = [{"entry_price": Decimal("10000"), "entry_ratio": Decimal("0.333333333333333333")},
                 {"entry_price": Decimal("11000"), "entry_ratio": Decimal("0.333333333333333333")}]
