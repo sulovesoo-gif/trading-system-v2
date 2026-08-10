@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from datetime import datetime, time as clock_time, timedelta
+from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 from src.repository.database import DatabaseSettings, create_connection_pool
 from scripts.admin.serve_research_backfill_admin import PAGE as RESEARCH_BACKFILL_PAGE, application as run_research_backfill
+from src.service.research_performance_projection import aggregate as aggregate_projected, project_cycle
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -271,6 +273,7 @@ def _research_filters(
     alias: str = "c",
     *,
     entry_condition: str | None = None,
+    include_direction: bool = True,
 ) -> tuple[str, list]:
     """Build only whitelisted, parameterized filters over stored closed cycles."""
     fields = {
@@ -279,6 +282,8 @@ def _research_filters(
     }
     where, params = [], []
     for key, column in fields.items():
+        if key == "direction" and not include_direction:
+            continue
         value = (query.get(key) or ["ALL"])[0]
         if value and value != "ALL":
             where.append(f"{alias}.{column}=%s"); params.append(value)
@@ -376,19 +381,101 @@ def research_performance_payload(pool, query: dict[str, list[str]]) -> dict:
             "parameters": parameters, "summary": summary, "daily": daily, "ranking": ranking, "comparison": comparison}
 
 
+def _projection_rates(parameters: dict, stock_code: str) -> tuple[Decimal, Decimal]:
+    policy = (parameters or {}).get("cost_policy") or {}
+    prefix = "stock" if stock_code == "000660" else "etf_etn"
+    return Decimal(str(policy.get(f"{prefix}_fee_rate", "0"))), Decimal(str(policy.get(f"{prefix}_sell_tax_rate", "0")))
+
+
+def _projected_cycles(cur, run_id, parameters: dict, query: dict[str, list[str]], condition: str) -> list[dict]:
+    where, values = _research_filters(query, entry_condition=condition, include_direction=False)
+    cur.execute("""SELECT c.cycle_id,c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
+      c.entry_signal_time,c.entry_confirm_time,c.entry_time,c.entry_price,c.exit_time,c.exit_price,c.exit_type,c.holding_seconds,
+      COALESCE(json_agg(json_build_object('entry_price',l.entry_price,'entry_ratio',l.entry_ratio) ORDER BY l.entry_time)
+      FILTER (WHERE l.cycle_id IS NOT NULL), '[]'::json) legs
+      FROM research_trade_cycle c LEFT JOIN research_trade_leg l ON l.cycle_id=c.cycle_id
+      WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + where + " GROUP BY c.cycle_id ORDER BY c.entry_time", [run_id, *values])
+    names = ("cycle_id","trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","entry_signal_time","entry_confirm_time","entry_time","entry_price","exit_time","exit_price","exit_type","holding_seconds","legs")
+    rows = [dict(zip(names, item)) for item in cur.fetchall()]
+    trade_set = (query.get("trade_set") or ["ALL"])[0]
+    allowed = {
+        "STOCK_LONG": {("000660", "000660", "LONG")},
+        "BIDIRECTIONAL_LEVERAGE": {("0193T0", "000660", "LONG"), ("0197X0", "000660", "LONG")},
+        "MIXED_STOCK_INVERSE": {("000660", "000660", "LONG"), ("0197X0", "000660", "LONG")},
+    }.get(trade_set)
+    if allowed is not None:
+        rows = [row for row in rows if (row["trade_stock_code"],row["signal_source_stock_code"],row["direction"]) in allowed]
+    for row in rows:
+        row["trade_set"] = trade_set
+        row["analysis_direction"] = "SHORT" if trade_set != "ALL" and row["trade_stock_code"] == "0197X0" else row["direction"]
+    direction = (query.get("direction") or ["ALL"])[0]
+    rows = [row for row in rows if direction == "ALL" or row["analysis_direction"] == direction]
+    limit = (query.get("trade_limit") or ["ALL"])[0]
+    if limit in {"1", "3", "5", "10"}:
+        count, selected = {}, []
+        for row in rows:
+            key = (row["trading_date"],row["strategy_code"],trade_set); count[key] = count.get(key, 0) + 1
+            if count[key] <= int(limit): selected.append(row)
+        rows = selected
+    result = []
+    for row in rows:
+        fee, tax = _projection_rates(parameters, row["trade_stock_code"])
+        result.append(project_cycle(row, fee_rate=fee, sell_tax_rate=tax))
+    return result
+
+
+def _projected_groups(rows: list[dict], fields: tuple[str, ...]) -> list[dict]:
+    groups: dict[tuple, list[dict]] = {}
+    for row in rows: groups.setdefault(tuple(row[field] for field in fields), []).append(row)
+    output = []
+    for key, values in groups.items():
+        item = dict(zip(fields, key)); item.update(aggregate_projected(values)); output.append(item)
+    return output
+
+
+def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
+    """Read-only target-capital comparison; no replay, RAW access, or writes."""
+    condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
+    if condition not in {"SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM"}: condition = "MA10_CONFIRM"
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT run_id,start_date,end_date,parameters FROM research_run WHERE status='COMPLETED'
+          AND parameters->>'entry_condition'=%s ORDER BY end_date DESC,created_at DESC LIMIT 1""", (_research_run_condition(condition),))
+        run = cur.fetchone()
+        if run is None: return {"status":"NO_COMPLETED_RUN","entry_condition":condition,"summary":{},"daily":[],"ranking":[],"comparison":{}}
+        run_id,start_date,end_date,parameters = run
+        rows = _projected_cycles(cur, run_id, parameters, query, condition)
+        summary = aggregate_projected(rows)
+        daily = _projected_groups(rows, ("trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","analysis_direction"))
+        for item in daily:
+            item["direction"] = item.pop("analysis_direction"); item["daily_return_rate"] = None; item["daily_market_direction"] = None
+        daily.sort(key=lambda item: item["trading_date"], reverse=True)
+        ranking = _projected_groups(rows, ("trade_stock_code","signal_source_stock_code","strategy_code","observation_code","analysis_direction"))
+        for item in ranking: item["direction"] = item.pop("analysis_direction")
+        ranking.sort(key=lambda item: (item["invested_return_rate"],item["realized_profit"]), reverse=True)
+        ranking = ranking[:int((query.get("rank_limit") or ["20"])[0] if (query.get("rank_limit") or ["20"])[0] in {"10","20"} else "20")]
+        comparison = {}
+        for candidate in ("SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM"):
+            cur.execute("""SELECT run_id,parameters FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s
+              AND parameters->>'entry_condition'=%s ORDER BY created_at DESC LIMIT 1""", (start_date,end_date,_research_run_condition(candidate)))
+            other = cur.fetchone()
+            if other: comparison[candidate] = aggregate_projected(_projected_cycles(cur, other[0], other[1], query, candidate))
+    return {"status":"OK","run_id":run_id,"start_date":start_date,"end_date":end_date,"entry_condition":condition,
+            "parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison}
+
+
 def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
     run_id = (query.get("run_id") or [None])[0]
     if not run_id:
         return {"cycles": []}
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
-    where, values = _research_filters(query, entry_condition=condition)
     with pool.connection() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
-                             c.entry_signal_time,c.entry_confirm_time,c.entry_time,c.entry_price,c.exit_time,c.exit_price,c.exit_type,c.quantity,c.invested_amount,
-                             c.gross_realized_profit,c.buy_fee,c.sell_fee,c.sell_tax,c.total_trading_cost,c.realized_profit,c.capital_return_rate
-                        FROM research_trade_cycle c WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + where + " ORDER BY c.entry_time DESC LIMIT 1000", [run_id, *values])
-        names = ("trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","entry_signal_time","entry_confirm_time","entry_time","entry_price","exit_time","exit_price","exit_type","quantity","invested_amount","gross_realized_profit","buy_fee","sell_fee","sell_tax","total_trading_cost","realized_profit","capital_return_rate")
-        return {"cycles": [dict(zip(names, row)) for row in cur.fetchall()]}
+        cur.execute("SELECT parameters FROM research_run WHERE run_id=%s", (run_id,))
+        found = cur.fetchone()
+        if found is None:
+            return {"cycles": []}
+        rows = _projected_cycles(cur, run_id, found[0], query, condition)
+        rows.sort(key=lambda item: item["entry_time"], reverse=True)
+        return {"cycles": rows[:1000]}
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -423,7 +510,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/research/performance/api":
             try:
-                body = json.dumps(research_performance_payload(self.pool, parse_qs(parsed.query)), ensure_ascii=False, default=_json_default).encode("utf-8")
+                body = json.dumps(research_performance_payload_v2(self.pool, parse_qs(parsed.query)), ensure_ascii=False, default=_json_default).encode("utf-8")
                 self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
             except Exception as error:
                 logging.exception("research performance query failed")
