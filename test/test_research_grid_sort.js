@@ -19,4 +19,22 @@ assert.deepStrictEqual(sorted([{ when: "2026-08-04" }, { when: "2026-01-02" }, {
 assert.deepStrictEqual(sorted([{ name: null }, { name: "B" }, { name: "A" }], string, "asc").map(x => x.name), ["A", "B", null]);
 assert.deepStrictEqual(sorted([{ name: null }, { name: "B" }, { name: "A" }], string, "desc").map(x => x.name), ["B", "A", null]);
 
+window.ResearchGridSort.setStockNames({
+  "000660": "SK hynix",
+  "0193T0": "KODEX SK hynix leverage",
+  "0197X0": "SOL SK hynix inverse 2X"
+});
+assert.strictEqual(window.ResearchGridSort.stockLabel("000660"), "SK hynix(000660)");
+assert.strictEqual(window.ResearchGridSort.stockLabel("123456"), "123456");
+const decorated = window.ResearchGridSort.decorateStockRow({
+  trade_stock_code: "000660", signal_source_stock_code: "0193T0",
+  exit_signal_source_stock_code: "0197X0"
+});
+assert.strictEqual(decorated.signal_source_label, "KODEX SK hynix leverage(0193T0) \u2192 SOL SK hynix inverse 2X(0197X0)");
+const stockName = { field: "trade_stock_sort", sortType: "string" };
+assert.deepStrictEqual(sorted([
+  window.ResearchGridSort.decorateStockRow({ trade_stock_code: "000660" }),
+  window.ResearchGridSort.decorateStockRow({ trade_stock_code: "0193T0" })
+], stockName, "asc").map(x => x.trade_stock_code), ["0193T0", "000660"]);
+
 console.log("research grid sort: ok");

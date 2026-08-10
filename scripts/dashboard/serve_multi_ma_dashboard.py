@@ -30,6 +30,17 @@ def _json_default(value):
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
+def _research_stock_names(cursor) -> dict[str, str]:
+    """Load STOCK labels once per read-only research response.
+
+    This deliberately uses the stored common-code name only: no KIS lookup and
+    no per-cycle query are involved.
+    """
+    cursor.execute("""SELECT code, NULLIF(BTRIM(code_name), '')
+                    FROM common_code WHERE group_cd='STOCK'""")
+    return {str(code): str(name) for code, name in cursor.fetchall() if name is not None}
+
+
 def _analysis_session_id(bar_time: datetime) -> str | None:
     value = bar_time.time()
     if clock_time(8, 0) <= value <= clock_time(8, 49, 59):
@@ -391,13 +402,13 @@ def _projection_rates(parameters: dict, stock_code: str) -> tuple[Decimal, Decim
 
 def _projected_cycles(cur, run_id, parameters: dict, query: dict[str, list[str]], condition: str) -> list[dict]:
     where, values = _research_filters(query, entry_condition=condition, include_direction=False)
-    cur.execute("""SELECT c.cycle_id,c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
+    cur.execute("""SELECT c.cycle_id,c.trading_date,c.trade_stock_code,c.signal_source_stock_code,c.exit_signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
       c.entry_signal_time,c.entry_confirm_time,c.entry_time,c.entry_price,c.exit_time,c.exit_price,c.exit_type,c.holding_seconds,
       COALESCE(json_agg(json_build_object('entry_price',l.entry_price,'entry_ratio',l.entry_ratio) ORDER BY l.entry_time)
       FILTER (WHERE l.cycle_id IS NOT NULL), '[]'::json) legs
       FROM research_trade_cycle c LEFT JOIN research_trade_leg l ON l.cycle_id=c.cycle_id
       WHERE c.run_id=%s AND c.exit_time IS NOT NULL""" + where + " GROUP BY c.cycle_id ORDER BY c.entry_time", [run_id, *values])
-    names = ("cycle_id","trading_date","trade_stock_code","signal_source_stock_code","strategy_code","observation_code","direction","entry_signal_time","entry_confirm_time","entry_time","entry_price","exit_time","exit_price","exit_type","holding_seconds","legs")
+    names = ("cycle_id","trading_date","trade_stock_code","signal_source_stock_code","exit_signal_source_stock_code","strategy_code","observation_code","direction","entry_signal_time","entry_confirm_time","entry_time","entry_price","exit_time","exit_price","exit_type","holding_seconds","legs")
     rows = [dict(zip(names, item)) for item in cur.fetchall()]
     trade_set = (query.get("trade_set") or ["ALL"])[0]
     allowed = {
@@ -446,6 +457,7 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
     session = (query.get("analysis_session") or ["ALL_INTEGRATED"])[0]
     session_mode = "REGULAR_AFTER_CONTINUOUS" if session == "REGULAR_AFTER_CONTINUOUS" else None
     with pool.connection() as conn, conn.cursor() as cur:
+        stock_names = _research_stock_names(cur)
         run_sql = """SELECT run_id,start_date,end_date,parameters FROM research_run WHERE status='COMPLETED'
           AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
         run_values = [timeframe]
@@ -466,7 +478,7 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"
         cur.execute(run_sql, run_values)
         run = cur.fetchone()
-        if run is None: return {"status":"NO_COMPLETED_RUN","entry_condition":condition,"summary":{},"daily":[],"ranking":[],"comparison":{}}
+        if run is None: return {"status":"NO_COMPLETED_RUN","entry_condition":condition,"summary":{},"daily":[],"ranking":[],"comparison":{},"stock_names":stock_names}
         run_id,start_date,end_date,parameters = run
         # A completed long-range run can contain hundreds of thousands of
         # cycles.  Keep the first interactive view bounded; an explicit date
@@ -523,25 +535,26 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             open_positions=[row for row in open_positions if ((effective_query.get("trade_stock_code") or ["ALL"])[0] in {"", "ALL", row["trade_stock_code"]}) and ((effective_query.get("signal_source_stock_code") or ["ALL"])[0] in {"", "ALL", row["signal_source_stock_code"]}) and ((effective_query.get("strategy_code") or ["ALL"])[0] in {"", "ALL", row["strategy_code"]}) and ((effective_query.get("direction") or ["ALL"])[0] in {"ALL",row["direction"]})]
     return {"status":"OK","run_id":run_id,"start_date":start_date,"end_date":end_date,"entry_condition":condition,
             "selected_start_date":effective_query["start_date"][0],"selected_end_date":effective_query["end_date"][0],
-            "timeframe":timeframe,"parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison,"open_positions":open_positions if timeframe == "DAILY" else []}
+            "timeframe":timeframe,"parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison,"open_positions":open_positions if timeframe == "DAILY" else [],"stock_names":stock_names}
 
 
 def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
     run_id = (query.get("run_id") or [None])[0]
     if not run_id:
-        return {"cycles": []}
+        return {"cycles": [], "stock_names": {}}
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
     with pool.connection() as conn, conn.cursor() as cur:
+        stock_names = _research_stock_names(cur)
         cur.execute("SELECT parameters FROM research_run WHERE run_id=%s", (run_id,))
         found = cur.fetchone()
         if found is None:
-            return {"cycles": []}
+            return {"cycles": [], "stock_names": stock_names}
         rows = _projected_cycles(cur, run_id, found[0], query, condition)
         rows.sort(key=lambda item: item["entry_time"], reverse=True)
         # Detail grids request ALL explicitly so a header sort is applied to
         # the complete filtered set, not only a visible subset.
         limit = (query.get("limit") or ["1000"])[0]
-        return {"cycles": rows if limit == "ALL" else rows[:1000]}
+        return {"cycles": rows if limit == "ALL" else rows[:1000], "stock_names": stock_names}
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):

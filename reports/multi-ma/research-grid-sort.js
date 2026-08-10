@@ -1,6 +1,35 @@
 /* Common, read-only table sorting for research dashboards. */
 (function (root) {
   "use strict";
+  var stockNames = {};
+
+  function setStockNames(names) {
+    stockNames = names && typeof names === "object" ? names : {};
+  }
+
+  function stockLabel(code) {
+    var key = code === null || code === undefined ? "" : String(code);
+    var name = stockNames[key];
+    return name ? name + "(" + key + ")" : key;
+  }
+
+  function stockSortKey(code) {
+    var key = code === null || code === undefined ? "" : String(code);
+    return (stockNames[key] || key) + "\u0000" + key;
+  }
+
+  function decorateStockRow(row) {
+    var result = Object.assign({}, row);
+    result.trade_stock_label = stockLabel(row.trade_stock_code);
+    result.trade_stock_sort = stockSortKey(row.trade_stock_code);
+    var entryCode = row.signal_source_stock_code;
+    var exitCode = row.exit_signal_source_stock_code;
+    result.signal_source_label = exitCode && exitCode !== entryCode
+      ? stockLabel(entryCode) + " \u2192 " + stockLabel(exitCode)
+      : stockLabel(entryCode);
+    result.signal_source_sort = stockSortKey(entryCode) + "\u0000" + (exitCode ? stockSortKey(exitCode) : "");
+    return result;
+  }
 
   function isMissing(value) {
     return value === null || value === undefined || value === "";
@@ -68,5 +97,9 @@
     return { draw: draw, getState: function () { return state; } };
   }
 
-  root.ResearchGridSort = { bind: bind, compareRows: compareRows, sortValue: sortValue };
+  root.ResearchGridSort = {
+    bind: bind, compareRows: compareRows, sortValue: sortValue,
+    setStockNames: setStockNames, stockLabel: stockLabel,
+    stockSortKey: stockSortKey, decorateStockRow: decorateStockRow
+  };
 }(window));
