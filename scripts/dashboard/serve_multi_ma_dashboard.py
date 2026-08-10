@@ -60,11 +60,12 @@ def research_daily_intraday_payload(pool, query: dict[str, list[str]]) -> dict:
     condition = (query.get("entry_condition") or ["MA_CONFIRM_INTEGRATED"])[0]
     trade_filter = (query.get("trade_stock_code") or ["ALL"])[0]
     source_filter = (query.get("signal_source_stock_code") or ["ALL"])[0]
-    today = datetime.now(KST).date()
+    now = datetime.now(KST).replace(tzinfo=None)
+    today = now.date()
     start_of_day = datetime.combine(today, clock_time.min)
     # Never read a future timestamp even if malformed/future RAW happened to
     # exist for the current calendar date.
-    end_of_day = min(start_of_day + timedelta(days=1), datetime.now(KST))
+    end_of_day = min(start_of_day + timedelta(days=1), now)
     with pool.connection() as conn, conn.cursor() as cur:
         stock_names = _research_stock_names(cur)
         # STOCK_DAILY is the only target source.  STOCK.attr7 is used solely
