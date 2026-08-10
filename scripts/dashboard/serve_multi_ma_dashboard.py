@@ -22,6 +22,8 @@ from dotenv import load_dotenv
 from src.repository.database import DatabaseSettings, create_connection_pool
 from scripts.admin.serve_research_backfill_admin import PAGE as RESEARCH_BACKFILL_PAGE, application as run_research_backfill
 from src.service.research_performance_projection import aggregate as aggregate_projected, project_cycle
+from src.analysis.feature.sma_feature import MinuteBar
+from src.service.provisional_daily_observation_service import RawMinute, observe as observe_provisional_daily
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -39,6 +41,82 @@ def _research_stock_names(cursor) -> dict[str, str]:
     cursor.execute("""SELECT code, NULLIF(BTRIM(code_name), '')
                     FROM common_code WHERE group_cd='STOCK'""")
     return {str(code): str(name) for code, name in cursor.fetchall() if name is not None}
+
+
+def research_daily_intraday_payload(pool, query: dict[str, list[str]]) -> dict:
+    """Read stored RAW only for the daily research page's transient observer.
+
+    The response does not write research features/signals/cycles and therefore
+    cannot affect historical COMPLETE research rankings or daily RAW.
+    """
+    period = max(1, int((query.get("ma_period") or ["10"])[0]))
+    strategy = (query.get("strategy_code") or ["SIGNAL_1"])[0]
+    direction = (query.get("direction") or ["ALL"])[0]
+    condition = (query.get("entry_condition") or ["MA_CONFIRM_INTEGRATED"])[0]
+    trade_filter = (query.get("trade_stock_code") or ["ALL"])[0]
+    source_filter = (query.get("signal_source_stock_code") or ["ALL"])[0]
+    today = datetime.now(KST).date()
+    start_of_day = datetime.combine(today, clock_time.min)
+    # Never read a future timestamp even if malformed/future RAW happened to
+    # exist for the current calendar date.
+    end_of_day = min(start_of_day + timedelta(days=1), datetime.now(KST))
+    with pool.connection() as conn, conn.cursor() as cur:
+        stock_names = _research_stock_names(cur)
+        # STOCK_DAILY is the only target source.  STOCK.attr7 is used solely
+        # to select the already configured minute RAW venue for that target.
+        cur.execute("""SELECT daily.code, daily.code_name,
+                              COALESCE(NULLIF(BTRIM(daily.attr1), ''), 'KOSPI'),
+                              COALESCE(NULLIF(BTRIM(daily.attr2), ''), 'KRX'),
+                              COALESCE(NULLIF(BTRIM(stock.attr7), ''), NULLIF(BTRIM(daily.attr2), ''), 'KRX')
+                       FROM common_code daily
+                       LEFT JOIN common_code stock ON stock.group_cd='STOCK' AND stock.code=daily.code
+                      WHERE daily.group_cd='STOCK_DAILY' AND daily.use_yn='Y'
+                      ORDER BY daily.sort_order, daily.code""")
+        targets = cur.fetchall()
+        items = []
+        for stock_code, stock_name, market_code, daily_venue, minute_venue in targets:
+            stock_code = str(stock_code)
+            # No implicit trade/source mapping is introduced here: this
+            # observer has one target/source pair per STOCK_DAILY target.
+            if trade_filter not in ("ALL", stock_code) or source_filter not in ("ALL", stock_code):
+                continue
+            cur.execute("""SELECT trade_date,open_price,high_price,low_price,close_price,volume
+                             FROM raw_stock_daily
+                            WHERE stock_code=%s AND data_source='KIS' AND market_code=%s
+                              AND trading_venue=%s AND collect_cycle='DAILY' AND trade_date < %s
+                              AND close_price IS NOT NULL
+                            ORDER BY trade_date DESC LIMIT %s""",
+                        (stock_code, market_code, daily_venue, today, max(20, period)))
+            historical_rows = list(reversed(cur.fetchall()))
+            history = [MinuteBar(datetime.combine(row[0], clock_time(15, 19)), row[1], row[2], row[3], row[4])
+                       for row in historical_rows]
+            cur.execute("""SELECT trade_date,open_price,high_price,low_price,close_price,volume
+                             FROM raw_stock_daily
+                            WHERE stock_code=%s AND data_source='KIS' AND market_code=%s
+                              AND trading_venue=%s AND collect_cycle='DAILY' AND trade_date=%s
+                              AND close_price IS NOT NULL""",
+                        (stock_code, market_code, daily_venue, today))
+            official = cur.fetchone()
+            official_bar = (MinuteBar(datetime.combine(today, clock_time(15, 19)), official[1], official[2], official[3], official[4])
+                            if official else None)
+            cur.execute("""SELECT bar_time,open_price,high_price,low_price,close_price,volume
+                             FROM raw_stock_minute
+                            WHERE stock_code=%s AND data_source='KIS' AND market_code=%s
+                              AND trading_venue=%s AND collect_cycle='1MIN'
+                              AND bar_time >= %s AND bar_time < %s AND close_price IS NOT NULL
+                            ORDER BY bar_time""",
+                        (stock_code, market_code, minute_venue, start_of_day, end_of_day))
+            minutes = [RawMinute(row[0], row[1], row[2], row[3], row[4], row[5] or Decimal("0")) for row in cur.fetchall()]
+            item = observe_provisional_daily(stock_code=stock_code, daily_history=history, minute_rows=minutes,
+                                              official_today=official_bar, period=period, strategy_code=strategy,
+                                              entry_condition=condition, direction=direction)
+            item.update({"trade_stock_code": stock_code, "signal_source_stock_code": stock_code,
+                         "stock_name": stock_names.get(stock_code) or stock_name or stock_code,
+                         "ma_period": period})
+            if official:
+                item["volume"] = official[5]
+            items.append(item)
+    return {"status": "OK", "trading_date": today, "items": items, "stock_names": stock_names}
 
 
 def _analysis_session_id(bar_time: datetime) -> str | None:
@@ -701,6 +779,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
             except Exception as error:
                 logging.exception("daily research query failed")
+                body = json.dumps({"status": "ERROR", "error": f"{type(error).__name__}: {error}"}, ensure_ascii=False).encode("utf-8")
+                self.send_response(500); self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+            return
+        if parsed.path == "/research/daily/intraday":
+            try:
+                body = json.dumps(research_daily_intraday_payload(self.pool, parse_qs(parsed.query)), ensure_ascii=False, default=_json_default).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
+            except Exception as error:
+                logging.exception("daily intraday observation query failed")
                 body = json.dumps({"status": "ERROR", "error": f"{type(error).__name__}: {error}"}, ensure_ascii=False).encode("utf-8")
                 self.send_response(500); self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
