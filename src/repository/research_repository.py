@@ -59,6 +59,15 @@ class ResearchRepository:
             VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (cycle_id,signal_type) DO NOTHING""",
                         (cycle_id, leg.signal_type, leg.entry_time, leg.entry_price, leg.ratio, leg.quantity, leg.invested_amount))
 
+    def save_open_cycle(self, *, run_id: UUID, trade_stock_code: str, signal_source_stock_code: str, cycle) -> int:
+        """Persist a daily research position without fabricating a closing bar."""
+        with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+            cur.execute("""INSERT INTO research_trade_cycle(run_id,trading_date,trade_stock_code,signal_source_stock_code,exit_signal_source_stock_code,strategy_code,observation_code,direction,entry_signal_time,entry_confirm_time,entry_time,entry_price,quantity,invested_amount,data_status)
+              VALUES (%s,%s,%s,%s,%s,%s,'COMPLETE',%s,%s,%s,%s,%s,%s,%s,'OPEN')
+              ON CONFLICT (run_id,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,entry_time)
+              DO UPDATE SET data_status='OPEN' RETURNING cycle_id""", (run_id,cycle.entry_confirm_time.date(),trade_stock_code,signal_source_stock_code,signal_source_stock_code,cycle.strategy_code,cycle.direction,cycle.entry_signal_time,cycle.entry_confirm_time,cycle.entry_confirm_time,cycle.entry_price,cycle.quantity,cycle.invested_amount))
+            return cur.fetchone()[0]
+
     def rebuild_performance(self, *, run_id: UUID, start_date: date, end_date: date) -> None:
         """Replace deterministic aggregate rows, never increment them."""
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:

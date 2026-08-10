@@ -196,6 +196,24 @@ class CompleteResearchRunner:
                     for cycle in (item for item in cycles if item.strategy_code == strategy):
                         cycle_id = self.repository.save_cycle(run_id=run_id, trade_stock_code=pair.trade_stock_code, signal_source_stock_code=pair.signal_source_stock_code, cycle=cycle)
                         for leg in cycle.legs: self.repository.save_leg(cycle_id=cycle_id, leg=leg)
+                    # Daily research deliberately retains the final position.
+                    # Mark-to-market uses only existing official daily closes.
+                    if self.timeframe == "DAILY":
+                        for open_cycle in (item for item in pair_replay.open_cycles if item.strategy_code == strategy):
+                            cycle_id = self.repository.save_open_cycle(run_id=run_id, trade_stock_code=pair.trade_stock_code, signal_source_stock_code=pair.signal_source_stock_code, cycle=open_cycle)
+                            for leg in open_cycle.legs: self.repository.save_leg(cycle_id=cycle_id, leg=leg)
+                            for bar in all_bars[pair.trade_stock_code]:
+                                if bar.bar_time < open_cycle.entry_confirm_time:
+                                    continue
+                                gross = ((bar.close_price - open_cycle.entry_price) if open_cycle.direction == "LONG" else (open_cycle.entry_price - bar.close_price)) * open_cycle.quantity
+                                self.repository.save_position_daily(run_id=run_id, cycle_id=cycle_id, trading_date=bar.bar_time.date(),
+                                    trade_stock_code=pair.trade_stock_code, signal_source_stock_code=pair.signal_source_stock_code,
+                                    strategy_code=strategy, observation_code="COMPLETE", direction=open_cycle.direction,
+                                    entry_date=open_cycle.entry_confirm_time.date(), entry_price=open_cycle.entry_price,
+                                    valuation_close_price=bar.close_price, quantity=open_cycle.quantity, invested_amount=open_cycle.invested_amount,
+                                    unrealized_profit=gross, unrealized_return_rate=Decimal("0") if not open_cycle.invested_amount else gross/open_cycle.invested_amount*100,
+                                    capital_return_rate=gross/Decimal("30000000")*100 if self.timeframe == "DAILY" else gross/Decimal("10000000")*100,
+                                    position_status="OPEN")
             self.repository.rebuild_performance(run_id=run_id, start_date=start_date, end_date=end_date)
             self.repository.finish_run(run_id, "COMPLETED")
             return run_id

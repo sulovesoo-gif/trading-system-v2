@@ -95,6 +95,19 @@ class ClosedCycle:
         return self.buy_fee + self.sell_fee + self.sell_tax
 
 
+@dataclass(frozen=True)
+class OpenCycle:
+    strategy_code: str
+    direction: str
+    entry_signal_time: datetime
+    entry_confirm_time: datetime
+    entry_price: Decimal
+    quantity: int
+    invested_amount: Decimal
+    legs: tuple[ResearchLeg, ...]
+    data_status: str = "NORMAL"
+
+
 def _session_id(value: datetime) -> str | None:
     moment = value.time()
     if moment.hour == 8 and moment.minute < 50:
@@ -122,6 +135,10 @@ class CompleteReplay:
     @property
     def uses_confirmation(self) -> bool:
         return self.entry_condition in {self.MA10_CONFIRM, self.MA_CONFIRM, self.MA_CONFIRM_INTEGRATED}
+
+    @property
+    def close_at_end(self) -> bool:
+        return True
 
     def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE", fee_rate: Decimal = Decimal("0"), sell_tax_rate: Decimal = Decimal("0"), slippage_rate: Decimal = Decimal("0"), entry_condition: str = MA10_CONFIRM, confirm_period: int = 10):
         self.short, self.mid, self.long, self.price_field = short, mid, long, price_field
@@ -176,11 +193,17 @@ class CompleteReplay:
             direction = ({"LONG": "SHORT", "SHORT": "LONG"}.get(signal.direction, signal.direction)
                          if direction_transform == "INVERT" else signal.direction)
             by_time[signal.at].append(ResearchSignal(signal.at, signal.signal_type, direction, signal.feature))
+        self.open_cycles: list[OpenCycle] = []
         for code in STRATEGIES:
-            output.extend(self._replay_strategy(code, features, by_time, target_prices))
+            closed, open_position = self._replay_strategy(code, features, by_time, target_prices)
+            output.extend(closed)
+            if open_position is not None:
+                self.open_cycles.append(OpenCycle(code, open_position.direction, open_position.entry_signal.at,
+                    open_position.entry_confirm_time, open_position.average_entry_price,
+                    sum(leg.quantity for leg in open_position.legs), open_position.invested_amount, tuple(open_position.legs)))
         return output
 
-    def _replay_strategy(self, code: str, features: list[MultiMaFeature], by_time: dict[datetime, list[ResearchSignal]], target_prices: dict[datetime, Decimal]) -> list[ClosedCycle]:
+    def _replay_strategy(self, code: str, features: list[MultiMaFeature], by_time: dict[datetime, list[ResearchSignal]], target_prices: dict[datetime, Decimal]) -> tuple[list[ClosedCycle], Position | None]:
         allowed = SINGLE.get(code) or ACCUMULATED[code]
         position: Position | None = None
         pending: ResearchSignal | None = None
@@ -235,12 +258,12 @@ class CompleteReplay:
                 for event in fresh:
                     position.legs.append(self._leg(event, now, price, Decimal("1") / Decimal("3")))
             previous = feature
-        if position and features:
+        if position and features and self.close_at_end:
             last = features[-1]
             price = target_prices.get(last.bar.bar_time)
             if price is not None:
                 closed.append(self._close(code, position, signal_time=last.bar.bar_time, exit_time=last.bar.bar_time, exit_price=price, exit_type="SESSION_CLOSE"))
-        return closed
+        return closed, position
 
     def _ma10_direction(self, previous: MultiMaFeature | None, current: MultiMaFeature) -> str | None:
         """Compatibility name: returns the configured confirmation MA slope."""
@@ -307,6 +330,10 @@ class DailyCompleteReplay(CompleteReplay):
             for index in range(self.confirm_period - 1, len(ordered))
         }
         return [replace(feature, confirm_ma=confirmation.get(feature.bar.bar_time)) for feature in features]
+
+    @property
+    def close_at_end(self) -> bool:
+        return False
 
     @staticmethod
     def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:

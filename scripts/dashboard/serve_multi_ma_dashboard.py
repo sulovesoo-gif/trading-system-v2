@@ -507,9 +507,19 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             cur.execute(compare_sql, compare_values)
             other = cur.fetchone()
             if other: comparison[candidate] = aggregate_projected(_projected_cycles(cur, other[0], other[1], effective_query, candidate))
+        open_positions = []
+        if timeframe == "DAILY":
+            cur.execute("""SELECT DISTINCT ON (p.cycle_id) c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.direction,
+                c.entry_time,c.entry_price,p.trading_date,p.valuation_close_price,p.quantity,p.invested_amount,p.unrealized_profit,p.unrealized_return_rate
+              FROM research_trade_cycle c JOIN research_position_daily p ON p.cycle_id=c.cycle_id
+              WHERE c.run_id=%s AND c.exit_time IS NULL AND p.trading_date <= %s
+              ORDER BY p.cycle_id,p.trading_date DESC""", (run_id, effective_query["end_date"][0]))
+            names=("trade_stock_code","signal_source_stock_code","strategy_code","direction","entry_time","entry_price","valuation_date","valuation_close_price","quantity","invested_amount","unrealized_profit","unrealized_return_rate")
+            open_positions=[dict(zip(names,row)) for row in cur.fetchall()]
+            open_positions=[row for row in open_positions if ((effective_query.get("trade_stock_code") or ["ALL"])[0] in {"", "ALL", row["trade_stock_code"]}) and ((effective_query.get("signal_source_stock_code") or ["ALL"])[0] in {"", "ALL", row["signal_source_stock_code"]}) and ((effective_query.get("strategy_code") or ["ALL"])[0] in {"", "ALL", row["strategy_code"]}) and ((effective_query.get("direction") or ["ALL"])[0] in {"ALL",row["direction"]})]
     return {"status":"OK","run_id":run_id,"start_date":start_date,"end_date":end_date,"entry_condition":condition,
             "selected_start_date":effective_query["start_date"][0],"selected_end_date":effective_query["end_date"][0],
-            "timeframe":timeframe,"parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison}
+            "timeframe":timeframe,"parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison,"open_positions":open_positions if timeframe == "DAILY" else []}
 
 
 def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
