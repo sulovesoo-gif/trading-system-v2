@@ -43,6 +43,11 @@ def _research_stock_names(cursor) -> dict[str, str]:
     return {str(code): str(name) for code, name in cursor.fetchall() if name is not None}
 
 
+def _korean_naive_timestamp(value: datetime) -> datetime:
+    """Normalise database timestamp adapters before feature-time comparison."""
+    return value.astimezone(KST).replace(tzinfo=None) if value.tzinfo is not None else value
+
+
 def research_daily_intraday_payload(pool, query: dict[str, list[str]]) -> dict:
     """Read stored RAW only for the daily research page's transient observer.
 
@@ -106,7 +111,8 @@ def research_daily_intraday_payload(pool, query: dict[str, list[str]]) -> dict:
                               AND bar_time >= %s AND bar_time < %s AND close_price IS NOT NULL
                             ORDER BY bar_time""",
                         (stock_code, market_code, minute_venue, start_of_day, end_of_day))
-            minutes = [RawMinute(row[0], row[1], row[2], row[3], row[4], row[5] or Decimal("0")) for row in cur.fetchall()]
+            minutes = [RawMinute(_korean_naive_timestamp(row[0]), row[1], row[2], row[3], row[4], row[5] or Decimal("0"))
+                       for row in cur.fetchall()]
             item = observe_provisional_daily(stock_code=stock_code, daily_history=history, minute_rows=minutes,
                                               official_today=official_bar, period=period, strategy_code=strategy,
                                               entry_condition=condition, direction=direction)
