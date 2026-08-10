@@ -662,10 +662,16 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             run_values.append((query.get("ma_period") or ["10"])[0])
         requested_start, requested_end = (query.get("start_date") or [""])[0], (query.get("end_date") or [""])[0]
         if timeframe == "DAILY" and requested_start:
-            run_sql += " AND start_date=%s"; run_values.append(requested_start)
+            # The UI period is an aggregation window, not a replay identity.
+            # Select a completed run that covers it, preferring the narrowest
+            # covering interval and then the newest completed run.
+            run_sql += " AND start_date <= %s"; run_values.append(requested_start)
         if timeframe == "DAILY" and requested_end:
-            run_sql += " AND end_date=%s"; run_values.append(requested_end)
-        run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"
+            run_sql += " AND end_date >= %s"; run_values.append(requested_end)
+        if timeframe == "DAILY" and (requested_start or requested_end):
+            run_sql += " ORDER BY (end_date - start_date) ASC, created_at DESC LIMIT 1"
+        else:
+            run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"
         cur.execute(run_sql, run_values)
         run = cur.fetchone()
         if run is None: return {"status":"NO_COMPLETED_RUN","entry_condition":condition,"summary":{},"daily":[],"ranking":[],"comparison":{},"stock_names":stock_names}
