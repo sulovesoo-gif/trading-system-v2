@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, time as clock_time, timedelta
+from datetime import date, datetime, time as clock_time, timedelta
 from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,9 +21,11 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 from src.repository.database import DatabaseSettings, create_connection_pool
 from scripts.admin.serve_research_backfill_admin import PAGE as RESEARCH_BACKFILL_PAGE, application as run_research_backfill
-from src.service.research_performance_projection import aggregate as aggregate_projected, project_cycle
+from src.service.research_performance_projection import aggregate as aggregate_projected, project_cycle, target_capital
 from src.analysis.feature.sma_feature import MinuteBar
 from src.service.provisional_daily_observation_service import RawMinute, observe as observe_provisional_daily
+from src.service.research_backfill_service import CROSS_DAILY_PAIRS, OFFICIAL_PAIRS, ResearchCostPolicy
+from src.service.research_complete_replay_service import ACCUMULATED, DailyCompleteReplay, STRATEGIES
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -631,12 +633,171 @@ def _apply_daily_open_valuation(
     return ranking, daily, overview
 
 
+def _daily_query_date(query: dict[str, list[str]], key: str, fallback: date) -> date:
+    value = (query.get(key) or [""])[0]
+    return date.fromisoformat(value) if value else fallback
+
+
+def _daily_stateless_rows(pool, query: dict[str, list[str]], condition: str) -> dict:
+    """Calculate DAILY research from saved official RAW without persistence.
+
+    This is intentionally separate from ``DailyCompleteResearchRunner.run``:
+    the latter is the explicit /admin/backfill reproducibility workflow and
+    writes research_* rows.  This query path reuses the same replay state
+    machine but has no repository and no database write operation.
+    """
+    requested_start = _daily_query_date(query, "start_date", date.today() - timedelta(days=6))
+    requested_end = _daily_query_date(query, "end_date", date.today())
+    if requested_end < requested_start:
+        raise ValueError("end_date must not precede start_date")
+    period = int((query.get("ma_period") or ["10"])[0])
+    if period <= 0:
+        raise ValueError("ma_period must be a positive integer")
+    pairs = OFFICIAL_PAIRS + CROSS_DAILY_PAIRS
+    codes = sorted({part for pair in pairs for part in pair.signal_source_stock_code.split("+")} | {pair.trade_stock_code for pair in pairs})
+    warmup = period - 1
+    with pool.connection() as conn, conn.cursor() as cur:
+        stock_names = _research_stock_names(cur)
+        # One set-based RAW read: each stock gets exactly N-1 prior *trading*
+        # bars plus the requested display/aggregation range.  Weekends and
+        # holidays therefore never affect warmup length.
+        cur.execute("""WITH ranked AS (
+              SELECT stock_code,trade_date,open_price,high_price,low_price,close_price,
+                     row_number() OVER (PARTITION BY stock_code ORDER BY trade_date DESC) AS prior_rank
+                FROM raw_stock_daily
+               WHERE stock_code = ANY(%s) AND data_source='KIS' AND market_code='KOSPI'
+                 AND trading_venue='KRX' AND collect_cycle='DAILY'
+                 AND close_price IS NOT NULL AND trade_date <= %s
+            ) SELECT stock_code,trade_date,open_price,high_price,low_price,close_price
+                  FROM ranked
+                 WHERE trade_date >= %s OR prior_rank <= %s
+                 ORDER BY stock_code,trade_date""", (codes, requested_end, requested_start, warmup))
+        bars_by_code: dict[str, list[MinuteBar]] = {code: [] for code in codes}
+        for code, day, opening, high, low, close in cur.fetchall():
+            bars_by_code[str(code)].append(MinuteBar(datetime.combine(day, clock_time(15, 19)), opening, high, low, close))
+
+    replay_template = DailyCompleteReplay(entry_condition=condition, confirm_period=period)
+    features_by_code = {code: replay_template.features(bars) for code, bars in bars_by_code.items()}
+    signals_by_code = {
+        code: [signal for signal in replay_template.canonical_signals(features) if signal.at.date() >= requested_start]
+        for code, features in features_by_code.items()
+    }
+    policy = ResearchCostPolicy()
+    closed_rows: list[dict] = []
+    open_rows: list[dict] = []
+
+    def allowed(strategy: str) -> set[str]:
+        return {strategy} if strategy.startswith("SIGNAL_") else ACCUMULATED[strategy]
+
+    def add_closed(cycle, pair, entry_source: str, exit_source: str | None = None):
+        raw = {
+            "trading_date": cycle.exit_time.date(), "trade_stock_code": pair.trade_stock_code,
+            "signal_source_stock_code": entry_source, "exit_signal_source_stock_code": exit_source,
+            "strategy_code": cycle.strategy_code, "observation_code": "COMPLETE", "direction": cycle.direction,
+            "entry_signal_time": cycle.entry_signal_time, "entry_confirm_time": cycle.entry_confirm_time,
+            "entry_time": cycle.entry_confirm_time, "entry_price": cycle.entry_price,
+            "exit_signal_time": cycle.exit_signal_time, "exit_time": cycle.exit_time,
+            "exit_price": cycle.exit_price, "exit_type": cycle.exit_type,
+            "holding_seconds": int((cycle.exit_time - cycle.entry_confirm_time).total_seconds()),
+            "legs": [{"entry_price": leg.entry_price, "entry_ratio": leg.ratio} for leg in cycle.legs],
+        }
+        fee, tax = policy.for_stock(pair.trade_stock_code)
+        closed_rows.append(project_cycle(raw, fee_rate=fee, sell_tax_rate=tax, timeframe="DAILY"))
+
+    def add_open(cycle, pair, entry_source: str, exit_source: str | None = None):
+        capital = target_capital(pair.trade_stock_code, timeframe="DAILY")
+        legs = []
+        for leg in cycle.legs:
+            quantity = int((capital * leg.ratio) // leg.entry_price)
+            legs.append((leg.entry_price, quantity))
+        quantity = sum(item[1] for item in legs)
+        invested = sum((price * qty for price, qty in legs), Decimal("0"))
+        for bar in bars_by_code[pair.trade_stock_code]:
+            if bar.bar_time.date() < requested_start or bar.bar_time.date() > requested_end or bar.bar_time < cycle.entry_confirm_time:
+                continue
+            profit = sum(((bar.close_price - price) if cycle.direction == "LONG" else (price - bar.close_price)) * qty for price, qty in legs)
+            open_rows.append({"trade_stock_code": pair.trade_stock_code, "signal_source_stock_code": entry_source,
+                "exit_signal_source_stock_code": exit_source, "strategy_code": cycle.strategy_code,
+                "observation_code": "COMPLETE", "direction": cycle.direction, "entry_time": cycle.entry_confirm_time,
+                "entry_price": cycle.entry_price, "trading_date": bar.bar_time.date(),
+                "valuation_close_price": bar.close_price, "quantity": quantity, "invested_amount": invested,
+                "unrealized_profit": profit, "unrealized_return_rate": Decimal("0") if not invested else profit / invested * 100,
+                "is_latest": False})
+
+    for pair in pairs:
+        fee, tax = policy.for_stock(pair.trade_stock_code)
+        target_prices = {bar.bar_time: bar.close_price for bar in bars_by_code[pair.trade_stock_code]}
+        pair_replay = DailyCompleteReplay(entry_condition=condition, confirm_period=period, fee_rate=fee, sell_tax_rate=tax, slippage_rate=policy.slippage_rate)
+        if pair.transform in {"CROSS_A", "CROSS_B"}:
+            entry_source, exit_source = pair.signal_source_stock_code.split("+")
+            wanted = "LONG" if pair.transform == "CROSS_A" else "SHORT"
+            entry_signals = [item for item in signals_by_code[entry_source] if item.direction == wanted]
+            exit_signals = [item for item in signals_by_code[exit_source] if item.direction == wanted]
+            cycles = pair_replay.replay_cross_long(entry_features=features_by_code[entry_source], entry_signals=entry_signals,
+                                                    exit_signals=exit_signals, target_prices=target_prices)
+            for cycle in cycles: add_closed(cycle, pair, entry_source, exit_source)
+            for cycle in pair_replay.open_cycles: add_open(cycle, pair, entry_source, exit_source)
+            continue
+        if pair.transform == "CONSENSUS":
+            left, right = pair.signal_source_stock_code.split("+")
+            right_keys = {(event.at, event.signal_type, event.direction) for event in signals_by_code[right]}
+            source_features = features_by_code[left]
+            signals = [event for event in signals_by_code[left]
+                       if (event.at, event.signal_type, "SHORT" if event.direction == "LONG" else "LONG") in right_keys]
+        else:
+            source_features = features_by_code[pair.signal_source_stock_code]
+            signals = signals_by_code[pair.signal_source_stock_code]
+        cycles = pair_replay.replay(features=source_features, signals=signals, target_prices=target_prices,
+                                    direction_transform="DIRECT" if pair.transform == "CONSENSUS" else pair.transform)
+        for cycle in cycles: add_closed(cycle, pair, pair.signal_source_stock_code)
+        for cycle in pair_replay.open_cycles: add_open(cycle, pair, pair.signal_source_stock_code)
+
+    def matched(row: dict) -> bool:
+        for key in ("trade_stock_code", "signal_source_stock_code", "strategy_code", "direction", "observation_code"):
+            value = (query.get(key) or ["ALL"])[0]
+            if value not in ("", "ALL") and str(row.get(key)) != value:
+                return False
+        return True
+
+    closed_rows = [row for row in closed_rows if matched(row)]
+    open_rows = [row for row in open_rows if matched(row)]
+    latest_by_open: dict[tuple, date] = {}
+    for row in open_rows:
+        key = (row["trade_stock_code"], row["signal_source_stock_code"], row["strategy_code"], row["direction"], row["entry_time"])
+        latest_by_open[key] = max(latest_by_open.get(key, row["trading_date"]), row["trading_date"])
+    for row in open_rows:
+        key = (row["trade_stock_code"], row["signal_source_stock_code"], row["strategy_code"], row["direction"], row["entry_time"])
+        row["is_latest"] = row["trading_date"] == latest_by_open[key]
+    ranking = _projected_groups(closed_rows, ("trade_stock_code", "signal_source_stock_code", "strategy_code", "observation_code", "direction"))
+    daily = _projected_groups(closed_rows, ("trading_date", "trade_stock_code", "signal_source_stock_code", "strategy_code", "observation_code", "direction"))
+    for row in daily:
+        row["daily_return_rate"] = None; row["daily_market_direction"] = None
+    ranking, daily, overview = _apply_daily_open_valuation(ranking, daily, open_rows, Decimal("30000000"))
+    for row in open_rows:
+        if row["is_latest"]:
+            row["valuation_date"] = row.pop("trading_date")
+            row["holding_days"] = (row["valuation_date"] - row["entry_time"].date()).days
+    open_positions = [row for row in open_rows if row["is_latest"]]
+    ranking.sort(key=lambda row: (row.get("total_valuation_return_rate", Decimal("0")), row.get("total_valuation_profit", Decimal("0"))), reverse=True)
+    return {"status": "OK", "calculation_source": "RAW_STATELESS", "run_id": None,
+            "start_date": requested_start, "end_date": requested_end,
+            "selected_start_date": requested_start, "selected_end_date": requested_end,
+            "entry_condition": condition, "timeframe": "DAILY",
+            "parameters": {"timeframe": "DAILY", "ma_period": period, "entry_condition": condition,
+                           "warmup_policy": "TRADING_BARS_DYNAMIC", "calculation_source": "RAW_STATELESS"},
+            "initial_capital": Decimal("30000000"), "summary": aggregate_projected(closed_rows),
+            "daily": daily, "ranking": ranking, "comparison": {}, "open_positions": open_positions,
+            "valuation_overview": overview, "stock_names": stock_names, "warmup_bars": warmup}
+
+
 def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
     """Read-only target-capital comparison; no replay, RAW access, or writes."""
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
     if condition not in {"SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM","MA_CONFIRM","MA_CONFIRM_INTEGRATED","MA_AT_SIGNAL"}: condition = "MA10_CONFIRM"
     timeframe = (query.get("timeframe") or ["MINUTE"])[0]
     if timeframe not in {"MINUTE", "DAILY"}: timeframe = "MINUTE"
+    if timeframe == "DAILY":
+        return _daily_stateless_rows(pool, query, condition)
     session = (query.get("analysis_session") or ["ALL_INTEGRATED"])[0]
     session_mode = "REGULAR_AFTER_CONTINUOUS" if session == "REGULAR_AFTER_CONTINUOUS" else None
     with pool.connection() as conn, conn.cursor() as cur:
