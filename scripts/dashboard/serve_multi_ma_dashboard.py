@@ -71,16 +71,14 @@ def research_daily_intraday_payload(pool, query: dict[str, list[str]]) -> dict:
         # STOCK_DAILY is the only target source.  STOCK.attr7 is used solely
         # to select the already configured minute RAW venue for that target.
         cur.execute("""SELECT daily.code, daily.code_name,
-                              COALESCE(NULLIF(BTRIM(daily.attr1), ''), 'KOSPI'),
-                              COALESCE(NULLIF(BTRIM(daily.attr2), ''), 'KRX'),
-                              COALESCE(NULLIF(BTRIM(stock.attr7), ''), NULLIF(BTRIM(daily.attr2), ''), 'KRX')
+                              COALESCE(NULLIF(BTRIM(stock.attr7), ''), NULLIF(BTRIM(daily.attr7), ''), 'KRX')
                        FROM common_code daily
                        LEFT JOIN common_code stock ON stock.group_cd='STOCK' AND stock.code=daily.code
                       WHERE daily.group_cd='STOCK_DAILY' AND daily.use_yn='Y'
                       ORDER BY daily.sort_order, daily.code""")
         targets = cur.fetchall()
         items = []
-        for stock_code, stock_name, market_code, daily_venue, minute_venue in targets:
+        for stock_code, stock_name, minute_venue in targets:
             stock_code = str(stock_code)
             # No implicit trade/source mapping is introduced here: this
             # observer has one target/source pair per STOCK_DAILY target.
@@ -88,30 +86,29 @@ def research_daily_intraday_payload(pool, query: dict[str, list[str]]) -> dict:
                 continue
             cur.execute("""SELECT trade_date,open_price,high_price,low_price,close_price,volume
                              FROM raw_stock_daily
-                            WHERE stock_code=%s AND data_source='KIS' AND market_code=%s
-                              AND trading_venue=%s AND collect_cycle='DAILY' AND trade_date < %s
+                            WHERE stock_code=%s AND data_source='KIS' AND trading_venue='KRX'
+                              AND collect_cycle='DAILY' AND trade_date < %s
                               AND close_price IS NOT NULL
                             ORDER BY trade_date DESC LIMIT %s""",
-                        (stock_code, market_code, daily_venue, today, max(20, period)))
+                        (stock_code, today, max(20, period)))
             historical_rows = list(reversed(cur.fetchall()))
             history = [MinuteBar(datetime.combine(row[0], clock_time(15, 19)), row[1], row[2], row[3], row[4])
                        for row in historical_rows]
             cur.execute("""SELECT trade_date,open_price,high_price,low_price,close_price,volume
                              FROM raw_stock_daily
-                            WHERE stock_code=%s AND data_source='KIS' AND market_code=%s
-                              AND trading_venue=%s AND collect_cycle='DAILY' AND trade_date=%s
+                            WHERE stock_code=%s AND data_source='KIS' AND trading_venue='KRX'
+                              AND collect_cycle='DAILY' AND trade_date=%s
                               AND close_price IS NOT NULL""",
-                        (stock_code, market_code, daily_venue, today))
+                        (stock_code, today))
             official = cur.fetchone()
             official_bar = (MinuteBar(datetime.combine(today, clock_time(15, 19)), official[1], official[2], official[3], official[4])
                             if official else None)
             cur.execute("""SELECT bar_time,open_price,high_price,low_price,close_price,volume
                              FROM raw_stock_minute
-                            WHERE stock_code=%s AND data_source='KIS' AND market_code=%s
-                              AND trading_venue=%s AND collect_cycle='1MIN'
+                            WHERE stock_code=%s AND data_source='KIS' AND trading_venue=%s AND collect_cycle='1MIN'
                               AND bar_time >= %s AND bar_time < %s AND close_price IS NOT NULL
                             ORDER BY bar_time""",
-                        (stock_code, market_code, minute_venue, start_of_day, end_of_day))
+                        (stock_code, minute_venue, start_of_day, end_of_day))
             minutes = [RawMinute(_korean_naive_timestamp(row[0]), row[1], row[2], row[3], row[4], row[5] or Decimal("0"))
                        for row in cur.fetchall()]
             item = observe_provisional_daily(stock_code=stock_code, daily_history=history, minute_rows=minutes,
