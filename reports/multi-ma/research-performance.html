@@ -8,8 +8,9 @@
 <h1>연구 성과 · COMPLETE</h1>
 <p class="muted">저장된 연구 cycle을 읽기 전용으로 집계합니다. RAW 수집·전략 재생·주문 API는 호출하지 않습니다.</p>
 <div class="controls">
+  <label>기준 <select id="timeframe"><option value="MINUTE">분봉 COMPLETE</option><option value="DAILY">일봉 COMPLETE</option></select></label>
   <label>진입 조건 <select id="entry"><option value="MA10_CONFIRM">MA10 확인 통합</option><option value="MA10_READY_AT_SIGNAL">신호 시점 MA10 충족</option><option value="SIGNAL_ONLY">MA10 미적용</option></select></label>
-  <label>분석 시간대 <select id="session"><option value="ALL_INTEGRATED">전체 통합</option><option value="NXT_PRE">NXT 프리마켓 08:00~08:49</option><option value="REGULAR">정규장 09:00~15:19</option><option value="NXT_AFTER">NXT 애프터마켓 15:40~20:00</option></select></label>
+  <label>분석 시간대 <select id="session"><option value="ALL_INTEGRATED">전체 통합</option><option value="NXT_PRE">NXT 프리마켓 08:00~08:49</option><option value="REGULAR">정규장 09:00~15:19</option><option value="NXT_AFTER">NXT 애프터마켓 15:40~20:00</option><option value="REGULAR_AFTER_AGGREGATED">정규+애프터(성과통합)</option><option value="REGULAR_AFTER_CONTINUOUS">정규+애프터(연속 MA)</option></select></label>
   <label>시작일 <input id="startDate" type="date"></label><label>종료일 <input id="endDate" type="date"></label>
   <label>거래 대상 <input id="trade" placeholder="ALL"></label><label>신호 원천 <input id="source" placeholder="ALL"></label>
   <label>전략 <select id="strategy"><option>ALL</option><option>SIGNAL_1</option><option>SIGNAL_2</option><option>SIGNAL_3</option><option>ACCUMULATED</option><option>ACCUMULATED_1</option><option>ACCUMULATED_2</option></select></label>
@@ -30,7 +31,7 @@ const $=id=>document.getElementById(id);
 const num=value=>value==null?'–':Number(value).toLocaleString('ko-KR',{maximumFractionDigits:2});
 const won=value=>`${num(value)}원`, pct=value=>value==null?'–':`${num(value)}%`;
 const text=value=>String(value??'–').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-const q=()=>new URLSearchParams({entry_condition:$('entry').value,analysis_session:$('session').value,start_date:$('startDate').value,end_date:$('endDate').value,trade_stock_code:$('trade').value||'ALL',signal_source_stock_code:$('source').value||'ALL',strategy_code:$('strategy').value,direction:$('direction').value,trade_set:$('tradeSet').value,trade_limit:$('tradeLimit').value,rank_limit:$('rankLimit').value,observation_code:'COMPLETE'});
+const q=()=>new URLSearchParams({timeframe:$('timeframe').value,entry_condition:$('entry').value,analysis_session:$('session').value,start_date:$('startDate').value,end_date:$('endDate').value,trade_stock_code:$('trade').value||'ALL',signal_source_stock_code:$('source').value||'ALL',strategy_code:$('strategy').value,direction:$('direction').value,trade_set:$('tradeSet').value,trade_limit:$('tradeLimit').value,rank_limit:$('rankLimit').value,observation_code:'COMPLETE'});
 const row=values=>`<tr>${values.map(value=>`<td>${value}</td>`).join('')}</tr>`;
 const labels={SIGNAL_ONLY:'MA10 미적용',MA10_READY_AT_SIGNAL:'신호 시점 MA10 충족',MA10_CONFIRM:'MA10 확인 통합'};
 const rankKeys=['rank','trade_stock_code','signal_source_stock_code','strategy_code','observation_code','direction','closed_count','win_count','win_rate','target_capital','gross_realized_profit','total_trading_cost','realized_profit','invested_amount','gross_invested_return_rate','invested_return_rate','gross_capital_return_rate','capital_return_rate','avg_trade_return_rate','avg_holding_seconds'];

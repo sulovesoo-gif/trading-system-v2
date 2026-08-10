@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from src.analysis.event.multi_ma_event import detect_signals
-from src.analysis.feature.multi_ma_feature import MultiMaFeature, build_multi_ma_features
+from src.analysis.feature.multi_ma_feature import MultiMaFeature, build_daily_ma_features, build_multi_ma_features
 from src.analysis.feature.sma_feature import MinuteBar
 
 CAPITAL = Decimal("10000000")
@@ -135,6 +135,13 @@ class CompleteReplay:
                 groups[-1].append(bar)
         return [feature for group in groups for feature in build_multi_ma_features(group, short_period=self.short, mid_period=self.mid, long_period=self.long, price_field=self.price_field)]
 
+    @staticmethod
+    def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:
+        """A minute/session boundary; subclasses can retain the same state machine."""
+        return (previous is None or previous.bar.bar_time.date() != current.bar.bar_time.date()
+                or _session_id(previous.bar.bar_time) != _session_id(current.bar.bar_time)
+                or current.bar.bar_time - previous.bar.bar_time != timedelta(minutes=1))
+
     def run(self, bars: list[MinuteBar]) -> tuple[list[MultiMaFeature], list[ResearchSignal], list[ClosedCycle]]:
         features = self.features(bars)
         target_prices = {bar.bar_time: bar.close_price for bar in bars}
@@ -142,11 +149,10 @@ class CompleteReplay:
         cycles = self.replay(features=features, signals=signals, target_prices=target_prices)
         return features, signals, cycles
 
-    @staticmethod
-    def canonical_signals(features: list[MultiMaFeature]) -> list[ResearchSignal]:
+    def canonical_signals(self, features: list[MultiMaFeature]) -> list[ResearchSignal]:
         result: list[ResearchSignal] = []
         for previous, current in zip(features, features[1:]):
-            if previous.bar.bar_time.date() != current.bar.bar_time.date() or _session_id(previous.bar.bar_time) != _session_id(current.bar.bar_time) or current.bar.bar_time - previous.bar.bar_time != timedelta(minutes=1):
+            if self.is_boundary(previous, current):
                 continue
             result.extend(ResearchSignal(current.bar.bar_time, item.signal_type, item.direction, current) for item in detect_signals(previous, current))
         return result
@@ -171,7 +177,7 @@ class CompleteReplay:
         previous: MultiMaFeature | None = None
         for feature in features:
             now = feature.bar.bar_time
-            boundary = previous is None or now - previous.bar.bar_time != timedelta(minutes=1) or now.date() != previous.bar.bar_time.date() or _session_id(now) != _session_id(previous.bar.bar_time)
+            boundary = self.is_boundary(previous, feature)
             if boundary:
                 if position is not None and previous is not None:
                     previous_price = target_prices.get(previous.bar.bar_time)
@@ -269,3 +275,44 @@ class CompleteReplay:
                            signal_time, exit_time, exit_price, quantity, invested, net,
                            Decimal("0") if not invested else net / invested * Decimal("100"), net / CAPITAL * Decimal("100"),
                            exit_type, "NORMAL", tuple(position.legs), profit, buy_fee, sell_fee, sell_tax)
+
+
+class DailyCompleteReplay(CompleteReplay):
+    """Daily CLOSE replay sharing the exact six-strategy canonical state machine.
+
+    Daily continuity means consecutive stored trading dates, not consecutive
+    calendar days: weekends and holidays never manufacture a DATA_GAP.
+    """
+    def features(self, bars: Iterable[MinuteBar]) -> list[MultiMaFeature]:
+        return build_daily_ma_features(sorted(bars, key=lambda item: item.bar_time), price_field=self.price_field)
+
+    @staticmethod
+    def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:
+        return previous is None
+
+
+class RegularAfterContinuousReplay(CompleteReplay):
+    """Minute COMPLETE replay that carries regular-session MA state into NXT after.
+
+    The 15:20~15:39 auction/transition window remains excluded; it is not a
+    feature and therefore cannot emit a signal or become a synthetic bar.
+    """
+    def features(self, bars: Iterable[MinuteBar]) -> list[MultiMaFeature]:
+        groups: list[list[MinuteBar]] = []
+        for bar in sorted(bars, key=lambda item: item.bar_time):
+            session = _session_id(bar.bar_time)
+            if session is None:
+                continue
+            premarket = session == "NXT_PREMARKET"
+            if (not groups or bar.bar_time.date() != groups[-1][-1].bar_time.date()
+                    or (_session_id(groups[-1][-1].bar_time) == "NXT_PREMARKET") != premarket):
+                groups.append([bar])
+            else:
+                groups[-1].append(bar)
+        return [feature for group in groups for feature in build_multi_ma_features(group, short_period=self.short, mid_period=self.mid, long_period=self.long, price_field=self.price_field)]
+
+    @staticmethod
+    def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:
+        if previous is None or previous.bar.bar_time.date() != current.bar.bar_time.date():
+            return True
+        return (_session_id(previous.bar.bar_time) == "NXT_PREMARKET") != (_session_id(current.bar.bar_time) == "NXT_PREMARKET")

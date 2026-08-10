@@ -25,7 +25,7 @@ from src.repository.raw_repository import RawRepository
 from src.repository.research_repository import ResearchRepository
 from src.service.kis_trading_calendar import KisTradingCalendar
 from src.service.raw_ingestion_service import RawIngestionService
-from src.service.research_backfill_service import CompleteResearchRunner, ResearchBackfillService
+from src.service.research_backfill_service import CompleteResearchRunner, DailyCompleteResearchRunner, RegularAfterContinuousResearchRunner, ResearchBackfillService
 
 PAGE = """<!doctype html><meta charset='utf-8'><title>Research Backfill</title>
 <h1>연구용 RAW 백필 / COMPLETE 재생</h1><p>실시간 수집·알림·주문과 분리된 관리 기능입니다.</p>
@@ -35,6 +35,10 @@ PAGE = """<!doctype html><meta charset='utf-8'><title>Research Backfill</title>
 <label>시작일 <input type='date' name='start_date' required></label><label>종료일 <input type='date' name='end_date' required></label>
 <label>진입 조건 <select name='entry_condition'><option value='MA10_CONFIRM' selected>MA10_CONFIRM</option><option value='SIGNAL_ONLY'>SIGNAL_ONLY</option></select></label>
 <button name='action' value='backfill'>RAW 백필 실행</button><button name='action' value='replay'>일별 COMPLETE 전략 재생 실행</button></form>"""
+
+PAGE = PAGE.replace("</form>", "<button name='action' value='daily_replay'>Daily COMPLETE replay</button></form>")
+PAGE = PAGE.replace("</form>", "<button name='action' value='continuous_replay'>Regular+After continuous replay</button></form>")
+
 
 def _load_env(path: Path | None = None):
     path = path or ROOT / '.env'
@@ -63,6 +67,14 @@ def application(pool, values):
     elif action == 'replay':
         entry_condition = values.get('entry_condition', ['MA10_CONFIRM'])[0]
         response['research_run_id'] = str(CompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end, entry_condition=entry_condition))
+        response['raw_api_calls'] = 0
+    elif action == 'daily_replay':
+        entry_condition = values.get('entry_condition', ['MA10_CONFIRM'])[0]
+        response['research_run_id'] = str(DailyCompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end, entry_condition=entry_condition))
+        response['raw_api_calls'] = 0
+    elif action == 'continuous_replay':
+        entry_condition = values.get('entry_condition', ['MA10_CONFIRM'])[0]
+        response['research_run_id'] = str(RegularAfterContinuousResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end, entry_condition=entry_condition))
         response['raw_api_calls'] = 0
     else: raise ValueError('unknown action')
     return response

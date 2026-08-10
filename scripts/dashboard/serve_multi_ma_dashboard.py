@@ -300,6 +300,8 @@ def _research_filters(
         lower, upper = session_ranges[session]
         where.append(f"{alias}.entry_time::time >= %s::time AND {alias}.entry_time::time < %s::time")
         params.extend((lower, upper))
+    elif session == "REGULAR_AFTER_AGGREGATED":
+        where.append(f"(({alias}.entry_time::time >= '09:00'::time AND {alias}.entry_time::time < '15:20'::time) OR ({alias}.entry_time::time >= '15:40'::time AND {alias}.entry_time::time < '20:01'::time))")
     if entry_condition == "MA10_READY_AT_SIGNAL":
         where.append(f"{alias}.entry_signal_time = {alias}.entry_confirm_time")
     return (" AND " + " AND ".join(where) if where else ""), params
@@ -437,9 +439,18 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
     """Read-only target-capital comparison; no replay, RAW access, or writes."""
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
     if condition not in {"SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM"}: condition = "MA10_CONFIRM"
+    timeframe = (query.get("timeframe") or ["MINUTE"])[0]
+    if timeframe not in {"MINUTE", "DAILY"}: timeframe = "MINUTE"
+    session = (query.get("analysis_session") or ["ALL_INTEGRATED"])[0]
+    session_mode = "REGULAR_AFTER_CONTINUOUS" if session == "REGULAR_AFTER_CONTINUOUS" else None
     with pool.connection() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT run_id,start_date,end_date,parameters FROM research_run WHERE status='COMPLETED'
-          AND parameters->>'entry_condition'=%s ORDER BY end_date DESC,created_at DESC LIMIT 1""", (_research_run_condition(condition),))
+        run_sql = """SELECT run_id,start_date,end_date,parameters FROM research_run WHERE status='COMPLETED'
+          AND parameters->>'entry_condition'=%s AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
+        run_values = [_research_run_condition(condition), timeframe]
+        if session_mode:
+            run_sql += " AND parameters->>'session_mode'=%s"; run_values.append(session_mode)
+        run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"
+        cur.execute(run_sql, run_values)
         run = cur.fetchone()
         if run is None: return {"status":"NO_COMPLETED_RUN","entry_condition":condition,"summary":{},"daily":[],"ranking":[],"comparison":{}}
         run_id,start_date,end_date,parameters = run
@@ -469,13 +480,17 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         ranking = ranking[:int((query.get("rank_limit") or ["20"])[0] if (query.get("rank_limit") or ["20"])[0] in {"10","20"} else "20")]
         comparison = {}
         for candidate in ("SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM"):
-            cur.execute("""SELECT run_id,parameters FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s
-              AND parameters->>'entry_condition'=%s ORDER BY created_at DESC LIMIT 1""", (start_date,end_date,_research_run_condition(candidate)))
+            compare_sql = """SELECT run_id,parameters FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s
+              AND parameters->>'entry_condition'=%s AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
+            compare_values = [start_date,end_date,_research_run_condition(candidate),timeframe]
+            if session_mode: compare_sql += " AND parameters->>'session_mode'=%s"; compare_values.append(session_mode)
+            compare_sql += " ORDER BY created_at DESC LIMIT 1"
+            cur.execute(compare_sql, compare_values)
             other = cur.fetchone()
             if other: comparison[candidate] = aggregate_projected(_projected_cycles(cur, other[0], other[1], effective_query, candidate))
     return {"status":"OK","run_id":run_id,"start_date":start_date,"end_date":end_date,"entry_condition":condition,
             "selected_start_date":effective_query["start_date"][0],"selected_end_date":effective_query["end_date"][0],
-            "parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison}
+            "timeframe":timeframe,"parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison}
 
 
 def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:

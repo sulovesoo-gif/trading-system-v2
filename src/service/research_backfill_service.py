@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from src.analysis.feature.sma_feature import MinuteBar
 from src.repository.raw_specs import RawTable
-from src.service.research_complete_replay_service import CompleteReplay, STRATEGIES, _session_id
+from src.service.research_complete_replay_service import CompleteReplay, DailyCompleteReplay, RegularAfterContinuousReplay, STRATEGIES, _session_id
 
 
 @dataclass(frozen=True)
@@ -127,6 +127,17 @@ class CompleteResearchRunner:
               AND collect_cycle='1MIN' AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code,venue,start_date,end_date))
             return [MinuteBar(*row) for row in cur.fetchall()]
 
+    def _replay(self, *, entry_condition: str) -> CompleteReplay:
+        return CompleteReplay(entry_condition=entry_condition)
+
+    @property
+    def timeframe(self) -> str:
+        return "MINUTE"
+
+    @property
+    def session_mode(self) -> str:
+        return "SEPARATE"
+
     def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS,
             entry_condition: str = CompleteReplay.MA10_CONFIRM,
             cost_policy: ResearchCostPolicy | None = None):
@@ -135,11 +146,11 @@ class CompleteResearchRunner:
         cost_policy = cost_policy or ResearchCostPolicy()
         run_id = uuid4()
         self.repository.create_run(run_id=run_id, start_date=start_date, end_date=end_date,
-                                   parameters={"observation": "COMPLETE", "capital": "10000000", "entry_condition": entry_condition,
+                                   parameters={"observation": "COMPLETE", "timeframe": self.timeframe, "session_mode": self.session_mode, "capital": "10000000", "entry_condition": entry_condition,
                                                "cost_policy_version": cost_policy.version, "cost_policy": cost_policy.snapshot(),
                                                "fee_rate": str(cost_policy.stock_fee_rate), "slippage_rate": str(cost_policy.slippage_rate),
                                                "pairs": [pair.name for pair in pairs]})
-        replay = CompleteReplay(entry_condition=entry_condition)
+        replay = self._replay(entry_condition=entry_condition)
         try:
             all_bars = {code: self._bars(code, start_date, end_date) for code in {part for pair in pairs for part in pair.signal_source_stock_code.split("+")} | {pair.trade_stock_code for pair in pairs}}
             for source, bars in all_bars.items():
@@ -167,7 +178,7 @@ class CompleteResearchRunner:
                 direction_by_time = {feature.bar.bar_time: replay._ma10_direction(previous, feature) for previous, feature in zip([None, *source_features], source_features)}
                 target_prices = {bar.bar_time: bar.close_price for bar in all_bars[pair.trade_stock_code]}
                 fee_rate, sell_tax_rate = cost_policy.for_stock(pair.trade_stock_code)
-                pair_replay = CompleteReplay(entry_condition=entry_condition, fee_rate=fee_rate,
+                pair_replay = type(replay)(entry_condition=entry_condition, fee_rate=fee_rate,
                                               sell_tax_rate=sell_tax_rate, slippage_rate=cost_policy.slippage_rate)
                 cycles = pair_replay.replay(features=source_features, signals=signals, target_prices=target_prices,
                                        direction_transform="DIRECT" if pair.transform == "CONSENSUS" else pair.transform)
@@ -187,3 +198,32 @@ class CompleteResearchRunner:
         except Exception:
             self.repository.finish_run(run_id, "FAILED")
             raise
+
+
+class DailyCompleteResearchRunner(CompleteResearchRunner):
+    """Daily CLOSE-only research runner.  It reads saved KRX daily RAW only."""
+    @property
+    def timeframe(self) -> str:
+        return "DAILY"
+
+    def _replay(self, *, entry_condition: str) -> DailyCompleteReplay:
+        return DailyCompleteReplay(entry_condition=entry_condition)
+
+    def _bars(self, stock_code: str, start_date: date, end_date: date) -> list[MinuteBar]:
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT trade_date,open_price,high_price,low_price,close_price FROM raw_stock_daily
+              WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI' AND trading_venue='KRX'
+                AND collect_cycle='DAILY' AND trade_date BETWEEN %s AND %s AND close_price IS NOT NULL
+              ORDER BY trade_date""", (stock_code,start_date,end_date))
+            return [MinuteBar(datetime.combine(day, time(15, 19)), opening, high, low, close)
+                    for day, opening, high, low, close in cur.fetchall()]
+
+
+class RegularAfterContinuousResearchRunner(CompleteResearchRunner):
+    """Opt-in minute run: regular MA state continues into NXT after market."""
+    @property
+    def session_mode(self) -> str:
+        return "REGULAR_AFTER_CONTINUOUS"
+
+    def _replay(self, *, entry_condition: str) -> RegularAfterContinuousReplay:
+        return RegularAfterContinuousReplay(entry_condition=entry_condition)
