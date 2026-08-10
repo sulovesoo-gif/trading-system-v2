@@ -449,6 +449,8 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         run_values = [_research_run_condition(condition), timeframe]
         if session_mode:
             run_sql += " AND parameters->>'session_mode'=%s"; run_values.append(session_mode)
+        else:
+            run_sql += " AND COALESCE(parameters->>'session_mode','SEPARATE')='SEPARATE'"
         run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"
         cur.execute(run_sql, run_values)
         run = cur.fetchone()
@@ -484,6 +486,7 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
               AND parameters->>'entry_condition'=%s AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
             compare_values = [start_date,end_date,_research_run_condition(candidate),timeframe]
             if session_mode: compare_sql += " AND parameters->>'session_mode'=%s"; compare_values.append(session_mode)
+            else: compare_sql += " AND COALESCE(parameters->>'session_mode','SEPARATE')='SEPARATE'"
             compare_sql += " ORDER BY created_at DESC LIMIT 1"
             cur.execute(compare_sql, compare_values)
             other = cur.fetchone()
