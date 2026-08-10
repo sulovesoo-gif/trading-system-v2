@@ -448,6 +448,92 @@ def _projected_groups(rows: list[dict], fields: tuple[str, ...]) -> list[dict]:
     return output
 
 
+def _daily_group_key(row: dict) -> tuple:
+    return tuple(row.get(field) for field in (
+        "trade_stock_code", "signal_source_stock_code", "strategy_code", "observation_code", "direction"
+    ))
+
+
+def _apply_daily_open_valuation(
+    ranking: list[dict], daily: list[dict], position_rows: list[dict], initial_capital: Decimal,
+) -> tuple[list[dict], list[dict], dict]:
+    """Attach persisted daily mark-to-market values without replaying cycles.
+
+    Every amount remains isolated by the complete strategy/source combination;
+    only the UI decides whether a single combination may be shown as an account.
+    """
+    daily_open: dict[tuple, Decimal] = {}
+    for row in position_rows:
+        key = _daily_group_key(row)
+        profit = Decimal(str(row.get("unrealized_profit") or 0))
+        daily_open[(row["trading_date"], key)] = daily_open.get((row["trading_date"], key), Decimal("0")) + profit
+
+    # Include dates that have an open mark but no closed cycle.  The daily
+    # table then shows the requested mark-to-market path rather than hiding it
+    # until another cycle happens to close.
+    existing = {(row["trading_date"], _daily_group_key(row)) for row in daily}
+    for row in position_rows:
+        key = (row["trading_date"], _daily_group_key(row))
+        if key not in existing:
+            day, group = key
+            daily.append({
+                "trading_date": day,
+                "trade_stock_code": group[0], "signal_source_stock_code": group[1],
+                "strategy_code": group[2], "observation_code": group[3], "direction": group[4],
+                "daily_return_rate": None, "daily_market_direction": None,
+                "closed_count": 0, "win_count": 0, "loss_count": 0, "flat_count": 0,
+                "gross_realized_profit": Decimal("0"), "total_trading_cost": Decimal("0"),
+                "realized_profit": Decimal("0"), "invested_amount": Decimal("0"),
+                "gross_invested_return_rate": Decimal("0"), "invested_return_rate": Decimal("0"),
+                "gross_capital_return_rate": Decimal("0"), "capital_return_rate": Decimal("0"),
+                "avg_trade_return_rate": Decimal("0"), "avg_holding_seconds": Decimal("0"),
+                "signal_exit_profit": Decimal("0"), "session_close_profit": Decimal("0"),
+            })
+            existing.add(key)
+
+    # The latest row per cycle is selected by the caller.  Aggregate it per
+    # combination here, preserving multiple independent open combinations.
+    latest_open: dict[tuple, Decimal] = {}
+    for row in position_rows:
+        key = _daily_group_key(row)
+        latest_open[key] = latest_open.get(key, Decimal("0")) + Decimal(str(row.get("unrealized_profit") or 0)) if row.get("is_latest") else latest_open.get(key, Decimal("0"))
+    for item in ranking:
+        open_profit = latest_open.get(_daily_group_key(item), Decimal("0"))
+        realized = Decimal(str(item.get("realized_profit") or 0))
+        item["initial_capital"] = initial_capital
+        item["open_valuation_profit"] = open_profit
+        item["total_valuation_profit"] = realized + open_profit
+        item["realized_capital_return_rate"] = Decimal("0") if not initial_capital else realized / initial_capital * 100
+        item["total_valuation_return_rate"] = Decimal("0") if not initial_capital else item["total_valuation_profit"] / initial_capital * 100
+
+    cumulative: dict[tuple, Decimal] = {}
+    for item in sorted(daily, key=lambda row: (row["trading_date"], _daily_group_key(row))):
+        key = _daily_group_key(item)
+        cumulative[key] = cumulative.get(key, Decimal("0")) + Decimal(str(item.get("realized_profit") or 0))
+        open_profit = daily_open.get((item["trading_date"], key), Decimal("0"))
+        item["initial_capital"] = initial_capital
+        item["realized_cumulative_profit"] = cumulative[key]
+        item["realized_capital_return_rate"] = Decimal("0") if not initial_capital else cumulative[key] / initial_capital * 100
+        item["open_valuation_profit"] = open_profit
+        item["total_valuation_profit"] = cumulative[key] + open_profit
+        item["total_valuation_return_rate"] = Decimal("0") if not initial_capital else item["total_valuation_profit"] / initial_capital * 100
+
+    rates = [Decimal(str(item["realized_capital_return_rate"])) for item in ranking]
+    total_rates = [Decimal(str(item["total_valuation_return_rate"])) for item in ranking]
+    median = lambda values: Decimal("0") if not values else sorted(values)[(len(values) - 1) // 2]
+    overview = {
+        "combination_count": len(ranking),
+        "profitable_combination_count": sum(rate > 0 for rate in rates),
+        "losing_combination_count": sum(rate < 0 for rate in rates),
+        "best_realized_capital_return_rate": max(rates, default=Decimal("0")),
+        "median_realized_capital_return_rate": median(rates),
+        "best_total_valuation_return_rate": max(total_rates, default=Decimal("0")),
+        "median_total_valuation_return_rate": median(total_rates),
+    }
+    daily.sort(key=lambda row: row["trading_date"], reverse=True)
+    return ranking, daily, overview
+
+
 def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
     """Read-only target-capital comparison; no replay, RAW access, or writes."""
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
@@ -458,7 +544,7 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
     session_mode = "REGULAR_AFTER_CONTINUOUS" if session == "REGULAR_AFTER_CONTINUOUS" else None
     with pool.connection() as conn, conn.cursor() as cur:
         stock_names = _research_stock_names(cur)
-        run_sql = """SELECT run_id,start_date,end_date,parameters FROM research_run WHERE status='COMPLETED'
+        run_sql = """SELECT run_id,start_date,end_date,parameters,initial_capital FROM research_run WHERE status='COMPLETED'
           AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
         run_values = [timeframe]
         if timeframe == "DAILY" and condition == "MA_CONFIRM_INTEGRATED":
@@ -479,7 +565,7 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         cur.execute(run_sql, run_values)
         run = cur.fetchone()
         if run is None: return {"status":"NO_COMPLETED_RUN","entry_condition":condition,"summary":{},"daily":[],"ranking":[],"comparison":{},"stock_names":stock_names}
-        run_id,start_date,end_date,parameters = run
+        run_id,start_date,end_date,parameters,initial_capital = run
         # A completed long-range run can contain hundreds of thousands of
         # cycles.  Keep the first interactive view bounded; an explicit date
         # selection always wins and remains a full dynamic period query.
@@ -523,19 +609,28 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             cur.execute(compare_sql, compare_values)
             other = cur.fetchone()
             if other: comparison[candidate] = aggregate_projected(_projected_cycles(cur, other[0], other[1], effective_query, candidate))
-        open_positions = []
+        open_positions, open_position_daily = [], []
         if timeframe == "DAILY":
-            cur.execute("""SELECT DISTINCT ON (p.cycle_id) c.trade_stock_code,c.signal_source_stock_code,c.strategy_code,c.direction,
-                c.entry_time,c.entry_price,p.trading_date,p.valuation_close_price,p.quantity,p.invested_amount,p.unrealized_profit,p.unrealized_return_rate
+            open_where, open_values = _research_filters(effective_query, entry_condition=condition)
+            cur.execute("""SELECT c.cycle_id,c.trade_stock_code,c.signal_source_stock_code,c.exit_signal_source_stock_code,c.strategy_code,c.observation_code,c.direction,
+                c.entry_time,c.entry_price,p.trading_date,p.valuation_close_price,p.quantity,p.invested_amount,p.unrealized_profit,p.unrealized_return_rate,
+                row_number() OVER (PARTITION BY p.cycle_id ORDER BY p.trading_date DESC)=1 AS is_latest
               FROM research_trade_cycle c JOIN research_position_daily p ON p.cycle_id=c.cycle_id
-              WHERE c.run_id=%s AND c.exit_time IS NULL AND p.trading_date <= %s
-              ORDER BY p.cycle_id,p.trading_date DESC""", (run_id, effective_query["end_date"][0]))
-            names=("trade_stock_code","signal_source_stock_code","strategy_code","direction","entry_time","entry_price","valuation_date","valuation_close_price","quantity","invested_amount","unrealized_profit","unrealized_return_rate")
-            open_positions=[dict(zip(names,row)) for row in cur.fetchall()]
-            open_positions=[row for row in open_positions if ((effective_query.get("trade_stock_code") or ["ALL"])[0] in {"", "ALL", row["trade_stock_code"]}) and ((effective_query.get("signal_source_stock_code") or ["ALL"])[0] in {"", "ALL", row["signal_source_stock_code"]}) and ((effective_query.get("strategy_code") or ["ALL"])[0] in {"", "ALL", row["strategy_code"]}) and ((effective_query.get("direction") or ["ALL"])[0] in {"ALL",row["direction"]})]
+              WHERE c.run_id=%s AND c.exit_time IS NULL AND p.trading_date <= %s""" + open_where + " ORDER BY p.cycle_id,p.trading_date", [run_id, effective_query["end_date"][0], *open_values])
+            names=("cycle_id","trade_stock_code","signal_source_stock_code","exit_signal_source_stock_code","strategy_code","observation_code","direction","entry_time","entry_price","trading_date","valuation_close_price","quantity","invested_amount","unrealized_profit","unrealized_return_rate","is_latest")
+            open_position_daily=[dict(zip(names,row)) for row in cur.fetchall()]
+            open_positions=[]
+            for row in open_position_daily:
+                if row["is_latest"]:
+                    item=dict(row); item["valuation_date"]=item.pop("trading_date")
+                    item["holding_days"] = (item["valuation_date"] - item["entry_time"].date()).days
+                    open_positions.append(item)
+            ranking, daily, valuation_overview = _apply_daily_open_valuation(ranking, daily, open_position_daily, Decimal(str(initial_capital)))
+        else:
+            valuation_overview = {}
     return {"status":"OK","run_id":run_id,"start_date":start_date,"end_date":end_date,"entry_condition":condition,
             "selected_start_date":effective_query["start_date"][0],"selected_end_date":effective_query["end_date"][0],
-            "timeframe":timeframe,"parameters":parameters,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison,"open_positions":open_positions if timeframe == "DAILY" else [],"stock_names":stock_names}
+            "timeframe":timeframe,"parameters":parameters,"initial_capital":initial_capital,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison,"open_positions":open_positions if timeframe == "DAILY" else [],"valuation_overview":valuation_overview,"stock_names":stock_names}
 
 
 def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
