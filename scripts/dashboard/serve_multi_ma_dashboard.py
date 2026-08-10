@@ -378,10 +378,6 @@ def _research_filters(
         if key == "direction" and not include_direction:
             continue
         value = (query.get(key) or ["ALL"])[0]
-        # LONG_SHORT is a UI analysis mode that combines persisted LONG and
-        # SHORT cycles.  It is not a database direction enum.
-        if key == "direction" and value == "LONG_SHORT":
-            continue
         if value and value != "ALL":
             where.append(f"{alias}.{column}=%s"); params.append(value)
     start, end = (query.get("start_date") or [None])[0], (query.get("end_date") or [None])[0]
@@ -504,20 +500,16 @@ def _projected_cycles(cur, run_id, parameters: dict, query: dict[str, list[str]]
     }.get(trade_set)
     if allowed is not None:
         rows = [row for row in rows if (row["trade_stock_code"],row["signal_source_stock_code"],row["direction"]) in allowed]
+    direction_filter = (query.get("direction") or ["ALL"])[0]
+    if direction_filter not in {"ALL", "LONG", "SHORT"}:
+        direction_filter = "ALL"
     for row in rows:
         row["trade_set"] = trade_set
-        row["analysis_direction"] = "SHORT" if trade_set != "ALL" and row["trade_stock_code"] == "0197X0" else row["direction"]
-    # The research UI exposes analysis modes, not a standalone SHORT strategy.
-    # A LONG+SHORT view combines persisted directional cycles and must never
-    # be labelled as merely SHORT.  Legacy values remain readable for old URLs.
-    direction_mode = (query.get("direction") or ["LONG"])[0]
-    if direction_mode == "LONG":
-        rows = [row for row in rows if row["analysis_direction"] == "LONG"]
-    elif direction_mode in {"LONG_SHORT", "ALL"}:
-        for row in rows:
-            row["analysis_direction"] = "LONG_SHORT"
-    elif direction_mode == "SHORT":
-        rows = [row for row in rows if row["analysis_direction"] == "SHORT"]
+        # direction is the persisted individual-cycle enum.  Trade sets and
+        # future bidirectional modes must not rewrite it for a read-only UI.
+        row["analysis_direction"] = row["direction"]
+    if direction_filter != "ALL":
+        rows = [row for row in rows if row["analysis_direction"] == direction_filter]
     limit = (query.get("trade_limit") or ["ALL"])[0]
     if limit in {"1", "3", "5", "10"}:
         count, selected = {}, []
@@ -725,12 +717,6 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
               WHERE c.run_id=%s AND c.exit_time IS NULL AND p.trading_date <= %s""" + open_where + " ORDER BY p.cycle_id,p.trading_date", [run_id, effective_query["end_date"][0], *open_values])
             names=("cycle_id","trade_stock_code","signal_source_stock_code","exit_signal_source_stock_code","strategy_code","observation_code","direction","entry_time","entry_price","trading_date","valuation_close_price","quantity","invested_amount","unrealized_profit","unrealized_return_rate","is_latest")
             open_position_daily=[dict(zip(names,row)) for row in cur.fetchall()]
-            direction_mode = (effective_query.get("direction") or ["LONG"])[0]
-            if direction_mode in {"LONG_SHORT", "ALL"}:
-                # Align OPEN combination keys with closed-cycle LONG+SHORT
-                # analysis groups; raw cycle directions remain unchanged in DB.
-                for row in open_position_daily:
-                    row["direction"] = "LONG_SHORT"
             open_positions=[]
             for row in open_position_daily:
                 if row["is_latest"]:
