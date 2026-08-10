@@ -6,7 +6,7 @@ touches RAW, alerts, system switches, or order clients.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Iterable
@@ -115,13 +115,20 @@ class CompleteReplay:
     """
     SIGNAL_ONLY = "SIGNAL_ONLY"
     MA10_CONFIRM = "MA10_CONFIRM"
+    MA_CONFIRM = "MA_CONFIRM"
 
-    def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE", fee_rate: Decimal = Decimal("0"), sell_tax_rate: Decimal = Decimal("0"), slippage_rate: Decimal = Decimal("0"), entry_condition: str = MA10_CONFIRM):
+    @property
+    def uses_confirmation(self) -> bool:
+        return self.entry_condition != self.SIGNAL_ONLY
+
+    def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE", fee_rate: Decimal = Decimal("0"), sell_tax_rate: Decimal = Decimal("0"), slippage_rate: Decimal = Decimal("0"), entry_condition: str = MA10_CONFIRM, confirm_period: int = 10):
         self.short, self.mid, self.long, self.price_field = short, mid, long, price_field
-        if entry_condition not in {self.SIGNAL_ONLY, self.MA10_CONFIRM}:
+        if entry_condition not in {self.SIGNAL_ONLY, self.MA10_CONFIRM, self.MA_CONFIRM}:
             raise ValueError(f"unsupported entry_condition: {entry_condition}")
+        if not isinstance(confirm_period, int) or confirm_period <= 0:
+            raise ValueError("confirm_period must be a positive integer")
         self.fee_rate, self.sell_tax_rate = fee_rate, sell_tax_rate
-        self.slippage_rate, self.entry_condition = slippage_rate, entry_condition
+        self.slippage_rate, self.entry_condition, self.confirm_period = slippage_rate, entry_condition, confirm_period
 
     def features(self, bars: Iterable[MinuteBar]) -> list[MultiMaFeature]:
         ordered = sorted(bars, key=lambda item: item.bar_time)
@@ -133,7 +140,9 @@ class CompleteReplay:
                 groups.append([bar])
             else:
                 groups[-1].append(bar)
-        return [feature for group in groups for feature in build_multi_ma_features(group, short_period=self.short, mid_period=self.mid, long_period=self.long, price_field=self.price_field)]
+        return [replace(feature, confirm_ma=feature.ma_long)
+                for group in groups
+                for feature in build_multi_ma_features(group, short_period=self.short, mid_period=self.mid, long_period=self.long, price_field=self.price_field)]
 
     @staticmethod
     def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:
@@ -231,13 +240,17 @@ class CompleteReplay:
                 closed.append(self._close(code, position, signal_time=last.bar.bar_time, exit_time=last.bar.bar_time, exit_price=price, exit_type="SESSION_CLOSE"))
         return closed
 
-    @staticmethod
-    def _ma10_direction(previous: MultiMaFeature | None, current: MultiMaFeature) -> str | None:
-        if previous is None or previous.ma_long is None or current.ma_long is None:
+    def _ma10_direction(self, previous: MultiMaFeature | None, current: MultiMaFeature) -> str | None:
+        """Compatibility name: returns the configured confirmation MA slope."""
+        # Hand-built test/legacy features do not carry confirm_ma; MA10 is the
+        # backwards-compatible default confirmation series.
+        previous_ma = (previous.confirm_ma if previous and previous.confirm_ma is not None else (previous.ma_long if previous else None))
+        current_ma = current.confirm_ma if current.confirm_ma is not None else current.ma_long
+        if previous_ma is None or current_ma is None:
             return None
-        if current.ma_long > previous.ma_long:
+        if current_ma > previous_ma:
             return "LONG"
-        if current.ma_long < previous.ma_long:
+        if current_ma < previous_ma:
             return "SHORT"
         return None
 
@@ -284,7 +297,14 @@ class DailyCompleteReplay(CompleteReplay):
     calendar days: weekends and holidays never manufacture a DATA_GAP.
     """
     def features(self, bars: Iterable[MinuteBar]) -> list[MultiMaFeature]:
-        return build_daily_ma_features(sorted(bars, key=lambda item: item.bar_time), price_field=self.price_field)
+        ordered = sorted(bars, key=lambda item: item.bar_time)
+        features = build_daily_ma_features(ordered, price_field=self.price_field)
+        values = [bar.close_price for bar in ordered]
+        confirmation = {
+            ordered[index].bar_time: sum(values[index - self.confirm_period + 1:index + 1]) / Decimal(self.confirm_period)
+            for index in range(self.confirm_period - 1, len(ordered))
+        }
+        return [replace(feature, confirm_ma=confirmation.get(feature.bar.bar_time)) for feature in features]
 
     @staticmethod
     def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:
@@ -309,7 +329,9 @@ class RegularAfterContinuousReplay(CompleteReplay):
                 groups.append([bar])
             else:
                 groups[-1].append(bar)
-        return [feature for group in groups for feature in build_multi_ma_features(group, short_period=self.short, mid_period=self.mid, long_period=self.long, price_field=self.price_field)]
+        return [replace(feature, confirm_ma=feature.ma_long)
+                for group in groups
+                for feature in build_multi_ma_features(group, short_period=self.short, mid_period=self.mid, long_period=self.long, price_field=self.price_field)]
 
     @staticmethod
     def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:

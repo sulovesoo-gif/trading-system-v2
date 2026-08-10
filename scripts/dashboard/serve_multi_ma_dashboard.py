@@ -309,7 +309,7 @@ def _research_filters(
 
 def _research_run_condition(entry_condition: str) -> str:
     """Map a display-only entry mode to the persisted replay run policy."""
-    return "MA10_CONFIRM" if entry_condition == "MA10_READY_AT_SIGNAL" else entry_condition
+    return "MA10_CONFIRM" if entry_condition in {"MA10_READY_AT_SIGNAL", "MA_CONFIRM"} else entry_condition
 
 
 def research_performance_payload(pool, query: dict[str, list[str]]) -> dict:
@@ -440,7 +440,7 @@ def _projected_groups(rows: list[dict], fields: tuple[str, ...]) -> list[dict]:
 def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
     """Read-only target-capital comparison; no replay, RAW access, or writes."""
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
-    if condition not in {"SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM"}: condition = "MA10_CONFIRM"
+    if condition not in {"SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM","MA_CONFIRM"}: condition = "MA10_CONFIRM"
     timeframe = (query.get("timeframe") or ["MINUTE"])[0]
     if timeframe not in {"MINUTE", "DAILY"}: timeframe = "MINUTE"
     session = (query.get("analysis_session") or ["ALL_INTEGRATED"])[0]
@@ -453,6 +453,9 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             run_sql += " AND parameters->>'session_mode'=%s"; run_values.append(session_mode)
         else:
             run_sql += " AND COALESCE(parameters->>'session_mode','SEPARATE')='SEPARATE'"
+        if timeframe == "DAILY" and condition == "MA_CONFIRM":
+            run_sql += " AND COALESCE(parameters->>'ma_period','10')=%s"
+            run_values.append((query.get("ma_period") or ["10"])[0])
         run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"
         cur.execute(run_sql, run_values)
         run = cur.fetchone()
@@ -483,12 +486,16 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         ranking.sort(key=lambda item: (item["invested_return_rate"],item["realized_profit"]), reverse=True)
         ranking = ranking[:int((query.get("rank_limit") or ["20"])[0] if (query.get("rank_limit") or ["20"])[0] in {"10","20"} else "20")]
         comparison = {}
-        for candidate in ("SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM"):
+        comparison_modes = ("SIGNAL_ONLY", "MA_CONFIRM") if timeframe == "DAILY" else ("SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM")
+        for candidate in comparison_modes:
             compare_sql = """SELECT run_id,parameters FROM research_run WHERE status='COMPLETED' AND start_date=%s AND end_date=%s
               AND parameters->>'entry_condition'=%s AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
             compare_values = [start_date,end_date,_research_run_condition(candidate),timeframe]
             if session_mode: compare_sql += " AND parameters->>'session_mode'=%s"; compare_values.append(session_mode)
             else: compare_sql += " AND COALESCE(parameters->>'session_mode','SEPARATE')='SEPARATE'"
+            if timeframe == "DAILY" and candidate == "MA_CONFIRM":
+                compare_sql += " AND COALESCE(parameters->>'ma_period','10')=%s"
+                compare_values.append((query.get("ma_period") or ["10"])[0])
             compare_sql += " ORDER BY created_at DESC LIMIT 1"
             cur.execute(compare_sql, compare_values)
             other = cur.fetchone()
@@ -553,6 +560,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_response(500); self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
             return
+        if parsed.path == "/research/daily/api":
+            try:
+                query = parse_qs(parsed.query)
+                # This endpoint is deliberately isolated from minute research.
+                query["timeframe"] = ["DAILY"]
+                body = json.dumps(research_performance_payload_v2(self.pool, query), ensure_ascii=False, default=_json_default).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
+            except Exception as error:
+                logging.exception("daily research query failed")
+                body = json.dumps({"status": "ERROR", "error": f"{type(error).__name__}: {error}"}, ensure_ascii=False).encode("utf-8")
+                self.send_response(500); self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(body)
+            return
         if parsed.path == "/research/performance/cycles":
             body = json.dumps(research_cycle_payload(self.pool, parse_qs(parsed.query)), ensure_ascii=False, default=_json_default).encode("utf-8")
             self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -560,6 +580,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/research/performance":
             self.path = "/research-performance.html"
+        elif parsed.path == "/research/daily":
+            self.path = "/research-daily.html"
         super().do_GET()
 
     def do_POST(self):

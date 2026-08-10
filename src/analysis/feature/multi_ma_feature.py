@@ -19,6 +19,9 @@ class MultiMaFeature:
     short_slope: Decimal | None
     # Observation-only MA20. Canonical SIGNAL_1/2/3 remain MA3/MA5/MA10 based.
     ma20: Decimal | None = None
+    # Research-only configurable confirmation MA.  It never participates in
+    # canonical SIGNAL_1/2/3; those remain MA3/MA5/MA10.
+    confirm_ma: Decimal | None = None
 
 
 def price_value(bar: MinuteBar, field: str) -> Decimal:

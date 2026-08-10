@@ -33,7 +33,7 @@ PAGE = """<!doctype html><meta charset='utf-8'><title>Research Backfill</title>
 <label>종류 <select name='kind'><option value='minute'>분봉</option><option value='daily'>일봉</option></select></label>
 <label>거래소 <select name='venue'><option value='INTEGRATED' selected>통합시장 (INTEGRATED)</option><option value='KRX'>KRX 정규장 (KRX)</option></select></label>
 <label>시작일 <input type='date' name='start_date' required></label><label>종료일 <input type='date' name='end_date' required></label>
-<label>진입 조건 <select name='entry_condition'><option value='MA10_CONFIRM' selected>MA10_CONFIRM</option><option value='SIGNAL_ONLY'>SIGNAL_ONLY</option></select></label>
+<label>진입 조건 <select name='entry_condition'><option value='MA10_CONFIRM' selected>MA10_CONFIRM</option><option value='SIGNAL_ONLY'>SIGNAL_ONLY</option></select></label><label>일봉 확인 MA 기간 <input name='ma_period' type='number' min='1' step='1' value='10'></label>
 <button name='action' value='backfill'>RAW 백필 실행</button><button name='action' value='replay'>일별 COMPLETE 전략 재생 실행</button></form>"""
 
 PAGE = PAGE.replace("</form>", "<button name='action' value='daily_replay'>Daily COMPLETE replay</button></form>")
@@ -70,7 +70,11 @@ def application(pool, values):
         response['raw_api_calls'] = 0
     elif action == 'daily_replay':
         entry_condition = values.get('entry_condition', ['MA10_CONFIRM'])[0]
-        response['research_run_id'] = str(DailyCompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end, entry_condition=entry_condition))
+        ma_period = int(values.get('ma_period', ['10'])[0])
+        # Daily UI stores the generic policy name; legacy MA10 runs remain
+        # readable as MA_CONFIRM period 10 in the daily dashboard.
+        if entry_condition == 'MA10_CONFIRM': entry_condition = 'MA_CONFIRM'
+        response['research_run_id'] = str(DailyCompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end, entry_condition=entry_condition, confirm_period=ma_period))
         response['raw_api_calls'] = 0
     elif action == 'continuous_replay':
         entry_condition = values.get('entry_condition', ['MA10_CONFIRM'])[0]

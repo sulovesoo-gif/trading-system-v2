@@ -127,8 +127,8 @@ class CompleteResearchRunner:
               AND collect_cycle='1MIN' AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code,venue,start_date,end_date))
             return [MinuteBar(*row) for row in cur.fetchall()]
 
-    def _replay(self, *, entry_condition: str) -> CompleteReplay:
-        return CompleteReplay(entry_condition=entry_condition)
+    def _replay(self, *, entry_condition: str, confirm_period: int = 10) -> CompleteReplay:
+        return CompleteReplay(entry_condition=entry_condition, confirm_period=confirm_period)
 
     @property
     def timeframe(self) -> str:
@@ -140,17 +140,21 @@ class CompleteResearchRunner:
 
     def run(self, *, start_date: date, end_date: date, pairs=OFFICIAL_PAIRS,
             entry_condition: str = CompleteReplay.MA10_CONFIRM,
+            confirm_period: int = 10,
             cost_policy: ResearchCostPolicy | None = None):
-        if entry_condition not in {CompleteReplay.SIGNAL_ONLY, CompleteReplay.MA10_CONFIRM}:
+        if entry_condition not in {CompleteReplay.SIGNAL_ONLY, CompleteReplay.MA10_CONFIRM, CompleteReplay.MA_CONFIRM}:
             raise ValueError(f"unsupported entry_condition: {entry_condition}")
+        if not isinstance(confirm_period, int) or confirm_period <= 0:
+            raise ValueError("confirm_period must be a positive integer")
         cost_policy = cost_policy or ResearchCostPolicy()
         run_id = uuid4()
         self.repository.create_run(run_id=run_id, start_date=start_date, end_date=end_date,
                                    parameters={"observation": "COMPLETE", "timeframe": self.timeframe, "session_mode": self.session_mode, "capital": "10000000", "entry_condition": entry_condition,
+                                               "ma_period": None if entry_condition == CompleteReplay.SIGNAL_ONLY else confirm_period,
                                                "cost_policy_version": cost_policy.version, "cost_policy": cost_policy.snapshot(),
                                                "fee_rate": str(cost_policy.stock_fee_rate), "slippage_rate": str(cost_policy.slippage_rate),
                                                "pairs": [pair.name for pair in pairs]})
-        replay = self._replay(entry_condition=entry_condition)
+        replay = self._replay(entry_condition=entry_condition, confirm_period=confirm_period)
         try:
             all_bars = {code: self._bars(code, start_date, end_date) for code in {part for pair in pairs for part in pair.signal_source_stock_code.split("+")} | {pair.trade_stock_code for pair in pairs}}
             for source, bars in all_bars.items():
@@ -178,7 +182,7 @@ class CompleteResearchRunner:
                 direction_by_time = {feature.bar.bar_time: replay._ma10_direction(previous, feature) for previous, feature in zip([None, *source_features], source_features)}
                 target_prices = {bar.bar_time: bar.close_price for bar in all_bars[pair.trade_stock_code]}
                 fee_rate, sell_tax_rate = cost_policy.for_stock(pair.trade_stock_code)
-                pair_replay = type(replay)(entry_condition=entry_condition, fee_rate=fee_rate,
+                pair_replay = type(replay)(entry_condition=entry_condition, confirm_period=confirm_period, fee_rate=fee_rate,
                                               sell_tax_rate=sell_tax_rate, slippage_rate=cost_policy.slippage_rate)
                 cycles = pair_replay.replay(features=source_features, signals=signals, target_prices=target_prices,
                                        direction_transform="DIRECT" if pair.transform == "CONSENSUS" else pair.transform)
@@ -186,8 +190,8 @@ class CompleteResearchRunner:
                     for signal in signals:
                         if signal.signal_type in ( {strategy} if strategy.startswith("SIGNAL_") else ({"SIGNAL_1","SIGNAL_2","SIGNAL_3"} if strategy=="ACCUMULATED" else ({"SIGNAL_1","SIGNAL_2"} if strategy=="ACCUMULATED_1" else {"SIGNAL_2","SIGNAL_3"})) ):
                             ma10_direction = direction_by_time.get(signal.at)
-                            pending = entry_condition == CompleteReplay.MA10_CONFIRM and ma10_direction != signal.direction
-                            confirm_time = signal.at if entry_condition == CompleteReplay.SIGNAL_ONLY or not pending else None
+                            pending = pair_replay.uses_confirmation and ma10_direction != signal.direction
+                            confirm_time = signal.at if not pair_replay.uses_confirmation or not pending else None
                             self.repository.save_signal(run_id=run_id, stock_code=pair.signal_source_stock_code, strategy_code=strategy, signal=signal, ma10_direction=ma10_direction, pending=pending, confirm_time=confirm_time, session_code=_session_id(signal.at))
                     for cycle in (item for item in cycles if item.strategy_code == strategy):
                         cycle_id = self.repository.save_cycle(run_id=run_id, trade_stock_code=pair.trade_stock_code, signal_source_stock_code=pair.signal_source_stock_code, cycle=cycle)
@@ -206,8 +210,8 @@ class DailyCompleteResearchRunner(CompleteResearchRunner):
     def timeframe(self) -> str:
         return "DAILY"
 
-    def _replay(self, *, entry_condition: str) -> DailyCompleteReplay:
-        return DailyCompleteReplay(entry_condition=entry_condition)
+    def _replay(self, *, entry_condition: str, confirm_period: int = 10) -> DailyCompleteReplay:
+        return DailyCompleteReplay(entry_condition=entry_condition, confirm_period=confirm_period)
 
     def _bars(self, stock_code: str, start_date: date, end_date: date) -> list[MinuteBar]:
         with self.pool.connection() as conn, conn.cursor() as cur:
@@ -225,5 +229,5 @@ class RegularAfterContinuousResearchRunner(CompleteResearchRunner):
     def session_mode(self) -> str:
         return "REGULAR_AFTER_CONTINUOUS"
 
-    def _replay(self, *, entry_condition: str) -> RegularAfterContinuousReplay:
-        return RegularAfterContinuousReplay(entry_condition=entry_condition)
+    def _replay(self, *, entry_condition: str, confirm_period: int = 10) -> RegularAfterContinuousReplay:
+        return RegularAfterContinuousReplay(entry_condition=entry_condition, confirm_period=confirm_period)

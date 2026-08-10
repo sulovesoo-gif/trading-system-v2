@@ -102,6 +102,15 @@ class CompleteReplayTest(unittest.TestCase):
         self.assertIsNone(features[9].ma20)
         self.assertEqual(features[-1].ma20, sum(Decimal(110 + index) for index in range(20)) / 20)
 
+    def test_daily_confirmation_ma_is_dynamic_without_changing_canonical_ma(self):
+        start = datetime(2026, 1, 2, 15, 19)
+        bars = [MinuteBar(start + timedelta(days=index), *(Decimal(100 + index),) * 4) for index in range(30)]
+        ma5 = DailyCompleteReplay(entry_condition=CompleteReplay.MA_CONFIRM, confirm_period=5).features(bars)
+        ma20 = DailyCompleteReplay(entry_condition=CompleteReplay.MA_CONFIRM, confirm_period=20).features(bars)
+        self.assertEqual(ma5[-1].confirm_ma, sum(Decimal(125 + index) for index in range(5)) / 5)
+        self.assertEqual(ma20[-1].confirm_ma, ma20[-1].ma20)
+        self.assertEqual(ma5[-1].ma_long, ma20[-1].ma_long)
+
     def test_regular_after_continuous_preserves_regular_ma_state(self):
         regular = [MinuteBar(datetime(2026, 8, 3, 15, 10) + timedelta(minutes=index), *(Decimal(100 + index),) * 4) for index in range(10)]
         after = [MinuteBar(datetime(2026, 8, 3, 15, 40) + timedelta(minutes=index), *(Decimal(110 + index),) * 4) for index in range(2)]
