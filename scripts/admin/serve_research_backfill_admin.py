@@ -31,6 +31,7 @@ PAGE = """<!doctype html><meta charset='utf-8'><title>Research Backfill</title>
 <h1>연구용 RAW 백필 / COMPLETE 재생</h1><p>실시간 수집·알림·주문과 분리된 관리 기능입니다.</p>
 <form method='post' action='/admin/backfill'><label>종목코드 <input name='stock_code' value='000660' required></label>
 <label>종류 <select name='kind'><option value='minute'>분봉</option><option value='daily'>일봉</option></select></label>
+<label>거래소 <select name='venue'><option value='INTEGRATED' selected>통합시장 (INTEGRATED)</option><option value='KRX'>KRX 정규장 (KRX)</option></select></label>
 <label>시작일 <input type='date' name='start_date' required></label><label>종료일 <input type='date' name='end_date' required></label>
 <label>진입 조건 <select name='entry_condition'><option value='MA10_CONFIRM' selected>MA10_CONFIRM</option><option value='SIGNAL_ONLY'>SIGNAL_ONLY</option></select></label>
 <button name='action' value='backfill'>RAW 백필 실행</button><button name='action' value='replay'>일별 COMPLETE 전략 재생 실행</button></form>"""
@@ -48,7 +49,12 @@ def application(pool, values):
     service = ResearchBackfillService(minute_collector=StockHistoricalMinuteCollector(client), daily_collector=StockDailyCollector(client), raw_ingestion=raw,
         calendar=KisTradingCalendar(HolidayCalendarCollector(client)))
     code = values['stock_code'][0].strip(); kind = values['kind'][0]
-    venue = 'INTEGRATED' if code in {'000660', '005930'} else 'KRX'
+    # Venue is explicit for research RAW backfill.  In particular, KRX daily
+    # bars must remain separate from existing INTEGRATED daily rows so their
+    # prior regular-session close can be used as an auditable reference.
+    venue = values.get('venue', ['INTEGRATED'])[0].strip().upper()
+    if venue not in {'INTEGRATED', 'KRX'}:
+        raise ValueError('venue must be INTEGRATED or KRX')
     action = values.get('action', ['backfill'])[0]
     response = {}
     if action == 'backfill':

@@ -69,10 +69,18 @@ class ResearchBackfillService:
         self.daily_backfill = daily_backfill
 
     def backfill_daily(self, *, stock_code: str, start_date: date, end_date: date, venue: str = "INTEGRATED"):
+        if venue not in {"INTEGRATED", "KRX"}:
+            raise ValueError("daily backfill venue must be INTEGRATED or KRX")
         rows = self.daily_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue,
                                             start_date=start_date.strftime("%Y%m%d"), end_date=end_date.strftime("%Y%m%d"))
         rows = [row for row in rows if start_date <= row["trade_date"] <= end_date]
-        return self.raw_ingestion.store(RawTable.STOCK_DAILY, rows)
+        result = self.raw_ingestion.store(RawTable.STOCK_DAILY, rows)
+        if venue == "KRX":
+            # This is intentionally after idempotent RAW storage.  It never
+            # consults INTEGRATED daily prices or overwrites a KIS-supplied
+            # minute previous_close_price.
+            self.raw_ingestion.populate_minute_previous_close_from_krx_daily(stock_code=stock_code)
+        return result
 
     def backfill_minutes(self, *, stock_code: str, start_date: date, end_date: date, venue: str = "INTEGRATED") -> list[dict]:
         result: list[dict] = []

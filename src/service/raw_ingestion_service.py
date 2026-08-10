@@ -12,3 +12,6 @@ class RawIngestionService:
 
     def store(self, table: RawTable, collector_result) -> RawWriteResult:
         return self.repository.save(table, collector_result)
+
+    def populate_minute_previous_close_from_krx_daily(self, *, stock_code: str) -> int:
+        return self.repository.populate_minute_previous_close_from_krx_daily(stock_code=stock_code)

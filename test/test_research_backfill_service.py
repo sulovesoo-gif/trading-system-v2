@@ -20,10 +20,13 @@ class _Collector:
 
 
 class _Ingestion:
-    def __init__(self): self.rows=[]
+    def __init__(self): self.rows=[]; self.previous_close_calls=[]
     def store(self, _table, rows):
         self.rows.extend(rows)
         return type('Result', (), {'requested_count': len(rows), 'inserted_count': len(rows), 'duplicate_count': 0})()
+    def populate_minute_previous_close_from_krx_daily(self, *, stock_code):
+        self.previous_close_calls.append(stock_code)
+        return 0
 
 
 class ResearchBackfillServiceTest(unittest.TestCase):
@@ -35,6 +38,18 @@ class ResearchBackfillServiceTest(unittest.TestCase):
         self.assertEqual(result[1]['status'], 'SUCCESS')
         self.assertEqual(result[1]['inserted'], 1)
         self.assertEqual(len(minute.calls), 1)
+
+    def test_daily_backfill_preserves_explicit_krx_venue(self):
+        minute, daily, ingestion = _Collector(), _Collector(), _Ingestion()
+        service = ResearchBackfillService(minute_collector=minute, daily_collector=daily, raw_ingestion=ingestion, calendar=_Calendar())
+        service.backfill_daily(stock_code='000660', start_date=date(2026, 8, 3), end_date=date(2026, 8, 3), venue='KRX')
+        self.assertEqual(daily.calls[0]['trading_venue'], 'KRX')
+        self.assertEqual(ingestion.previous_close_calls, ['000660'])
+
+    def test_daily_backfill_rejects_unknown_venue(self):
+        service = ResearchBackfillService(minute_collector=_Collector(), daily_collector=_Collector(), raw_ingestion=_Ingestion(), calendar=_Calendar())
+        with self.assertRaises(ValueError):
+            service.backfill_daily(stock_code='000660', start_date=date(2026, 8, 3), end_date=date(2026, 8, 3), venue='NXT')
 
     def test_official_ten_pairs_are_declared_trade_target_first(self):
         self.assertEqual(len(OFFICIAL_PAIRS), 10)

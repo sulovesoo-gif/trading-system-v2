@@ -59,6 +59,37 @@ class RawRepository:
             raise RawRepositoryError(f"RAW insert failed for {table.value}.") from error
         return RawWriteResult(table.value, len(values), inserted_count, len(values) - inserted_count)
 
+    def populate_minute_previous_close_from_krx_daily(self, *, stock_code: str) -> int:
+        """Fill only missing minute prior closes from the KRX daily session series.
+
+        `raw_stock_daily.trading_venue='KRX'` is deliberately the sole source:
+        INTEGRATED daily closes can include non-regular-session pricing and must
+        never be substituted here.  LAG is applied only after that venue filter,
+        so weekends and holidays naturally resolve to the preceding actual KRX
+        trade date.  This update leaves OHLCV and raw_payload untouched.
+        """
+        sql = """WITH krx_daily AS (
+          SELECT stock_code, trade_date,
+                 LAG(close_price) OVER (PARTITION BY stock_code ORDER BY trade_date) AS previous_krx_close
+          FROM raw_stock_daily
+          WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI'
+            AND trading_venue='KRX' AND collect_cycle='DAILY' AND close_price IS NOT NULL
+        )
+        UPDATE raw_stock_minute minute_bar
+        SET previous_close_price=krx_daily.previous_krx_close
+        FROM krx_daily
+        WHERE minute_bar.stock_code=krx_daily.stock_code
+          AND minute_bar.data_source='KIS' AND minute_bar.market_code='KOSPI'
+          AND minute_bar.collect_cycle='1MIN' AND minute_bar.previous_close_price IS NULL
+          AND minute_bar.bar_time >= krx_daily.trade_date::timestamp
+          AND minute_bar.bar_time < (krx_daily.trade_date + INTERVAL '1 day')::timestamp
+          AND krx_daily.previous_krx_close IS NOT NULL
+        RETURNING 1"""
+        with self.pool.connection() as connection:
+            with connection.transaction(), connection.cursor() as cursor:
+                cursor.execute(sql, (stock_code,))
+                return len(cursor.fetchall())
+
     @staticmethod
     def _normalize_rows(rows: Mapping[str, object] | Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
         if isinstance(rows, Mapping):
