@@ -309,7 +309,7 @@ def _research_filters(
 
 def _research_run_condition(entry_condition: str) -> str:
     """Map a display-only entry mode to the persisted replay run policy."""
-    return "MA10_CONFIRM" if entry_condition in {"MA10_READY_AT_SIGNAL", "MA_CONFIRM"} else entry_condition
+    return "MA10_CONFIRM" if entry_condition in {"MA10_READY_AT_SIGNAL", "MA_CONFIRM", "MA_CONFIRM_INTEGRATED"} else entry_condition
 
 
 def research_performance_payload(pool, query: dict[str, list[str]]) -> dict:
@@ -440,20 +440,27 @@ def _projected_groups(rows: list[dict], fields: tuple[str, ...]) -> list[dict]:
 def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
     """Read-only target-capital comparison; no replay, RAW access, or writes."""
     condition = (query.get("entry_condition") or ["MA10_CONFIRM"])[0]
-    if condition not in {"SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM","MA_CONFIRM"}: condition = "MA10_CONFIRM"
+    if condition not in {"SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM","MA_CONFIRM","MA_CONFIRM_INTEGRATED","MA_AT_SIGNAL"}: condition = "MA10_CONFIRM"
     timeframe = (query.get("timeframe") or ["MINUTE"])[0]
     if timeframe not in {"MINUTE", "DAILY"}: timeframe = "MINUTE"
     session = (query.get("analysis_session") or ["ALL_INTEGRATED"])[0]
     session_mode = "REGULAR_AFTER_CONTINUOUS" if session == "REGULAR_AFTER_CONTINUOUS" else None
     with pool.connection() as conn, conn.cursor() as cur:
         run_sql = """SELECT run_id,start_date,end_date,parameters FROM research_run WHERE status='COMPLETED'
-          AND parameters->>'entry_condition'=%s AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
-        run_values = [_research_run_condition(condition), timeframe]
+          AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
+        run_values = [timeframe]
+        if timeframe == "DAILY" and condition == "MA_CONFIRM_INTEGRATED":
+            # MA10_CONFIRM/MA_CONFIRM are read-only compatibility aliases for
+            # completed runs written before the official daily policy name.
+            run_sql += " AND parameters->>'entry_condition' IN ('MA_CONFIRM_INTEGRATED','MA_CONFIRM','MA10_CONFIRM')"
+        else:
+            run_sql += " AND parameters->>'entry_condition'=%s"
+            run_values.append(_research_run_condition(condition))
         if session_mode:
             run_sql += " AND parameters->>'session_mode'=%s"; run_values.append(session_mode)
         else:
             run_sql += " AND COALESCE(parameters->>'session_mode','SEPARATE')='SEPARATE'"
-        if timeframe == "DAILY" and condition == "MA_CONFIRM":
+        if timeframe == "DAILY" and condition in {"MA_CONFIRM", "MA_CONFIRM_INTEGRATED", "MA_AT_SIGNAL"}:
             run_sql += " AND COALESCE(parameters->>'ma_period','10')=%s"
             run_values.append((query.get("ma_period") or ["10"])[0])
         run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"

@@ -81,6 +81,15 @@ class CompleteReplayTest(unittest.TestCase):
         self.assertEqual(s1.entry_signal_time, points[1].bar.bar_time)
         self.assertEqual(s1.entry_confirm_time, points[1].bar.bar_time)
 
+    def test_ma_at_signal_discards_unconfirmed_signal_without_pending(self):
+        start = datetime(2026, 8, 3, 9, 10)
+        points = [MultiMaFeature(MinuteBar(start + timedelta(minutes=index), *(Decimal("100"),) * 4), Decimal("100"), Decimal("100"), Decimal("100"), Decimal(value), Decimal("1"))
+                  for index, value in enumerate((100, 100, 101))]
+        signal = ResearchSignal(points[1].bar.bar_time, "SIGNAL_1", "LONG", points[1])
+        cycles = CompleteReplay(entry_condition=CompleteReplay.MA_AT_SIGNAL).replay(
+            features=points, signals=[signal], target_prices={point.bar.bar_time: point.value for point in points})
+        self.assertFalse(any(cycle.strategy_code == "SIGNAL_1" for cycle in cycles))
+
     def test_net_profit_reconciles_with_explicit_costs(self):
         start = datetime(2026, 8, 3, 9, 10)
         points = [MultiMaFeature(MinuteBar(start + timedelta(minutes=index), *(Decimal(value),) * 4), Decimal(value), Decimal(value), Decimal(value), Decimal("100"), Decimal("1"))

@@ -142,7 +142,7 @@ class CompleteResearchRunner:
             entry_condition: str = CompleteReplay.MA10_CONFIRM,
             confirm_period: int = 10,
             cost_policy: ResearchCostPolicy | None = None):
-        if entry_condition not in {CompleteReplay.SIGNAL_ONLY, CompleteReplay.MA10_CONFIRM, CompleteReplay.MA_CONFIRM}:
+        if entry_condition not in {CompleteReplay.SIGNAL_ONLY, CompleteReplay.MA10_CONFIRM, CompleteReplay.MA_CONFIRM, CompleteReplay.MA_CONFIRM_INTEGRATED, CompleteReplay.MA_AT_SIGNAL}:
             raise ValueError(f"unsupported entry_condition: {entry_condition}")
         if not isinstance(confirm_period, int) or confirm_period <= 0:
             raise ValueError("confirm_period must be a positive integer")

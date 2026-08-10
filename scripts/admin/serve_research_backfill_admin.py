@@ -73,7 +73,7 @@ def application(pool, values):
         ma_period = int(values.get('ma_period', ['10'])[0])
         # Daily UI stores the generic policy name; legacy MA10 runs remain
         # readable as MA_CONFIRM period 10 in the daily dashboard.
-        if entry_condition == 'MA10_CONFIRM': entry_condition = 'MA_CONFIRM'
+        if entry_condition == 'MA10_CONFIRM': entry_condition = 'MA_CONFIRM_INTEGRATED'
         response['research_run_id'] = str(DailyCompleteResearchRunner(pool=pool, repository=ResearchRepository(pool)).run(start_date=start,end_date=end, entry_condition=entry_condition, confirm_period=ma_period))
         response['raw_api_calls'] = 0
     elif action == 'continuous_replay':

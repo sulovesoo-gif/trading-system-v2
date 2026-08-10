@@ -116,14 +116,16 @@ class CompleteReplay:
     SIGNAL_ONLY = "SIGNAL_ONLY"
     MA10_CONFIRM = "MA10_CONFIRM"
     MA_CONFIRM = "MA_CONFIRM"
+    MA_CONFIRM_INTEGRATED = "MA_CONFIRM_INTEGRATED"
+    MA_AT_SIGNAL = "MA_AT_SIGNAL"
 
     @property
     def uses_confirmation(self) -> bool:
-        return self.entry_condition != self.SIGNAL_ONLY
+        return self.entry_condition in {self.MA10_CONFIRM, self.MA_CONFIRM, self.MA_CONFIRM_INTEGRATED}
 
     def __init__(self, *, short: int = 3, mid: int = 5, long: int = 10, price_field: str = "CLOSE", fee_rate: Decimal = Decimal("0"), sell_tax_rate: Decimal = Decimal("0"), slippage_rate: Decimal = Decimal("0"), entry_condition: str = MA10_CONFIRM, confirm_period: int = 10):
         self.short, self.mid, self.long, self.price_field = short, mid, long, price_field
-        if entry_condition not in {self.SIGNAL_ONLY, self.MA10_CONFIRM, self.MA_CONFIRM}:
+        if entry_condition not in {self.SIGNAL_ONLY, self.MA10_CONFIRM, self.MA_CONFIRM, self.MA_CONFIRM_INTEGRATED, self.MA_AT_SIGNAL}:
             raise ValueError(f"unsupported entry_condition: {entry_condition}")
         if not isinstance(confirm_period, int) or confirm_period <= 0:
             raise ValueError("confirm_period must be a positive integer")
@@ -222,7 +224,7 @@ class CompleteReplay:
                     elif ma_direction == direction:
                         position = self._open(code, candidate, now, price, events)
                         pending = None
-                    else:
+                    elif self.uses_confirmation:
                         pending = candidate
                 elif pending and price is not None and ma_direction == pending.direction:
                     position = self._open(code, pending, now, price, [pending])
