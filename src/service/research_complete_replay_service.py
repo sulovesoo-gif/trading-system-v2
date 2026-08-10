@@ -335,6 +335,59 @@ class DailyCompleteReplay(CompleteReplay):
     def close_at_end(self) -> bool:
         return False
 
+    def replay_cross_long(self, *, entry_features: list[MultiMaFeature], entry_signals: list[ResearchSignal],
+                          exit_signals: list[ResearchSignal], target_prices: dict[datetime, Decimal]) -> list[ClosedCycle]:
+        """Replay daily cross-source LONG cycles without inventing consensus.
+
+        An entry-source event starts one upward cycle; the separately supplied
+        exit-source event closes it, even on a later trading day.  Positions
+        lacking an exit event remain OPEN exactly like normal daily replay.
+        """
+        output: list[ClosedCycle] = []
+        self.open_cycles = []
+        entry_by_time: dict[datetime, list[ResearchSignal]] = defaultdict(list)
+        exit_by_time: dict[datetime, list[ResearchSignal]] = defaultdict(list)
+        for event in entry_signals: entry_by_time[event.at].append(event)
+        for event in exit_signals: exit_by_time[event.at].append(event)
+        previous = None
+        direction_by_time = {}
+        for feature in entry_features:
+            direction_by_time[feature.bar.bar_time] = self._ma10_direction(previous, feature)
+            previous = feature
+        for code in STRATEGIES:
+            allowed = SINGLE.get(code) or ACCUMULATED[code]
+            position: Position | None = None
+            pending: ResearchSignal | None = None
+            for feature in entry_features:
+                now = feature.bar.bar_time
+                price = target_prices.get(now)
+                entries = [event for event in entry_by_time.get(now, ()) if event.signal_type in allowed and event.direction == "LONG"]
+                exits = [event for event in exit_by_time.get(now, ()) if event.signal_type in allowed and event.direction == "LONG"]
+                if exits:
+                    pending = None
+                    if position is not None and price is not None:
+                        output.append(self._close(code, position, signal_time=now, exit_time=now, exit_price=price, exit_type="SIGNAL"))
+                        position = None
+                    continue
+                if position is None and entries and price is not None:
+                    candidate = entries[0]
+                    ma_direction = direction_by_time.get(now)
+                    if self.entry_condition == self.SIGNAL_ONLY or ma_direction == "LONG":
+                        position = self._open(code, candidate, now, price, entries); pending = None
+                    elif self.uses_confirmation:
+                        pending = candidate
+                elif position is None and pending is not None and price is not None and direction_by_time.get(now) == "LONG":
+                    position = self._open(code, pending, now, price, [pending]); pending = None
+                elif position is not None and code in ACCUMULATED and entries and price is not None:
+                    used = {leg.signal_type for leg in position.legs}
+                    for event in entries:
+                        if event.signal_type not in used:
+                            position.legs.append(self._leg(event, now, price, Decimal("1") / Decimal("3")))
+            if position is not None:
+                self.open_cycles.append(OpenCycle(code, position.direction, position.entry_signal.at,
+                    position.entry_confirm_time, position.average_entry_price, sum(leg.quantity for leg in position.legs),
+                    position.invested_amount, tuple(position.legs)))
+        return output
     @staticmethod
     def is_boundary(previous: MultiMaFeature | None, current: MultiMaFeature) -> bool:
         return previous is None

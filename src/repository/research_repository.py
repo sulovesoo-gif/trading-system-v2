@@ -37,13 +37,14 @@ class ResearchRepository:
                          signal.feature.value, signal.feature.ma_short, signal.feature.ma_mid, signal.feature.ma_long, ma10_direction,
                          "Y" if pending else "N", signal.at if pending else None, confirm_time, session_code, data_status))
 
-    def save_cycle(self, *, run_id: UUID, trade_stock_code: str, signal_source_stock_code: str, cycle) -> int:
+    def save_cycle(self, *, run_id: UUID, trade_stock_code: str, signal_source_stock_code: str, cycle,
+                   exit_signal_source_stock_code: str | None = None) -> int:
         with self.pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
             cur.execute("""INSERT INTO research_trade_cycle(run_id,trading_date,trade_stock_code,signal_source_stock_code,exit_signal_source_stock_code,strategy_code,observation_code,direction,entry_signal_time,entry_confirm_time,entry_time,entry_price,exit_signal_time,exit_time,exit_price,exit_type,quantity,invested_amount,realized_profit,invested_return_rate,capital_return_rate,holding_seconds,data_status)
             VALUES (%s,%s,%s,%s,%s,%s,'COMPLETE',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (run_id,trade_stock_code,signal_source_stock_code,strategy_code,observation_code,entry_time)
             DO UPDATE SET exit_time=EXCLUDED.exit_time,exit_price=EXCLUDED.exit_price,exit_type=EXCLUDED.exit_type,realized_profit=EXCLUDED.realized_profit
-            RETURNING cycle_id""", (run_id, cycle.entry_confirm_time.date(), trade_stock_code, signal_source_stock_code, signal_source_stock_code,
+            RETURNING cycle_id""", (run_id, cycle.entry_confirm_time.date(), trade_stock_code, signal_source_stock_code, exit_signal_source_stock_code or signal_source_stock_code,
               cycle.strategy_code, cycle.direction, cycle.entry_signal_time, cycle.entry_confirm_time, cycle.entry_confirm_time,
               cycle.entry_price, cycle.exit_signal_time, cycle.exit_time, cycle.exit_price, cycle.exit_type, cycle.quantity,
               cycle.invested_amount, cycle.realized_profit, cycle.invested_return_rate, cycle.capital_return_rate,

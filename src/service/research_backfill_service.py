@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from src.analysis.feature.sma_feature import MinuteBar
 from src.repository.raw_specs import RawTable
-from src.service.research_complete_replay_service import CompleteReplay, DailyCompleteReplay, RegularAfterContinuousReplay, STRATEGIES, _session_id
+from src.service.research_complete_replay_service import ACCUMULATED, CompleteReplay, DailyCompleteReplay, RegularAfterContinuousReplay, STRATEGIES, _session_id
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,10 @@ OFFICIAL_PAIRS = (
     # configuration for the next extension; this first COMPLETE implementation
     # never invents a one-source substitute.
     ResearchPair("leverage_consensus_underlying_inverse", "0193T0", "000660+0197X0", "CONSENSUS"),
+)
+CROSS_DAILY_PAIRS = (
+    ResearchPair("leverage_long_to_inverse_long", "000660", "0193T0+0197X0", "CROSS_A"),
+    ResearchPair("inverse_short_to_leverage_short", "000660", "0197X0+0193T0", "CROSS_B"),
 )
 
 
@@ -164,6 +168,45 @@ class CompleteResearchRunner:
                     self.repository.save_feature(run_id=run_id, stock_code=source, feature=feature, ma10_direction=direction)
                     previous = feature
             for pair in pairs:
+                if pair.transform in {"CROSS_A", "CROSS_B"}:
+                    entry_source, exit_source = pair.signal_source_stock_code.split("+")
+                    entry_features = replay.features(all_bars[entry_source])
+                    exit_features = replay.features(all_bars[exit_source])
+                    all_entry = replay.canonical_signals(entry_features)
+                    all_exit = replay.canonical_signals(exit_features)
+                    wanted = "LONG" if pair.transform == "CROSS_A" else "SHORT"
+                    entry_signals = [item for item in all_entry if item.direction == wanted]
+                    exit_signals = [item for item in all_exit if item.direction == wanted]
+                    fee_rate, sell_tax_rate = cost_policy.for_stock(pair.trade_stock_code)
+                    pair_replay = type(replay)(entry_condition=entry_condition, confirm_period=confirm_period, fee_rate=fee_rate,
+                                                sell_tax_rate=sell_tax_rate, slippage_rate=cost_policy.slippage_rate)
+                    target_prices = {bar.bar_time: bar.close_price for bar in all_bars[pair.trade_stock_code]}
+                    cycles = pair_replay.replay_cross_long(entry_features=entry_features, entry_signals=entry_signals,
+                                                           exit_signals=exit_signals, target_prices=target_prices)
+                    for strategy in STRATEGIES:
+                        for signal in entry_signals:
+                            if signal.signal_type in ({strategy} if strategy.startswith("SIGNAL_") else ACCUMULATED[strategy]):
+                                self.repository.save_signal(run_id=run_id, stock_code=entry_source, strategy_code=strategy, signal=signal,
+                                    ma10_direction=None, pending=False, confirm_time=signal.at, session_code="DAILY")
+                        for cycle in (item for item in cycles if item.strategy_code == strategy):
+                            cycle_id = self.repository.save_cycle(run_id=run_id, trade_stock_code=pair.trade_stock_code,
+                                signal_source_stock_code=entry_source, exit_signal_source_stock_code=exit_source, cycle=cycle)
+                            for leg in cycle.legs: self.repository.save_leg(cycle_id=cycle_id, leg=leg)
+                        for open_cycle in (item for item in pair_replay.open_cycles if item.strategy_code == strategy):
+                            cycle_id = self.repository.save_open_cycle(run_id=run_id, trade_stock_code=pair.trade_stock_code,
+                                signal_source_stock_code=entry_source, cycle=open_cycle)
+                            for leg in open_cycle.legs: self.repository.save_leg(cycle_id=cycle_id, leg=leg)
+                            for bar in all_bars[pair.trade_stock_code]:
+                                if bar.bar_time >= open_cycle.entry_confirm_time:
+                                    gross = (bar.close_price-open_cycle.entry_price)*open_cycle.quantity
+                                    self.repository.save_position_daily(run_id=run_id, cycle_id=cycle_id, trading_date=bar.bar_time.date(),
+                                      trade_stock_code=pair.trade_stock_code, signal_source_stock_code=entry_source, strategy_code=strategy,
+                                      observation_code="COMPLETE", direction="LONG", entry_date=open_cycle.entry_confirm_time.date(),
+                                      entry_price=open_cycle.entry_price, valuation_close_price=bar.close_price, quantity=open_cycle.quantity,
+                                      invested_amount=open_cycle.invested_amount, unrealized_profit=gross,
+                                      unrealized_return_rate=Decimal("0") if not open_cycle.invested_amount else gross/open_cycle.invested_amount*100,
+                                      capital_return_rate=gross/Decimal("30000000")*100, position_status="OPEN")
+                    continue
                 if pair.transform == "CONSENSUS":
                     left, right = pair.signal_source_stock_code.split("+")
                     source_features = replay.features(all_bars[left])
@@ -230,6 +273,10 @@ class DailyCompleteResearchRunner(CompleteResearchRunner):
 
     def _replay(self, *, entry_condition: str, confirm_period: int = 10) -> DailyCompleteReplay:
         return DailyCompleteReplay(entry_condition=entry_condition, confirm_period=confirm_period)
+
+    def run(self, **kwargs):
+        kwargs.setdefault("pairs", OFFICIAL_PAIRS + CROSS_DAILY_PAIRS)
+        return super().run(**kwargs)
 
     def _bars(self, stock_code: str, start_date: date, end_date: date) -> list[MinuteBar]:
         with self.pool.connection() as conn, conn.cursor() as cur:

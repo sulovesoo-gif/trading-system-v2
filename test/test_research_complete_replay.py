@@ -120,6 +120,21 @@ class CompleteReplayTest(unittest.TestCase):
         self.assertEqual(ma20[-1].confirm_ma, ma20[-1].ma20)
         self.assertEqual(ma5[-1].ma_long, ma20[-1].ma_long)
 
+    def test_daily_cross_source_cycle_uses_later_exit_source_event(self):
+        start = datetime(2026, 1, 2, 15, 19)
+        bars = [MinuteBar(start + timedelta(days=index), *(Decimal(100 + index),) * 4) for index in range(14)]
+        replay = DailyCompleteReplay(entry_condition=CompleteReplay.SIGNAL_ONLY)
+        features = replay.features(bars)
+        entry = ResearchSignal(features[1].bar.bar_time, "SIGNAL_1", "LONG", features[1])
+        exit_ = ResearchSignal(features[3].bar.bar_time, "SIGNAL_1", "LONG", features[3])
+        prices = {feature.bar.bar_time: Decimal(100 + index) for index, feature in enumerate(features)}
+        cycles = replay.replay_cross_long(entry_features=features, entry_signals=[entry], exit_signals=[exit_], target_prices=prices)
+        cycle = next(item for item in cycles if item.strategy_code == "SIGNAL_1")
+        self.assertEqual(cycle.entry_signal_time, entry.at)
+        self.assertEqual(cycle.exit_signal_time, exit_.at)
+        self.assertEqual(cycle.entry_price, prices[entry.at])
+        self.assertEqual(cycle.exit_price, prices[exit_.at])
+
     def test_regular_after_continuous_preserves_regular_ma_state(self):
         regular = [MinuteBar(datetime(2026, 8, 3, 15, 10) + timedelta(minutes=index), *(Decimal(100 + index),) * 4) for index in range(10)]
         after = [MinuteBar(datetime(2026, 8, 3, 15, 40) + timedelta(minutes=index), *(Decimal(110 + index),) * 4) for index in range(2)]
