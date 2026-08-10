@@ -295,15 +295,15 @@ class DailyCompleteResearchRunner(CompleteResearchRunner):
         return super().run(**kwargs)
 
     def _warmup_bars(self, confirm_period: int) -> int:
-        # The canonical daily MA10 still requires nine prior official closes;
-        # a user-selected confirmation MA11/15 extends that to N-1 bars.
-        return max(10, confirm_period) - 1
+        # The UI MA is a real replay parameter.  Warmup is therefore always
+        # exactly N-1 prior *trading* bars for any positive integer N.
+        return confirm_period - 1
 
     @property
     def warmup_policy(self) -> str:
         # Stored on every new DAILY run so read APIs never silently reuse a
         # pre-warmup run for the same MA period.
-        return "TRADING_BARS_V1"
+        return "TRADING_BARS_V2_DYNAMIC_MA_PERIOD"
 
     def _bars(self, stock_code: str, start_date: date, end_date: date, *, warmup_bars: int = 0) -> list[MinuteBar]:
         with self.pool.connection() as conn, conn.cursor() as cur:

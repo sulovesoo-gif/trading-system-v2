@@ -645,7 +645,7 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
           AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
         run_values = [timeframe]
         if timeframe == "DAILY":
-            run_sql += " AND parameters->>'warmup_policy'='TRADING_BARS_V1'"
+            run_sql += " AND parameters->>'warmup_policy'='TRADING_BARS_V2_DYNAMIC_MA_PERIOD'"
         if timeframe == "DAILY" and condition == "MA_CONFIRM_INTEGRATED":
             # MA10_CONFIRM/MA_CONFIRM are read-only compatibility aliases for
             # completed runs written before the official daily policy name.

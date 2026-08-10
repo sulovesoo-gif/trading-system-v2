@@ -3,7 +3,7 @@ import unittest
 
 from decimal import Decimal
 
-from src.service.research_backfill_service import ResearchBackfillService, OFFICIAL_PAIRS, ResearchCostPolicy
+from src.service.research_backfill_service import DailyCompleteResearchRunner, ResearchBackfillService, OFFICIAL_PAIRS, ResearchCostPolicy
 
 
 class _Calendar:
@@ -60,3 +60,9 @@ class ResearchBackfillServiceTest(unittest.TestCase):
         policy = ResearchCostPolicy()
         self.assertEqual(policy.for_stock('000660')[0], Decimal('0.000140527'))
         self.assertEqual(policy.for_stock('0193T0')[0], Decimal('0.000146527'))
+
+    def test_daily_warmup_uses_exactly_ma_period_minus_one_trading_bars(self):
+        runner = DailyCompleteResearchRunner(pool=None, repository=None)
+        self.assertEqual({period: runner._warmup_bars(period) for period in (7, 11, 15, 20)},
+                         {7: 6, 11: 10, 15: 14, 20: 19})
+        self.assertEqual(runner.warmup_policy, 'TRADING_BARS_V2_DYNAMIC_MA_PERIOD')
