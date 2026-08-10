@@ -378,6 +378,10 @@ def _research_filters(
         if key == "direction" and not include_direction:
             continue
         value = (query.get(key) or ["ALL"])[0]
+        # LONG_SHORT is a UI analysis mode that combines persisted LONG and
+        # SHORT cycles.  It is not a database direction enum.
+        if key == "direction" and value == "LONG_SHORT":
+            continue
         if value and value != "ALL":
             where.append(f"{alias}.{column}=%s"); params.append(value)
     start, end = (query.get("start_date") or [None])[0], (query.get("end_date") or [None])[0]
@@ -588,6 +592,16 @@ def _apply_daily_open_valuation(
     for row in position_rows:
         key = _daily_group_key(row)
         latest_open[key] = latest_open.get(key, Decimal("0")) + Decimal(str(row.get("unrealized_profit") or 0)) if row.get("is_latest") else latest_open.get(key, Decimal("0"))
+    # Ranking begins with closed cycles.  Add OPEN-only combinations before
+    # attaching valuation so they participate in rank, overview, and UI.
+    ranked_keys = {_daily_group_key(item) for item in ranking}
+    for row in position_rows:
+        key = _daily_group_key(row)
+        if key not in ranked_keys:
+            item = dict(zip(("trade_stock_code", "signal_source_stock_code", "strategy_code", "observation_code", "direction"), key))
+            item.update(aggregate_projected([]))
+            ranking.append(item)
+            ranked_keys.add(key)
     for item in ranking:
         open_profit = latest_open.get(_daily_group_key(item), Decimal("0"))
         realized = Decimal(str(item.get("realized_profit") or 0))
@@ -609,7 +623,7 @@ def _apply_daily_open_valuation(
         item["total_valuation_profit"] = cumulative[key] + open_profit
         item["total_valuation_return_rate"] = Decimal("0") if not initial_capital else item["total_valuation_profit"] / initial_capital * 100
 
-    rates = [Decimal(str(item["realized_capital_return_rate"])) for item in ranking]
+    rates = [Decimal(str(item["total_valuation_return_rate"])) for item in ranking]
     total_rates = [Decimal(str(item["total_valuation_return_rate"])) for item in ranking]
     median = lambda values: Decimal("0") if not values else sorted(values)[(len(values) - 1) // 2]
     overview = {
@@ -679,12 +693,6 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         daily.sort(key=lambda item: item["trading_date"], reverse=True)
         ranking = _projected_groups(rows, ("trade_stock_code","signal_source_stock_code","strategy_code","observation_code","analysis_direction"))
         for item in ranking: item["direction"] = item.pop("analysis_direction")
-        ranking.sort(key=lambda item: (item["invested_return_rate"],item["realized_profit"]), reverse=True)
-        # Research grids sort the complete filtered result client-side; their
-        # fixed-height containers provide the visual 20-row viewport.
-        rank_limit = (query.get("rank_limit") or ["20"])[0]
-        if rank_limit != "ALL":
-            ranking = ranking[:int(rank_limit if rank_limit in {"10", "20"} else "20")]
         comparison = {}
         comparison_modes = ("SIGNAL_ONLY", "MA_CONFIRM") if timeframe == "DAILY" else ("SIGNAL_ONLY","MA10_READY_AT_SIGNAL","MA10_CONFIRM")
         for candidate in comparison_modes:
@@ -710,6 +718,12 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
               WHERE c.run_id=%s AND c.exit_time IS NULL AND p.trading_date <= %s""" + open_where + " ORDER BY p.cycle_id,p.trading_date", [run_id, effective_query["end_date"][0], *open_values])
             names=("cycle_id","trade_stock_code","signal_source_stock_code","exit_signal_source_stock_code","strategy_code","observation_code","direction","entry_time","entry_price","trading_date","valuation_close_price","quantity","invested_amount","unrealized_profit","unrealized_return_rate","is_latest")
             open_position_daily=[dict(zip(names,row)) for row in cur.fetchall()]
+            direction_mode = (effective_query.get("direction") or ["LONG"])[0]
+            if direction_mode in {"LONG_SHORT", "ALL"}:
+                # Align OPEN combination keys with closed-cycle LONG+SHORT
+                # analysis groups; raw cycle directions remain unchanged in DB.
+                for row in open_position_daily:
+                    row["direction"] = "LONG_SHORT"
             open_positions=[]
             for row in open_position_daily:
                 if row["is_latest"]:
@@ -719,6 +733,15 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             ranking, daily, valuation_overview = _apply_daily_open_valuation(ranking, daily, open_position_daily, Decimal(str(initial_capital)))
         else:
             valuation_overview = {}
+        # OPEN-only combinations are added by _apply_daily_open_valuation, so
+        # sort/limit only after that union.  Total valuation is the daily
+        # research rank criterion, not closed-cycle invested return.
+        ranking.sort(key=lambda item: (item.get("total_valuation_return_rate", item["invested_return_rate"]), item["total_valuation_profit"]), reverse=True)
+        # Research grids sort the complete filtered result client-side; their
+        # fixed-height containers provide the visual 20-row viewport.
+        rank_limit = (query.get("rank_limit") or ["20"])[0]
+        if rank_limit != "ALL":
+            ranking = ranking[:int(rank_limit if rank_limit in {"10", "20"} else "20")]
     return {"status":"OK","run_id":run_id,"start_date":start_date,"end_date":end_date,"entry_condition":condition,
             "selected_start_date":effective_query["start_date"][0],"selected_end_date":effective_query["end_date"][0],
             "timeframe":timeframe,"parameters":parameters,"initial_capital":initial_capital,"summary":summary,"daily":daily,"ranking":ranking,"comparison":comparison,"open_positions":open_positions if timeframe == "DAILY" else [],"valuation_overview":valuation_overview,"stock_names":stock_names}

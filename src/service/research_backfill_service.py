@@ -123,7 +123,11 @@ class CompleteResearchRunner:
     def __init__(self, *, pool, repository) -> None:
         self.pool, self.repository = pool, repository
 
-    def _bars(self, stock_code: str, start_date: date, end_date: date) -> list[MinuteBar]:
+    def _warmup_bars(self, confirm_period: int) -> int:
+        """Number of prior official bars needed only for feature calculation."""
+        return 0
+
+    def _bars(self, stock_code: str, start_date: date, end_date: date, *, warmup_bars: int = 0) -> list[MinuteBar]:
         venue = "INTEGRATED" if stock_code in {"000660", "005930"} else "KRX"
         with self.pool.connection() as conn, conn.cursor() as cur:
             cur.execute("""SELECT bar_time,open_price,high_price,low_price,close_price FROM raw_stock_minute
@@ -162,20 +166,24 @@ class CompleteResearchRunner:
                                                "pairs": [pair.name for pair in pairs]})
         replay = self._replay(entry_condition=entry_condition, confirm_period=confirm_period)
         try:
-            all_bars = {code: self._bars(code, start_date, end_date) for code in {part for pair in pairs for part in pair.signal_source_stock_code.split("+")} | {pair.trade_stock_code for pair in pairs}}
+            warmup_bars = self._warmup_bars(confirm_period)
+            all_bars = {code: self._bars(code, start_date, end_date, warmup_bars=warmup_bars) for code in {part for pair in pairs for part in pair.signal_source_stock_code.split("+")} | {pair.trade_stock_code for pair in pairs}}
             for source, bars in all_bars.items():
                 previous = None
                 for feature in replay.features(bars):
                     direction = replay._ma10_direction(previous, feature)
-                    self.repository.save_feature(run_id=run_id, stock_code=source, feature=feature, ma10_direction=direction)
+                    # Warmup bars establish MA state only.  They are never a
+                    # research-period feature, signal, cycle, or position.
+                    if feature.bar.bar_time.date() >= start_date:
+                        self.repository.save_feature(run_id=run_id, stock_code=source, feature=feature, ma10_direction=direction)
                     previous = feature
             for pair in pairs:
                 if pair.transform in {"CROSS_A", "CROSS_B"}:
                     entry_source, exit_source = pair.signal_source_stock_code.split("+")
                     entry_features = replay.features(all_bars[entry_source])
                     exit_features = replay.features(all_bars[exit_source])
-                    all_entry = replay.canonical_signals(entry_features)
-                    all_exit = replay.canonical_signals(exit_features)
+                    all_entry = [item for item in replay.canonical_signals(entry_features) if item.at.date() >= start_date]
+                    all_exit = [item for item in replay.canonical_signals(exit_features) if item.at.date() >= start_date]
                     wanted = "LONG" if pair.transform == "CROSS_A" else "SHORT"
                     entry_signals = [item for item in all_entry if item.direction == wanted]
                     exit_signals = [item for item in all_exit if item.direction == wanted]
@@ -223,7 +231,7 @@ class CompleteResearchRunner:
                             signals.append(event)
                 else:
                     source_features = replay.features(all_bars[pair.signal_source_stock_code])
-                    signals = replay.canonical_signals(source_features)
+                    signals = [item for item in replay.canonical_signals(source_features) if item.at.date() >= start_date]
                 direction_by_time = {feature.bar.bar_time: replay._ma10_direction(previous, feature) for previous, feature in zip([None, *source_features], source_features)}
                 target_prices = {bar.bar_time: bar.close_price for bar in all_bars[pair.trade_stock_code]}
                 fee_rate, sell_tax_rate = cost_policy.for_stock(pair.trade_stock_code)
@@ -280,12 +288,24 @@ class DailyCompleteResearchRunner(CompleteResearchRunner):
         kwargs.setdefault("pairs", OFFICIAL_PAIRS + CROSS_DAILY_PAIRS)
         return super().run(**kwargs)
 
-    def _bars(self, stock_code: str, start_date: date, end_date: date) -> list[MinuteBar]:
+    def _warmup_bars(self, confirm_period: int) -> int:
+        # The canonical daily MA10 still requires nine prior official closes;
+        # a user-selected confirmation MA11/15 extends that to N-1 bars.
+        return max(10, confirm_period) - 1
+
+    def _bars(self, stock_code: str, start_date: date, end_date: date, *, warmup_bars: int = 0) -> list[MinuteBar]:
         with self.pool.connection() as conn, conn.cursor() as cur:
-            cur.execute("""SELECT trade_date,open_price,high_price,low_price,close_price FROM raw_stock_daily
-              WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI' AND trading_venue='KRX'
-                AND collect_cycle='DAILY' AND trade_date BETWEEN %s AND %s AND close_price IS NOT NULL
-              ORDER BY trade_date""", (stock_code,start_date,end_date))
+            cur.execute("""WITH warmup AS (
+                SELECT trade_date,open_price,high_price,low_price,close_price FROM raw_stock_daily
+                 WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI' AND trading_venue='KRX'
+                   AND collect_cycle='DAILY' AND trade_date < %s AND close_price IS NOT NULL
+                 ORDER BY trade_date DESC LIMIT %s
+              ), selected AS (
+                SELECT trade_date,open_price,high_price,low_price,close_price FROM raw_stock_daily
+                 WHERE stock_code=%s AND data_source='KIS' AND market_code='KOSPI' AND trading_venue='KRX'
+                   AND collect_cycle='DAILY' AND trade_date BETWEEN %s AND %s AND close_price IS NOT NULL
+              ) SELECT * FROM warmup UNION ALL SELECT * FROM selected ORDER BY trade_date""",
+                        (stock_code, start_date, warmup_bars, stock_code, start_date, end_date))
             return [MinuteBar(datetime.combine(day, time(15, 19)), opening, high, low, close)
                     for day, opening, high, low, close in cur.fetchall()]
 

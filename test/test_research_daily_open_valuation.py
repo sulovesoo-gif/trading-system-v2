@@ -56,3 +56,10 @@ class DailyOpenValuationTest(unittest.TestCase):
     self.assertEqual([(row["trading_date"], row["open_valuation_profit"]) for row in days], [
         (date(2026, 8, 4), Decimal("2500")), (date(2026, 8, 3), Decimal("1000")),
     ])
+    ranking, _, overview = _apply_daily_open_valuation([], [], positions, Decimal("10000000"))
+    self.assertEqual(len(ranking), 1)
+    self.assertEqual(ranking[0]["closed_count"], 0)
+    self.assertEqual(ranking[0]["realized_profit"], Decimal("0"))
+    self.assertEqual(ranking[0]["open_valuation_profit"], Decimal("2500"))
+    self.assertEqual(ranking[0]["total_valuation_profit"], Decimal("2500"))
+    self.assertEqual(overview["combination_count"], 1)

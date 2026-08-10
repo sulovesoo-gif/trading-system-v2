@@ -39,7 +39,8 @@ def _has_unallowed_gap(rows: list[RawMinute]) -> bool:
     """Recognize only intra-session minute gaps; auction/session gaps are valid."""
     from src.service.research_complete_replay_service import _session_id
     for previous, current in zip(rows, rows[1:]):
-        if _session_id(previous.at) == _session_id(current.at) and current.at - previous.at > timedelta(minutes=1):
+        previous_session, current_session = _session_id(previous.at), _session_id(current.at)
+        if previous_session is not None and previous_session == current_session and current.at - previous.at > timedelta(minutes=1):
             return True
     return False
 

@@ -48,6 +48,15 @@ class ProvisionalDailyObservationTest(unittest.TestCase):
         self.assertEqual(gap["status"], "DATA_GAP")
         self.assertFalse(gap["condition_satisfied"])
 
+    def test_session_boundary_is_not_an_intraday_data_gap(self):
+        boundary_rows = [
+            RawMinute(datetime(2026, 8, 10, 8, 49), Decimal("120"), Decimal("120"), Decimal("120"), Decimal("120"), Decimal("1")),
+            RawMinute(datetime(2026, 8, 10, 9, 0), Decimal("121"), Decimal("121"), Decimal("121"), Decimal("121"), Decimal("1")),
+        ]
+        row = observe(stock_code="000660", daily_history=self.history, minute_rows=boundary_rows,
+                      official_today=None, period=10, strategy_code="SIGNAL_1", entry_condition="SIGNAL_ONLY")
+        self.assertEqual(row["status"], "PROVISIONAL_DAILY")
+
     def test_all_entry_conditions_use_shared_canonical_event_without_persistence(self):
         # A synthetic shared canonical event verifies display-only eligibility;
         # observe() never receives a repository or any write capability.
