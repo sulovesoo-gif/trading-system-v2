@@ -652,6 +652,8 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         run_sql = """SELECT run_id,start_date,end_date,parameters,initial_capital FROM research_run WHERE status='COMPLETED'
           AND COALESCE(parameters->>'timeframe','MINUTE')=%s"""
         run_values = [timeframe]
+        if timeframe == "DAILY":
+            run_sql += " AND parameters->>'warmup_policy'='TRADING_BARS_V1'"
         if timeframe == "DAILY" and condition == "MA_CONFIRM_INTEGRATED":
             # MA10_CONFIRM/MA_CONFIRM are read-only compatibility aliases for
             # completed runs written before the official daily policy name.
@@ -666,6 +668,11 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
         if timeframe == "DAILY" and condition in {"MA_CONFIRM", "MA_CONFIRM_INTEGRATED", "MA_AT_SIGNAL"}:
             run_sql += " AND COALESCE(parameters->>'ma_period','10')=%s"
             run_values.append((query.get("ma_period") or ["10"])[0])
+        requested_start, requested_end = (query.get("start_date") or [""])[0], (query.get("end_date") or [""])[0]
+        if timeframe == "DAILY" and requested_start:
+            run_sql += " AND start_date=%s"; run_values.append(requested_start)
+        if timeframe == "DAILY" and requested_end:
+            run_sql += " AND end_date=%s"; run_values.append(requested_end)
         run_sql += " ORDER BY end_date DESC,created_at DESC LIMIT 1"
         cur.execute(run_sql, run_values)
         run = cur.fetchone()

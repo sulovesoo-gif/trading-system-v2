@@ -127,6 +127,10 @@ class CompleteResearchRunner:
         """Number of prior official bars needed only for feature calculation."""
         return 0
 
+    @property
+    def warmup_policy(self) -> str | None:
+        return None
+
     def _bars(self, stock_code: str, start_date: date, end_date: date, *, warmup_bars: int = 0) -> list[MinuteBar]:
         venue = "INTEGRATED" if stock_code in {"000660", "005930"} else "KRX"
         with self.pool.connection() as conn, conn.cursor() as cur:
@@ -157,13 +161,15 @@ class CompleteResearchRunner:
             raise ValueError("confirm_period must be a positive integer")
         cost_policy = cost_policy or ResearchCostPolicy()
         run_id = uuid4()
-        self.repository.create_run(run_id=run_id, start_date=start_date, end_date=end_date,
-                                   parameters={"observation": "COMPLETE", "timeframe": self.timeframe, "session_mode": self.session_mode, "capital": "10000000", "entry_condition": entry_condition,
+        parameters = {"observation": "COMPLETE", "timeframe": self.timeframe, "session_mode": self.session_mode, "capital": "10000000", "entry_condition": entry_condition,
                                                "ma_period": None if entry_condition == CompleteReplay.SIGNAL_ONLY else confirm_period,
                                                "direction_mode": direction_mode,
                                                "cost_policy_version": cost_policy.version, "cost_policy": cost_policy.snapshot(),
                                                "fee_rate": str(cost_policy.stock_fee_rate), "slippage_rate": str(cost_policy.slippage_rate),
-                                               "pairs": [pair.name for pair in pairs]})
+                                               "pairs": [pair.name for pair in pairs]}
+        if self.warmup_policy is not None:
+            parameters["warmup_policy"] = self.warmup_policy
+        self.repository.create_run(run_id=run_id, start_date=start_date, end_date=end_date, parameters=parameters)
         replay = self._replay(entry_condition=entry_condition, confirm_period=confirm_period)
         try:
             warmup_bars = self._warmup_bars(confirm_period)
@@ -292,6 +298,12 @@ class DailyCompleteResearchRunner(CompleteResearchRunner):
         # The canonical daily MA10 still requires nine prior official closes;
         # a user-selected confirmation MA11/15 extends that to N-1 bars.
         return max(10, confirm_period) - 1
+
+    @property
+    def warmup_policy(self) -> str:
+        # Stored on every new DAILY run so read APIs never silently reuse a
+        # pre-warmup run for the same MA period.
+        return "TRADING_BARS_V1"
 
     def _bars(self, stock_code: str, start_date: date, end_date: date, *, warmup_bars: int = 0) -> list[MinuteBar]:
         with self.pool.connection() as conn, conn.cursor() as cur:
