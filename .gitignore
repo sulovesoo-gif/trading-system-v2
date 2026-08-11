@@ -17,6 +17,11 @@ venv/
 logs/
 *.log
 reports/
+!reports/
+reports/*
+!reports/multi-ma/
+reports/multi-ma/*
+!reports/multi-ma/research-video-strategy.html
 
 # OS
 .DS_Store
