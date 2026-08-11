@@ -45,11 +45,18 @@ def compare_payload(pool):
         return {"status":"OK","items":[dict(zip(names,row)) for row in cur.fetchall()]}
 
 def event_analysis_payload(pool,run_id):
-    UUID(str(run_id))
     with pool.connection() as conn,conn.cursor() as cur:
+        if not run_id:
+            cur.execute("""SELECT run_id FROM research_run
+              WHERE parameters->>'strategy_family'='VIDEO_STRATEGY' AND status='COMPLETED'
+              ORDER BY created_at DESC LIMIT 1""")
+            latest=cur.fetchone()
+            if latest is None:return {"status":"OK","items":[]}
+            run_id=latest[0]
+        UUID(str(run_id))
         cur.execute("""SELECT e.signal_type,p.execution_stock_code,count(*),
           avg(p.return_1m),avg(p.return_3m),avg(p.return_5m),avg(p.return_10m),avg(p.return_20m),avg(p.return_30m),avg(p.mfe),avg(p.mae)
           FROM research_signal_event e JOIN research_video_event_performance p ON p.event_id=e.event_id
           WHERE e.run_id=%s AND p.data_status='NORMAL' GROUP BY e.signal_type,p.execution_stock_code ORDER BY e.signal_type,p.execution_stock_code""",(run_id,))
         names=("event_type","execution_stock_code","event_count","return_1m","return_3m","return_5m","return_10m","return_20m","return_30m","mfe","mae")
-        return {"status":"OK","items":[dict(zip(names,row)) for row in cur.fetchall()]}
+        return {"status":"OK","run_id":run_id,"items":[dict(zip(names,row)) for row in cur.fetchall()]}
