@@ -1015,7 +1015,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 else:
                     self.send_error(404); return
                 body=json.dumps(payload,ensure_ascii=False,default=_json_default).encode("utf-8")
-                self.send_response(200); self.send_header("Content-Type","application/json; charset=utf-8")
+                self.send_response(400 if payload.get("status") == "ERROR" else 200)
+                self.send_header("Content-Type","application/json; charset=utf-8")
             except Exception as error:
                 logging.exception("video strategy query failed")
                 body=json.dumps({"status":"ERROR","error":f"{type(error).__name__}: {error}"},ensure_ascii=False).encode("utf-8")
