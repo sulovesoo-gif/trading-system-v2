@@ -2,10 +2,32 @@ from datetime import date
 from decimal import Decimal
 import unittest
 
-from scripts.dashboard.serve_multi_ma_dashboard import _apply_daily_open_valuation
+from scripts.dashboard.serve_multi_ma_dashboard import _apply_daily_open_valuation, _sort_research_ranking
 
 
 class DailyOpenValuationTest(unittest.TestCase):
+  def test_minute_ranking_never_requires_daily_valuation_fields(self):
+    ranking = [
+        {"invested_return_rate": Decimal("1.2"), "realized_profit": Decimal("100")},
+        {"invested_return_rate": Decimal("3.4"), "realized_profit": Decimal("50")},
+    ]
+
+    _sort_research_ranking(ranking, "MINUTE")
+
+    self.assertEqual(ranking[0]["invested_return_rate"], Decimal("3.4"))
+
+  def test_daily_ranking_uses_total_valuation_fields(self):
+    ranking = [
+        {"invested_return_rate": Decimal("9.9"), "realized_profit": Decimal("900"),
+         "total_valuation_return_rate": Decimal("1.2"), "total_valuation_profit": Decimal("120")},
+        {"invested_return_rate": Decimal("0.1"), "realized_profit": Decimal("10"),
+         "total_valuation_return_rate": Decimal("3.4"), "total_valuation_profit": Decimal("340")},
+    ]
+
+    _sort_research_ranking(ranking, "DAILY")
+
+    self.assertEqual(ranking[0]["total_valuation_return_rate"], Decimal("3.4"))
+
   def test_uses_single_run_initial_capital_without_double_counting(self):
     ranking = [{
         "trade_stock_code": "000660", "signal_source_stock_code": "000660",

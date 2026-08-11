@@ -800,7 +800,7 @@ def _daily_stateless_rows(pool, query: dict[str, list[str]], condition: str) -> 
             row["valuation_date"] = row.pop("trading_date")
             row["holding_days"] = (row["valuation_date"] - row["entry_time"].date()).days
     open_positions = [row for row in open_rows if row["is_latest"]]
-    ranking.sort(key=lambda row: (row.get("total_valuation_return_rate", Decimal("0")), row.get("total_valuation_profit", Decimal("0"))), reverse=True)
+    _sort_research_ranking(ranking, "DAILY")
     return {"status": "OK", "calculation_source": "RAW_STATELESS", "run_id": None,
             "start_date": requested_start, "end_date": calculated_end,
             "selected_start_date": requested_start, "selected_end_date": calculated_end,
@@ -811,6 +811,32 @@ def _daily_stateless_rows(pool, query: dict[str, list[str]], condition: str) -> 
             "initial_capital": Decimal("30000000"), "summary": aggregate_projected(closed_rows),
             "daily": daily, "ranking": ranking, "comparison": {}, "open_positions": open_positions,
             "valuation_overview": overview, "stock_names": stock_names, "warmup_bars": warmup}
+
+
+def _sort_research_ranking(ranking: list[dict], timeframe: str) -> None:
+    """Apply the ranking definition belonging to the requested timeframe.
+
+    Minute research has no OPEN valuation concept, so it ranks only by the
+    stored closed-cycle net invested return and net realized profit.  Daily
+    research is the only path that adds valuation fields through
+    ``_apply_daily_open_valuation`` and consequently ranks by total valuation.
+    """
+    if timeframe == "MINUTE":
+        ranking.sort(
+            key=lambda item: (item["invested_return_rate"], item["realized_profit"]),
+            reverse=True,
+        )
+        return
+    if timeframe == "DAILY":
+        ranking.sort(
+            key=lambda item: (
+                item["total_valuation_return_rate"],
+                item["total_valuation_profit"],
+            ),
+            reverse=True,
+        )
+        return
+    raise ValueError(f"unsupported research ranking timeframe: {timeframe}")
 
 
 def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
@@ -916,10 +942,10 @@ def research_performance_payload_v2(pool, query: dict[str, list[str]]) -> dict:
             ranking, daily, valuation_overview = _apply_daily_open_valuation(ranking, daily, open_position_daily, Decimal(str(initial_capital)))
         else:
             valuation_overview = {}
-        # OPEN-only combinations are added by _apply_daily_open_valuation, so
-        # sort/limit only after that union.  Total valuation is the daily
-        # research rank criterion, not closed-cycle invested return.
-        ranking.sort(key=lambda item: (item.get("total_valuation_return_rate", item["invested_return_rate"]), item["total_valuation_profit"]), reverse=True)
+        # The two research timeframes intentionally have different ranking
+        # semantics.  MINUTE is closed-cycle performance only, whereas DAILY
+        # includes the latest OPEN position valuation after the union above.
+        _sort_research_ranking(ranking, timeframe)
         # Research grids sort the complete filtered result client-side; their
         # fixed-height containers provide the visual 20-row viewport.
         rank_limit = (query.get("rank_limit") or ["20"])[0]
