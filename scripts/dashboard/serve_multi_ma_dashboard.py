@@ -26,6 +26,10 @@ from src.analysis.feature.sma_feature import MinuteBar
 from src.service.provisional_daily_observation_service import RawMinute, observe as observe_provisional_daily
 from src.service.research_backfill_service import CROSS_DAILY_PAIRS, OFFICIAL_PAIRS, ResearchCostPolicy
 from src.service.research_complete_replay_service import ACCUMULATED, DailyCompleteReplay, STRATEGIES
+from src.service.research_video_dashboard_service import compare_payload as video_compare_payload
+from src.service.research_video_dashboard_service import event_analysis_payload as video_event_analysis_payload
+from src.service.research_video_dashboard_service import replay_payload as video_replay_payload
+from src.service.research_video_dashboard_service import runs_payload as video_runs_payload
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -997,6 +1001,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/research/video-strategy/api/"):
+            try:
+                query = parse_qs(parsed.query)
+                if parsed.path.endswith("/runs"):
+                    payload = video_runs_payload(self.pool)
+                elif parsed.path.endswith("/replay"):
+                    payload = video_replay_payload(self.pool, (query.get("run_id") or [""])[0])
+                elif parsed.path.endswith("/compare"):
+                    payload = video_compare_payload(self.pool)
+                elif parsed.path.endswith("/events"):
+                    payload = video_event_analysis_payload(self.pool, (query.get("run_id") or [""])[0])
+                else:
+                    self.send_error(404); return
+                body=json.dumps(payload,ensure_ascii=False,default=_json_default).encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type","application/json; charset=utf-8")
+            except Exception as error:
+                logging.exception("video strategy query failed")
+                body=json.dumps({"status":"ERROR","error":f"{type(error).__name__}: {error}"},ensure_ascii=False).encode("utf-8")
+                self.send_response(500); self.send_header("Content-Type","application/json; charset=utf-8")
+            self.send_header("Content-Length",str(len(body))); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(body); return
         if parsed.path == "/admin/backfill":
             body = RESEARCH_BACKFILL_PAGE.encode("utf-8")
             self.send_response(200)
@@ -1047,6 +1071,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.path = "/research-performance.html"
         elif parsed.path == "/research/daily":
             self.path = "/research-daily.html"
+        elif parsed.path == "/research/video-strategy":
+            self.path = "/research-video-strategy.html"
         super().do_GET()
 
     def do_POST(self):

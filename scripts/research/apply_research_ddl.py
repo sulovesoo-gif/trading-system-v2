@@ -18,7 +18,9 @@ def main() -> int:
     pool = create_connection_pool(DatabaseSettings.from_environment())
     try:
         with pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
-            cur.execute((ROOT / "database" / "ddl" / "26_research_strategy.sql").read_text(encoding="utf-8"))
+            for name in ("26_research_strategy.sql", "27_raw_stock_minute_previous_close_migration.sql",
+                         "28_research_feature_ma20_migration.sql", "29_research_video_strategy.sql"):
+                cur.execute((ROOT / "database" / "ddl" / name).read_text(encoding="utf-8"))
         print("research DDL applied")
         return 0
     finally:
