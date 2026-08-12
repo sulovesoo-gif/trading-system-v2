@@ -90,7 +90,7 @@ class VideoDashboardTest(unittest.TestCase):
                       "청산 조건 판단", "진입 → 보유 → 경고 → 청산", "최대 유리 변동",
                       "최대 불리 변동", "이벤트 상세 / 내부 디버그"):
             self.assertIn(label, page)
-        for contract in ("importantStructures", "진입 판단 직전", "tradeFlow", "exitJudgment",
+        for contract in ("importantStructures", "직전 고점", "tradeFlow", "exitJudgment",
                          "실제 청산 손익", "가격 누락 · 보간 없음"):
             self.assertIn(contract, page)
 
