@@ -105,3 +105,7 @@ python scripts/research/run_video_strategy.py --start-date YYYY-MM-DD --end-date
 기존 `/admin/backfill`로 000660/0193T0/0197X0 분봉을 수집할 수 있다. 필요한 기간이 부족하면 자동 대규모 backfill하지 않고 종목·요구기간·현재기간·누락기간만 보고한다.
 
 Wick Volume Zone은 `raw_stock_execution`이 완전 tape가 아닌 5초 REST polling이고 현재 주로 000660만 보유하므로 `APPROXIMATE`다. upper zone은 `max(open,close)~high`, lower zone은 `low~min(open,close)`로 정의하되 VIDEO_BASE 진입/청산에는 사용하지 않는다. Program/체결강도도 `VIDEO_PROGRAM`, `VIDEO_EXECUTION_STRENGTH`, `VIDEO_PROGRAM_EXECUTION_STRENGTH` run에서만 연구한다.
+
+### 체결 RAW 기반 매물대 표시 제한
+
+현재 `raw_stock_execution`은 REST polling 표본이며 완전한 체결 tape가 아니다. 동일 초 복수 체결의 완전 보존, 매수/매도 체결 방향, 2026-08-03 데이터, 0193T0/0197X0 체결 RAW가 없고 공식 분봉 거래량 대비 포착량도 부족하다. 따라서 VIDEO_BASE 화면과 판단에는 사용하지 않으며 `완전한 매물대` 또는 `공식 Volume Profile`로 표현하지 않는다. 향후 별도 실험에서 사용할 때에도 `추정 체결 분포`, `포착 체결량`, `근사 매물대 후보`처럼 `APPROXIMATE`임을 명시한다.
