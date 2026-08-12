@@ -43,7 +43,7 @@ class VideoDashboardTest(unittest.TestCase):
 
     def test_dashboard_is_korean_and_contains_required_sections(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
-        for label in ("실행 결과 선택", "실행 설명", "1분봉 캔들 및 이벤트", "선택 캔들·이벤트 판단 근거", "종목별 성과 요약", "Variant 비교", "가격 보간"):
+        for label in ("실행 결과 선택", "실행 설명", "1분봉 캔들 및 이벤트", "선택 캔들·이벤트 판단 근거", "Run 전체 성과", "Variant 비교", "가격 보간"):
             self.assertIn(label, page)
         for variant in ("구조 조건 제외", "캔들 몸통 조건 제외", "거래량 조건 제외", "꼬리 조건 제외"):
             self.assertIn(variant, page)
