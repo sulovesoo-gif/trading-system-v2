@@ -72,7 +72,7 @@ class VideoDashboardTest(unittest.TestCase):
 
     def test_human_validation_sections_and_derived_structure_exist(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
-        for label in ("선택 거래", "동일 신호 실행상품 비교", "진입 조건 판단", "Pivot 발생", "confirmed_time 이전", "확정 규칙", "설정값", "비교 시험"):
+        for label in ("선택 거래", "동일 신호 실행상품 비교", "진입 조건 판단", "피벗 발생", "확정 시각 이전", "확정 규칙", "설정값", "비교 시험"):
             self.assertIn(label, page)
         for contract in ("structureLabels", "renderSelectedTrade", "renderProjection", "신호 원천: SK하이닉스(000660)"):
             self.assertIn(contract, page)
@@ -93,6 +93,19 @@ class VideoDashboardTest(unittest.TestCase):
         for contract in ("importantStructures", "진입 판단 직전", "tradeFlow", "exitJudgment",
                          "실제 청산 손익", "가격 누락 · 보간 없음"):
             self.assertIn(contract, page)
+
+    def test_volume_chart_reuses_replay_viewport_and_stored_features(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        for label in ("1분봉 거래량", "20분 평균 거래량", "평균 대비", "거래량 변화율", "거래량 기울기"):
+            self.assertIn(label, page)
+        for contract in ("volumeChart", "renderVolumeChart(fs)", "details[i].volume_avg", "d.volume_ratio",
+                         "installDrag(svg,fs)", "selectedTime", "renderVolumeChart(visible())"):
+            self.assertIn(contract, page)
+
+    def test_execution_volume_profile_limit_is_documented(self):
+        doc = (Path(__file__).parents[1] / "docs/VIDEO_STRATEGY.md").read_text(encoding="utf-8")
+        for label in ("완전한 체결 tape", "완전한 매물대", "공식 Volume Profile", "추정 체결 분포", "APPROXIMATE"):
+            self.assertIn(label, doc)
 
 
 if __name__ == "__main__":
