@@ -36,14 +36,14 @@ class VideoDashboardTest(unittest.TestCase):
         self.assertEqual(payload["message"], "run_id가 필요합니다.")
 
     def test_run_summary_contains_profit_and_counts(self):
-        row = ("id", "created", "start", "end", "COMPLETED", {"ablation": "FULL"}, 7, 3, 10, 2, 8)
+        row = ("id", "created", "start", "end", "COMPLETED", {"ablation": "FULL"}, 7, 3, 20, 10, 2, 8)
         payload = runs_payload(_Pool([row]))
         self.assertEqual(payload["runs"][0]["cycle_count"], 3)
         self.assertEqual(payload["runs"][0]["net_profit"], 8)
 
     def test_dashboard_is_korean_and_contains_required_sections(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
-        for label in ("실행 결과 선택", "실행 설명", "1분봉 캔들 및 이벤트", "선택 캔들·이벤트 판단 근거", "Run 전체 성과", "Variant / Parameter 비교", "가격 보간"):
+        for label in ("실행 결과 선택", "실행 설명", "1분봉 캔들 및 이벤트", "선택 캔들·이벤트 판단 근거", "실행 전체 성과", "실행안 / 조건값 비교", "가격 보간"):
             self.assertIn(label, page)
         for variant in ("구조 조건 제외", "캔들 몸통 조건 제외", "거래량 조건 제외", "꼬리 조건 제외"):
             self.assertIn(variant, page)
@@ -59,7 +59,7 @@ class VideoDashboardTest(unittest.TestCase):
 
     def test_replay_units_and_performance_links_exist(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
-        for label in ("일별 Replay", "Cycle Replay", "이전 거래일", "다음 거래일", "내부 판단 이벤트 표시", "집계 단위", "최대 낙폭"):
+        for label in ("일별 재생", "거래 재생", "이전 거래일", "다음 거래일", "내부 판단 이벤트 표시", "집계 단위", "최대 낙폭"):
             self.assertIn(label, page)
         self.assertIn("performanceReplay", page)
 
@@ -72,10 +72,17 @@ class VideoDashboardTest(unittest.TestCase):
 
     def test_human_validation_sections_and_derived_structure_exist(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
-        for label in ("선택 Trade Cycle", "동일 신호 실행상품 Projection", "PASS / FAIL 판단", "Pivot 발생", "confirmed_time 이전", "FIXED", "PARAM", "TEST"):
+        for label in ("선택 거래", "동일 신호 실행상품 비교", "조건 충족 판단", "Pivot 발생", "confirmed_time 이전", "확정규칙", "설정값", "비교시험"):
             self.assertIn(label, page)
         for contract in ("structureLabels", "renderSelectedTrade", "renderProjection", "Signal Source: 000660"):
             self.assertIn(contract, page)
+
+    def test_sma_path_restarts_after_null_warmup_and_markers_are_human_readable(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        for contract in ("let maStarted=false", "const command=maStarted?'L':'M'", "관련 이벤트 ${items.length}건"):
+            self.assertIn(contract, page)
+        for label in ("고점", "저점", "고↑", "고↓", "저↑", "저↓"):
+            self.assertIn(label, page)
 
 
 if __name__ == "__main__":

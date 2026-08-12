@@ -12,6 +12,7 @@ def runs_payload(pool):
           SELECT r.run_id,r.created_at,r.start_date,r.end_date,r.status,r.parameters,
             (SELECT count(*) FROM research_signal_event e WHERE e.run_id=r.run_id),
             (SELECT count(*) FROM research_trade_cycle c WHERE c.run_id=r.run_id),
+            (SELECT count(*) FROM research_feature f WHERE f.run_id=r.run_id),
             (SELECT coalesce(sum(c.gross_realized_profit),0) FROM research_trade_cycle c WHERE c.run_id=r.run_id),
             (SELECT coalesce(sum(c.total_trading_cost),0) FROM research_trade_cycle c WHERE c.run_id=r.run_id),
             (SELECT coalesce(sum(c.realized_profit),0) FROM research_trade_cycle c WHERE c.run_id=r.run_id)
@@ -19,7 +20,7 @@ def runs_payload(pool):
           WHERE r.parameters->>'strategy_family'='VIDEO_STRATEGY'
           ORDER BY r.created_at DESC LIMIT 100""")
         names=("run_id","created_at","start_date","end_date","run_status","parameters",
-               "event_count","cycle_count","gross_profit","trading_cost","net_profit")
+               "event_count","cycle_count","feature_count","gross_profit","trading_cost","net_profit")
         return {"status":"OK","runs":[dict(zip(names,row)) for row in cur.fetchall()]}
 
 
