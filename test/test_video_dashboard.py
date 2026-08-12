@@ -102,6 +102,25 @@ class VideoDashboardTest(unittest.TestCase):
                          "installDrag(svg,fs)", "selectedTime", "renderVolumeChart(visible())"):
             self.assertIn(contract, page)
 
+    def test_replay_chart_uses_korean_decision_markers_and_cycle_reference_lines(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        for label in ("고점↑", "고점↓", "저점↑", "저점↓", "눌림", "재회복",
+                      "진입 준비▲", "하락 준비▼", "매수▲", "하락 진입▼",
+                      "청산▼", "손절×", "반전 경고!", "직전 고점", "직전 저점"):
+            self.assertIn(label, page)
+        for contract in ("chartEventVisible", "chartMarkerText", "structureContext",
+                         "referenceLines", "structureLinks", "bodyComparison"):
+            self.assertIn(contract, page)
+        self.assertIn("SMA_PULLBACK','SMA_RECLAIM", page)
+
+    def test_body_comparison_does_not_guess_an_unstored_source_bar(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        self.assertIn("BODY_EXP_PREVIOUS", page)
+        self.assertIn("BODY_EXP_PREVIOUS_SAME_DIRECTION", page)
+        self.assertIn("현재 저장값으로 원본 봉 특정 불가", page)
+        self.assertIn("비교 몸통", page)
+        self.assertIn("진입봉 몸통", page)
+
     def test_execution_volume_profile_limit_is_documented(self):
         doc = (Path(__file__).parents[1] / "docs/VIDEO_STRATEGY.md").read_text(encoding="utf-8")
         for label in ("완전한 체결 tape", "완전한 매물대", "공식 Volume Profile", "추정 체결 분포", "APPROXIMATE"):
