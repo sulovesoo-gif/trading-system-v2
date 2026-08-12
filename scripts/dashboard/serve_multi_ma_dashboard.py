@@ -28,6 +28,7 @@ from src.service.research_backfill_service import CROSS_DAILY_PAIRS, OFFICIAL_PA
 from src.service.research_complete_replay_service import ACCUMULATED, DailyCompleteReplay, STRATEGIES
 from src.service.research_video_dashboard_service import compare_payload as video_compare_payload
 from src.service.research_video_dashboard_service import event_analysis_payload as video_event_analysis_payload
+from src.service.research_video_dashboard_service import performance_payload as video_performance_payload
 from src.service.research_video_dashboard_service import replay_payload as video_replay_payload
 from src.service.research_video_dashboard_service import runs_payload as video_runs_payload
 
@@ -1010,6 +1011,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     payload = video_replay_payload(self.pool, (query.get("run_id") or [""])[0])
                 elif parsed.path.endswith("/compare"):
                     payload = video_compare_payload(self.pool)
+                elif parsed.path.endswith("/performance"):
+                    payload = video_performance_payload(self.pool, (query.get("run_id") or [""])[0],
+                        (query.get("group_by") or ["all"])[0], (query.get("target") or ["000660"])[0])
                 elif parsed.path.endswith("/events"):
                     payload = video_event_analysis_payload(self.pool, (query.get("run_id") or [""])[0])
                 else:

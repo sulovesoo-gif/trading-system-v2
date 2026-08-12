@@ -1,7 +1,9 @@
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 import unittest
 
-from src.service.research_video_dashboard_service import event_analysis_payload, runs_payload
+from src.service.research_video_dashboard_service import event_analysis_payload, performance_payload, runs_payload
 
 
 class _Cursor:
@@ -45,6 +47,21 @@ class VideoDashboardTest(unittest.TestCase):
             self.assertIn(label, page)
         for variant in ("구조 조건 제외", "캔들 몸통 조건 제외", "거래량 조건 제외", "꼬리 조건 제외"):
             self.assertIn(variant, page)
+
+    def test_performance_groups_stored_cycles_without_replay(self):
+        row = (1,date(2026,8,3),"000660","LONG",datetime(2026,8,3,10),Decimal("100"),
+               datetime(2026,8,3,10,5),Decimal("110"),"STOP",300,Decimal("10"),Decimal("1"),
+               Decimal("9"),Decimal("0.9"),Decimal("0.02"),Decimal("-0.01"))
+        payload = performance_payload(_Pool([row]), "09967576-c8dc-4161-9d54-5b8f5e8e60a2", "day", "000660")
+        self.assertEqual(payload["items"][0]["period"], "2026-08-03")
+        self.assertEqual(payload["items"][0]["net_profit"], Decimal("9"))
+        self.assertEqual(payload["items"][0]["trade_count"], 1)
+
+    def test_replay_units_and_performance_links_exist(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        for label in ("일별 Replay", "Cycle Replay", "이전 거래일", "다음 거래일", "Debug 이벤트", "집계 단위", "최대 낙폭"):
+            self.assertIn(label, page)
+        self.assertIn("performanceReplay", page)
 
 
 if __name__ == "__main__":

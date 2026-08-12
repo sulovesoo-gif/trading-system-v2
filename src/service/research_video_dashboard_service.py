@@ -1,6 +1,8 @@
 """Read-only VIDEO_STRATEGY dashboard queries, isolated from legacy payloads."""
 from __future__ import annotations
 
+from collections import defaultdict
+from decimal import Decimal
 from uuid import UUID
 
 
@@ -41,7 +43,7 @@ def replay_payload(pool,run_id):
             p.return_1m,p.return_3m,p.return_5m,p.return_10m,p.return_20m,p.return_30m,p.mfe,p.mae,p.data_status
           FROM research_video_event_performance p JOIN research_signal_event e ON e.event_id=p.event_id
           WHERE e.run_id=%s ORDER BY p.event_id,p.execution_stock_code""",(run_id,)); perf=cur.fetchall()
-        cur.execute("""SELECT trade_stock_code,direction,entry_time,entry_price,exit_time,exit_price,
+        cur.execute("""SELECT cycle_id,trade_stock_code,direction,entry_time,entry_price,exit_time,exit_price,
             gross_realized_profit,total_trading_cost,realized_profit,invested_return_rate,holding_seconds,
             exit_type,data_status
           FROM research_trade_cycle WHERE run_id=%s ORDER BY entry_time,trade_stock_code""",(run_id,)); cycles=cur.fetchall()
@@ -51,7 +53,53 @@ def replay_payload(pool,run_id):
       "features":cols(("time","price","sma20","sma20_direction","detail","open","high","low","close","volume","data_status"),features),
       "events":cols(("event_id","time","event_type","direction","price","detail","data_status"),events),
       "performance":cols(("event_id","execution_stock_code","execution_direction","trade_price","return_1m","return_3m","return_5m","return_10m","return_20m","return_30m","mfe","mae","data_status"),perf),
-      "cycles":cols(("execution_stock_code","direction","entry_time","entry_price","exit_time","exit_price","gross_profit","trading_cost","net_profit","return_rate","holding_seconds","exit_type","data_status"),cycles)}
+      "cycles":cols(("cycle_id","execution_stock_code","direction","entry_time","entry_price","exit_time","exit_price","gross_profit","trading_cost","net_profit","return_rate","holding_seconds","exit_type","data_status"),cycles)}
+
+
+def performance_payload(pool, run_id, group_by="all", target="000660"):
+    """Aggregate stored cycles only; this never recalculates strategy decisions."""
+    UUID(str(run_id))
+    if group_by not in {"trade","day","month","year","all"}:
+        return {"status":"ERROR","message":"group_by 값이 올바르지 않습니다.","items":[]}
+    if target not in {"000660","0193T0","0197X0"}:
+        return {"status":"ERROR","message":"target 값이 올바르지 않습니다.","items":[]}
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT c.cycle_id,c.trading_date,c.trade_stock_code,c.direction,c.entry_time,c.entry_price,
+            c.exit_time,c.exit_price,c.exit_type,c.holding_seconds,c.gross_realized_profit,c.total_trading_cost,
+            c.realized_profit,c.invested_return_rate,
+            (SELECT p.mfe FROM research_signal_event e JOIN research_video_event_performance p ON p.event_id=e.event_id
+              WHERE e.run_id=c.run_id AND e.signal_time=c.entry_time AND e.signal_type IN ('LONG_ENTRY','SHORT_ENTRY')
+                AND p.execution_stock_code=c.trade_stock_code ORDER BY e.event_id LIMIT 1),
+            (SELECT p.mae FROM research_signal_event e JOIN research_video_event_performance p ON p.event_id=e.event_id
+              WHERE e.run_id=c.run_id AND e.signal_time=c.entry_time AND e.signal_type IN ('LONG_ENTRY','SHORT_ENTRY')
+                AND p.execution_stock_code=c.trade_stock_code ORDER BY e.event_id LIMIT 1)
+          FROM research_trade_cycle c WHERE c.run_id=%s AND c.trade_stock_code=%s AND c.exit_time IS NOT NULL
+          ORDER BY c.entry_time,c.cycle_id""",(run_id,target))
+        names=("cycle_id","trading_date","execution_stock_code","direction","entry_time","entry_price","exit_time",
+          "exit_price","exit_type","holding_seconds","gross_profit","trading_cost","net_profit","return_rate","mfe","mae")
+        trades=[dict(zip(names,row)) for row in cur.fetchall()]
+    groups=defaultdict(list)
+    for row in trades:
+        day=row["trading_date"]
+        key=(str(row["cycle_id"]) if group_by=="trade" else str(day) if group_by=="day" else
+             day.strftime("%Y-%m") if group_by=="month" else day.strftime("%Y") if group_by=="year" else "전체")
+        groups[key].append(row)
+    items=[]; cumulative=Decimal("0")
+    for key,rows in groups.items():
+        net=[Decimal(row["net_profit"] or 0) for row in rows]; gross=sum((Decimal(row["gross_profit"] or 0) for row in rows),Decimal("0")); costs=sum((Decimal(row["trading_cost"] or 0) for row in rows),Decimal("0")); total=sum(net,Decimal("0")); cumulative+=total
+        equity=Decimal("0"); peak=Decimal("0"); max_drawdown=Decimal("0")
+        for value in net:
+            equity+=value; peak=max(peak,equity); max_drawdown=min(max_drawdown,equity-peak)
+        invested=sum((Decimal(row["entry_price"] or 0) for row in rows),Decimal("0"))
+        mfes=[Decimal(row["mfe"]) for row in rows if row["mfe"] is not None]; maes=[Decimal(row["mae"]) for row in rows if row["mae"] is not None]
+        item={"period":key,"trade_count":len(rows),"win_count":sum(v>0 for v in net),"loss_count":sum(v<0 for v in net),"flat_count":sum(v==0 for v in net),
+          "win_rate":Decimal(sum(v>0 for v in net))/len(rows) if rows else None,"gross_profit":gross,"trading_cost":costs,"net_profit":total,
+          "return_rate":sum((Decimal(row["return_rate"] or 0) for row in rows),Decimal("0")),"avg_mfe":sum(mfes,Decimal("0"))/len(mfes) if mfes else None,
+          "avg_mae":sum(maes,Decimal("0"))/len(maes) if maes else None,"max_loss":min(net) if net else None,"max_drawdown":max_drawdown,
+          "cumulative_net_profit":cumulative,"cumulative_return_rate":sum((Decimal(row["return_rate"] or 0) for row in trades[:trades.index(rows[-1])+1]),Decimal("0")) if rows else None}
+        if group_by=="trade": item.update(rows[0])
+        items.append(item)
+    return {"status":"OK","run_id":run_id,"group_by":group_by,"target":target,"items":items}
 
 
 def compare_payload(pool):
@@ -60,7 +108,7 @@ def compare_payload(pool):
           WITH targets(code) AS (VALUES ('000660'),('0193T0'),('0197X0')),
           video_runs AS (
             SELECT run_id,created_at,status,initial_capital,parameters
-            FROM research_run WHERE parameters->>'strategy_family'='VIDEO_STRATEGY'),
+            FROM research_run WHERE parameters->>'strategy_family'='VIDEO_STRATEGY' AND status='COMPLETED'),
           event_stats AS (
             SELECT e.run_id,p.execution_stock_code,count(*) event_count,
               count(*) FILTER(WHERE p.data_status='NORMAL') normal_count,
