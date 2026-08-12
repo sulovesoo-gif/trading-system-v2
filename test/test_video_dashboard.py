@@ -59,9 +59,16 @@ class VideoDashboardTest(unittest.TestCase):
 
     def test_replay_units_and_performance_links_exist(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
-        for label in ("일별 Replay", "Cycle Replay", "이전 거래일", "다음 거래일", "Debug 이벤트", "집계 단위", "최대 낙폭"):
+        for label in ("일별 Replay", "Cycle Replay", "이전 거래일", "다음 거래일", "내부 판단 이벤트 표시", "집계 단위", "최대 낙폭"):
             self.assertIn(label, page)
         self.assertIn("performanceReplay", page)
+
+    def test_broker_chart_navigation_contract(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        for value in ("30", "60", "90", "120", "300", "600"):
+            self.assertIn(f">{value}</option>", page)
+        for contract in ("navigator", "moveCrosshair", "installDrag", "entryJump", "exitJump", "전체 로드", "현재 viewport"):
+            self.assertIn(contract, page)
 
 
 if __name__ == "__main__":
