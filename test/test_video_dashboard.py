@@ -45,7 +45,7 @@ class VideoDashboardTest(unittest.TestCase):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
         for label in ("실행 결과 선택", "실행 설명", "1분봉 캔들 및 이벤트", "선택 캔들·이벤트 판단 근거", "실행 전체 성과", "실행안 / 조건값 비교", "가격 보간"):
             self.assertIn(label, page)
-        for variant in ("구조 조건 제외", "캔들 몸통 조건 제외", "거래량 조건 제외", "꼬리 조건 제외"):
+        for variant in ("구조 조건 제외형", "몸통 조건 제외형", "거래량 조건 제외형", "꼬리 경고 제외형"):
             self.assertIn(variant, page)
 
     def test_performance_groups_stored_cycles_without_replay(self):
@@ -72,17 +72,27 @@ class VideoDashboardTest(unittest.TestCase):
 
     def test_human_validation_sections_and_derived_structure_exist(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
-        for label in ("선택 거래", "동일 신호 실행상품 비교", "조건 충족 판단", "Pivot 발생", "confirmed_time 이전", "확정규칙", "설정값", "비교시험"):
+        for label in ("선택 거래", "동일 신호 실행상품 비교", "진입 조건 판단", "Pivot 발생", "confirmed_time 이전", "확정 규칙", "설정값", "비교 시험"):
             self.assertIn(label, page)
-        for contract in ("structureLabels", "renderSelectedTrade", "renderProjection", "Signal Source: 000660"):
+        for contract in ("structureLabels", "renderSelectedTrade", "renderProjection", "신호 원천: SK하이닉스(000660)"):
             self.assertIn(contract, page)
 
     def test_sma_path_restarts_after_null_warmup_and_markers_are_human_readable(self):
         page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
         for contract in ("let maStarted=false", "const command=maStarted?'L':'M'", "관련 이벤트 ${items.length}건"):
             self.assertIn(contract, page)
-        for label in ("고점", "저점", "고↑", "고↓", "저↑", "저↓"):
+        for label in ("고점", "저점", "고점↑", "고점↓", "저점↑", "저점↓"):
             self.assertIn(label, page)
+
+    def test_trade_audit_is_decision_first_and_fully_korean(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        for label in ("필수조건", "선택조건", "현재 실행 규칙 판단", "영상 원형 검토",
+                      "청산 조건 판단", "진입 → 보유 → 경고 → 청산", "최대 유리 변동",
+                      "최대 불리 변동", "이벤트 상세 / 내부 디버그"):
+            self.assertIn(label, page)
+        for contract in ("importantStructures", "진입 판단 직전", "tradeFlow", "exitJudgment",
+                         "실제 청산 손익", "가격 누락 · 보간 없음"):
+            self.assertIn(contract, page)
 
 
 if __name__ == "__main__":
