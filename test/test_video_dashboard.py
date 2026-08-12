@@ -70,6 +70,13 @@ class VideoDashboardTest(unittest.TestCase):
         for contract in ("navigator", "moveCrosshair", "installDrag", "entryJump", "exitJump", "전체 로드", "현재 viewport"):
             self.assertIn(contract, page)
 
+    def test_human_validation_sections_and_derived_structure_exist(self):
+        page = (Path(__file__).parents[1] / "reports/multi-ma/research-video-strategy.html").read_text(encoding="utf-8")
+        for label in ("선택 Trade Cycle", "동일 신호 실행상품 Projection", "PASS / FAIL 판단", "Pivot 발생", "confirmed_time 이전", "FIXED", "PARAM", "TEST"):
+            self.assertIn(label, page)
+        for contract in ("structureLabels", "renderSelectedTrade", "renderProjection", "Signal Source: 000660"):
+            self.assertIn(contract, page)
+
 
 if __name__ == "__main__":
     unittest.main()
