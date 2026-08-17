@@ -36,6 +36,10 @@ class RawCollectionRecord:
     stock_code: str
     trading_venue: str
     record: Mapping[str, object]
+    scheduled_at: datetime
+    requested_at: datetime
+    response_received_at: datetime
+    canonical_ready_at: datetime
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,8 @@ class RawCollectionFailure:
     stock_code: str
     trading_venue: str
     error_type: str
+    scheduled_at: datetime
+    requested_at: datetime | None = None
 
 
 @dataclass
@@ -72,6 +78,7 @@ class RawCollectorRuntime:
         program_collector: ProgramCollector,
         execution_collector: StockExecutionCollector,
         logger: Callable[[str], None] | None = None,
+        failure_injector: Callable[[RawTable, str, str], None] | None = None,
     ) -> None:
         self.codes = codes
         self.raw_ingestion = raw_ingestion
@@ -79,6 +86,7 @@ class RawCollectorRuntime:
         self.program_collector = program_collector
         self.execution_collector = execution_collector
         self.log = logger or (lambda _message: None)
+        self.failure_injector = failure_injector
 
     def scheduled(self, now: datetime) -> bool:
         """Return whether the legacy runner would dispatch this exact second."""
@@ -121,42 +129,77 @@ class RawCollectorRuntime:
             self._collect_minute_or_snapshot(result, stock.stock_code, venue, now, store_records)
         return result
 
-    def _append(self, result: RawCollectionTick, table: RawTable, stock_code: str, venue: str, rows, store_records: bool) -> None:
+    def _append(
+        self,
+        result: RawCollectionTick,
+        table: RawTable,
+        stock_code: str,
+        venue: str,
+        rows,
+        store_records: bool,
+        *,
+        scheduled_at: datetime,
+        requested_at: datetime,
+        response_received_at: datetime,
+    ) -> None:
         normalized = list(rows) if isinstance(rows, list) else [rows]
+        canonical_ready_at = datetime.now(tz=scheduled_at.tzinfo)
         for row in normalized:
-            result.records.append(RawCollectionRecord(table, stock_code, venue, row))
+            result.records.append(RawCollectionRecord(
+                table, stock_code, venue, row, scheduled_at, requested_at,
+                response_received_at, canonical_ready_at,
+            ))
         if store_records and normalized:
             self.raw_ingestion.store(table, normalized)
 
-    def _failure(self, result: RawCollectionTick, table: RawTable, stock_code: str, venue: str, error: Exception) -> None:
-        result.failures.append(RawCollectionFailure(table, stock_code, venue, type(error).__name__))
+    def _failure(self, result: RawCollectionTick, table: RawTable, stock_code: str, venue: str, error: Exception, *, scheduled_at: datetime, requested_at: datetime | None = None) -> None:
+        result.failures.append(RawCollectionFailure(table, stock_code, venue, type(error).__name__, scheduled_at, requested_at))
         self.log(f"KIS {table.value} collection failed stock={stock_code} error={type(error).__name__}")
 
     def _collect_program(self, result: RawCollectionTick, stock_code: str, venue: str, store_records: bool) -> None:
+        scheduled_at = result.observed_at
+        requested_at = datetime.now(tz=scheduled_at.tzinfo)
         try:
-            self._append(result, RawTable.PROGRAM, stock_code, venue,
-                         self.program_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue), store_records)
+            self._inject(RawTable.PROGRAM, stock_code, venue)
+            rows = self.program_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue)
+            self._append(result, RawTable.PROGRAM, stock_code, venue, rows, store_records,
+                         scheduled_at=scheduled_at, requested_at=requested_at,
+                         response_received_at=datetime.now(tz=scheduled_at.tzinfo))
         except Exception as error:
-            self._failure(result, RawTable.PROGRAM, stock_code, venue, error)
+            self._failure(result, RawTable.PROGRAM, stock_code, venue, error, scheduled_at=scheduled_at, requested_at=requested_at)
 
     def _collect_execution(self, result: RawCollectionTick, stock_code: str, venue: str, store_records: bool) -> None:
+        scheduled_at = result.observed_at
+        requested_at = datetime.now(tz=scheduled_at.tzinfo)
         try:
-            self._append(result, RawTable.STOCK_EXECUTION, stock_code, venue,
-                         self.execution_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue, collect_cycle="5SEC"), store_records)
+            self._inject(RawTable.STOCK_EXECUTION, stock_code, venue)
+            rows = self.execution_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue, collect_cycle="5SEC")
+            self._append(result, RawTable.STOCK_EXECUTION, stock_code, venue, rows, store_records,
+                         scheduled_at=scheduled_at, requested_at=requested_at,
+                         response_received_at=datetime.now(tz=scheduled_at.tzinfo))
         except Exception as error:
-            self._failure(result, RawTable.STOCK_EXECUTION, stock_code, venue, error)
+            self._failure(result, RawTable.STOCK_EXECUTION, stock_code, venue, error, scheduled_at=scheduled_at, requested_at=requested_at)
 
     def _collect_minute_or_snapshot(self, result: RawCollectionTick, stock_code: str, venue: str, now: datetime, store_records: bool) -> None:
+        requested_at = datetime.now(tz=now.tzinfo)
         try:
+            self._inject(RawTable.STOCK_MINUTE, stock_code, venue)
             rows = self.minute_collector.collect(stock_code=stock_code, market_code="KOSPI", trading_venue=venue, input_hour=now.strftime("%H%M%S"))
+            response_received_at = datetime.now(tz=now.tzinfo)
         except Exception as error:
-            self._failure(result, RawTable.STOCK_MINUTE, stock_code, venue, error)
+            self._failure(result, RawTable.STOCK_MINUTE, stock_code, venue, error, scheduled_at=now, requested_at=requested_at)
             return
         if now.second == 1:
             row = completed_minute_row(rows, now)
             if row is not None:
-                self._append(result, RawTable.STOCK_MINUTE, stock_code, venue, row, store_records)
+                self._append(result, RawTable.STOCK_MINUTE, stock_code, venue, row, store_records,
+                             scheduled_at=now, requested_at=requested_at, response_received_at=response_received_at)
             return
         snapshot = StockMinuteSnapshotService.build_snapshot(collector_rows=rows, observed_at=now)
         if snapshot is not None:
-            self._append(result, RawTable.STOCK_MINUTE_SNAPSHOT, stock_code, venue, snapshot, store_records)
+            self._append(result, RawTable.STOCK_MINUTE_SNAPSHOT, stock_code, venue, snapshot, store_records,
+                         scheduled_at=now, requested_at=requested_at, response_received_at=response_received_at)
+
+    def _inject(self, table: RawTable, stock_code: str, venue: str) -> None:
+        if self.failure_injector is not None:
+            self.failure_injector(table, stock_code, venue)

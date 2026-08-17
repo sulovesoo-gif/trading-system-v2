@@ -112,6 +112,21 @@ class RawCollectorRuntimeTest(unittest.TestCase):
         self.assertEqual([item.stock_code for item in tick.records], ["005930"])
         self.assertEqual([(item.table, item.stock_code) for item in tick.failures], [(RawTable.STOCK_MINUTE, "000660")])
 
+    def test_shadow_only_fault_injection_isolated_and_records_timing(self):
+        def injected(table, stock_code, _venue):
+            if table is RawTable.STOCK_MINUTE and stock_code == "000660":
+                raise RuntimeError("SHADOW_FAULT_SIMULATION")
+
+        runtime = self.runtime()
+        runtime.failure_injector = injected
+        tick = runtime.collect_tick(now=datetime(2026, 8, 17, 10, 1, 1), store_records=False)
+        self.assertEqual([item.stock_code for item in tick.records], ["005930"])
+        self.assertEqual([(item.table, item.stock_code) for item in tick.failures], [(RawTable.STOCK_MINUTE, "000660")])
+        record = tick.records[0]
+        self.assertLessEqual(record.scheduled_at, record.requested_at)
+        self.assertLessEqual(record.requested_at, record.response_received_at)
+        self.assertLessEqual(record.response_received_at, record.canonical_ready_at)
+
     def test_same_session_gap_is_reported_but_session_boundary_is_not(self):
         self.assertEqual(unexpected_minute_gaps([datetime(2026, 8, 17, 8, 48), datetime(2026, 8, 17, 8, 49), datetime(2026, 8, 17, 9, 0)]), [])
         self.assertEqual(unexpected_minute_gaps([datetime(2026, 8, 17, 9, 0), datetime(2026, 8, 17, 9, 2)]), [(datetime(2026, 8, 17, 9, 0), datetime(2026, 8, 17, 9, 2))])

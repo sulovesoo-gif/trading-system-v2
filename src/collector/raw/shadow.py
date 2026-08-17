@@ -40,6 +40,7 @@ class ShadowComparison:
     matched: bool
     expected_found: bool
     mismatched_columns: tuple[str, ...]
+    existing_collected_at: datetime | None = None
 
 
 class RawShadowComparator:
@@ -57,13 +58,13 @@ class RawShadowComparator:
             cursor.execute(f"SELECT {columns} FROM {table.value} WHERE {where}", tuple(key[column] for column in spec.primary_key))
             row = cursor.fetchone()
         if row is None:
-            return ShadowComparison(table, key, False, False, tuple())
+            return ShadowComparison(table, key, False, False, tuple(), None)
         expected = dict(zip(spec.columns, row))
         mismatched = tuple(
             column for column in spec.columns
             if column not in IGNORED_COLUMNS and not semantic_equal(expected[column], actual[column])
         )
-        return ShadowComparison(table, key, not mismatched, True, mismatched)
+        return ShadowComparison(table, key, not mismatched, True, mismatched, expected.get("collected_at"))
 
 
 def _session(value: datetime) -> str | None:
