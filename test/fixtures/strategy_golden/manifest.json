@@ -1,0 +1,16 @@
+{
+  "artifact_type": "TRADING_SYSTEM_V2_LIVE_STRATEGY_GOLDEN",
+  "golden_version": "1.0.0",
+  "source": "strategy_golden_final (canonical DB export supplied 2026-08-17)",
+  "row_count": 33,
+  "strategy_counts": {
+    "SAMSUNG_S1_LONG_PULLBACK_WITHIN30_EOD": 6,
+    "SAMSUNG_S2_SHORT_FIXED30": 7,
+    "HYNIX_S3_SHORT_3BAR": 10,
+    "HYNIX_S3_SHORT_5BAR": 10
+  },
+  "files": {
+    "strategy_golden_final_v1.0.0.csv": "f98e7372a8337c9e5d3792b968b16055474e8163e881ec339f22f21ece8c40d0",
+    "strategy_golden_final_v1.0.0.json": "4f115e815b232c5cf3bc07526f1638d3648502e7d92df7306d4224e9b829a3ac"
+  }
+}
