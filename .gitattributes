@@ -1,0 +1,2 @@
+/test/fixtures/strategy_golden/*.csv -text
+/test/fixtures/strategy_golden/*.json -text
