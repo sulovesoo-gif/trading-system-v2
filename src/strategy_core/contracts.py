@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
 
-class DecisionType(StrEnum):
+class DecisionType(str, Enum):
     ENTRY = "ENTRY"
     EXIT = "EXIT"
     HOLD = "HOLD"
