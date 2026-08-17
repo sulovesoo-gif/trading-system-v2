@@ -68,11 +68,18 @@ def main() -> int:
         runtime, comparator = build_runtime(pool), RawShadowComparator(pool)
         deadline = time.monotonic() + args.duration
         reports = []
+        dispatched_seconds = set()
         while True:
-            report = shadow_once(runtime, comparator, now=kst_now(), write=args.write)
-            reports.append(report)
-            print(json.dumps(report, ensure_ascii=False, default=str))
-            if args.once or time.monotonic() >= deadline:
+            now = kst_now()
+            second_key = now.replace(microsecond=0)
+            if args.once or (runtime.scheduled(now) and second_key not in dispatched_seconds):
+                report = shadow_once(runtime, comparator, now=now, write=args.write)
+                reports.append(report)
+                dispatched_seconds.add(second_key)
+                print(json.dumps(report, ensure_ascii=False, default=str))
+                if args.once:
+                    break
+            if args.duration <= 0 or time.monotonic() >= deadline:
                 break
             time.sleep(0.2)
         return 0 if all(not item["failures"] for item in reports) else 1
