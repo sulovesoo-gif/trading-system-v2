@@ -69,10 +69,15 @@ def main() -> int:
         deadline = time.monotonic() + args.duration
         reports = []
         dispatched_seconds = set()
+        inspected_seconds = set()
         while True:
             now = kst_now()
             second_key = now.replace(microsecond=0)
-            if args.once or (runtime.scheduled(now) and second_key not in dispatched_seconds):
+            scheduled = args.once
+            if not args.once and second_key not in inspected_seconds:
+                scheduled = runtime.scheduled(now)
+                inspected_seconds.add(second_key)
+            if args.once or (scheduled and second_key not in dispatched_seconds):
                 report = shadow_once(runtime, comparator, now=now, write=args.write)
                 reports.append(report)
                 dispatched_seconds.add(second_key)
