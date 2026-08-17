@@ -14,4 +14,5 @@ class LiveOrderSafetyGate:
   if is_exit and not has_real_position:return SafetyResult(False,False,'POSITION_REQUIRED')
   if not is_exit and available<=0:return SafetyResult(False,False,'CAPITAL_INSUFFICIENT')
   if policy.spendable_pool<policy.allocated_strategy_pool:return SafetyResult(False,False,'PROTECTED_RESERVE_BLOCKED')
-  return SafetyResult(True,global_trade_yn=='Y','PLANNING_ALLOWED',{'broker_send_eligible':global_trade_yn=='Y'})
+  if global_trade_yn!='Y':return SafetyResult(True,False,'GLOBAL_TRADE_DISABLED',{'broker_send_eligible':False,'ready_for_broker_allowed':False})
+  return SafetyResult(True,True,'PLANNING_ALLOWED',{'broker_send_eligible':True,'ready_for_broker_allowed':False})

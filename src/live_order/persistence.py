@@ -3,6 +3,7 @@ from __future__ import annotations
 from .contracts import CapitalAccount,CapitalEvent,CapitalEventType,OrderRequest
 class InMemoryOrderPlanningStore:
  def __init__(self): self.accounts={};self.ledger=[];self.requests={};self.audits=[]
+ def audit(self,event,detail):self.audits.append((event,detail))
  def ensure_account(self,instance,initial):
   return self.accounts.setdefault(instance,CapitalAccount(instance,initial))
  def account(self,instance): return self.accounts[instance]
