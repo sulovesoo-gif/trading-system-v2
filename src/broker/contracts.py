@@ -5,7 +5,7 @@ from enum import Enum
 from hashlib import sha256
 from typing import Any,Mapping
 from uuid import uuid5,NAMESPACE_URL
-class BrokerMode(str,Enum): NO_SEND='NO_SEND';LIVE_SEND='LIVE_SEND'
+class BrokerMode(str,Enum): NO_SEND='NO_SEND';LIVE_SEND='LIVE_SEND';PHASE_7C_SMOKE_SEND='PHASE_7C_SMOKE_SEND'
 class BrokerOrderStatus(str,Enum): PREPARED='PREPARED';NO_SEND_VALIDATED='NO_SEND_VALIDATED';SUBMITTING='SUBMITTING';ACCEPTED='ACCEPTED';REJECTED='REJECTED';PARTIALLY_FILLED='PARTIALLY_FILLED';FILLED='FILLED';CANCEL_REQUESTED='CANCEL_REQUESTED';CANCELLED='CANCELLED';UNKNOWN_BROKER_STATE='UNKNOWN_BROKER_STATE'
 def client_key(request_id:str)->str:return sha256(('broker|'+request_id).encode()).hexdigest()
 @dataclass(frozen=True)
