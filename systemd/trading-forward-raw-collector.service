@@ -1,0 +1,18 @@
+[Unit]
+Description=Trading V2 independent completed-minute RAW collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/trading-system-v2
+EnvironmentFile=/home/ubuntu/projects/trading-system-v2/.env
+Environment=PYTHONPATH=/home/ubuntu/projects/trading-system-v2
+ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/runtime/run_completed_minute_raw_collector.py --interval-seconds 60
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
