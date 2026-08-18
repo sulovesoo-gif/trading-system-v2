@@ -13,7 +13,7 @@ def main():
   q.execute("SELECT count(*) FROM forward_candidate WHERE active_yn='Y'");active=q.fetchone()[0]
   q.execute("SELECT count(*) FROM forward_candidate");total=q.fetchone()[0]
   q.execute("SELECT COALESCE(sum(quantity*average_cost),0) FROM execution_logical_position WHERE ownership_type='FORWARD'");gross=q.fetchone()[0]
-  q.execute("SELECT stock_code,unattributed_quantity,status FROM execution_reconciliation_audit ORDER BY created_at DESC LIMIT 20");recon=q.fetchall()
+  q.execute("SELECT stock_code,unattributed_quantity,status FROM execution_reconciliation_audit ORDER BY checked_at DESC LIMIT 20");recon=q.fetchall()
   q.execute("SELECT max(bar_time) FROM raw_stock_minute WHERE collect_cycle='1MIN'");latest=q.fetchone()[0]
   q.execute("SELECT attr1 FROM common_code WHERE group_cd='SYSTEM_SWITCH' AND code='GLOBAL_TRADE_YN'");global_trade=q.fetchone()[0]
   q.execute("SELECT count(*) FROM live_smoke_approval");approval=q.fetchone()[0]
