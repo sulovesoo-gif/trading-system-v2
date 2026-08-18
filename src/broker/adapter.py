@@ -3,7 +3,7 @@ from __future__ import annotations
 from .contracts import BrokerMode,BrokerOrder,BrokerOrderStatus,client_key
 from src.live_order.contracts import OrderRequest
 class KisBrokerAdapter:
- def __init__(self,*,mode:BrokerMode,account:str,whitelist:set[str]):self.mode,self.account,self.whitelist=mode,account,set(whitelist);self.network_send_calls=0
+ def __init__(self,*,mode:BrokerMode,account:str,whitelist:set[str],phase_7c_transport=None):self.mode,self.account,self.whitelist=mode,account,set(whitelist);self.phase_7c_transport=phase_7c_transport;self.network_send_calls=0
  def prepare(self,request:OrderRequest):
   if request.execution_stock_code not in self.whitelist:raise ValueError('invalid product')
   if not request.requested_quantity or request.requested_quantity<=0:raise ValueError('invalid quantity')
@@ -12,5 +12,9 @@ class KisBrokerAdapter:
   return BrokerOrder(request.order_request_id,request.order_request_id,request.strategy_instance_id,request.execution_stock_code,request.side,request.requested_quantity,payload['client_order_key'],status,payload)
  def submit(self,order):
   if self.mode==BrokerMode.NO_SEND:raise RuntimeError('NO_SEND: network submit forbidden')
+  if self.mode==BrokerMode.PHASE_7C_SMOKE_SEND:
+   if self.phase_7c_transport is None:raise RuntimeError('PHASE_7C_TRANSPORT_REQUIRED')
+   self.network_send_calls+=1
+   return self.phase_7c_transport.submit_once(order)
   self.network_send_calls+=1;raise RuntimeError('LIVE_SEND disabled in phase 7B')
  def parse_response(self,raw):return BrokerOrderStatus.ACCEPTED if raw.get('rt_cd')=='0' else BrokerOrderStatus.REJECTED
