@@ -158,6 +158,55 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
         factory.assert_called_once()
         self.assertEqual(transport.send_calls, 1)
 
+    def test_approval_order_scope_cannot_be_overridden_by_runtime_config(self):
+        approval = self.approved()
+        runtime, store, transport, adapter = self.runtime(approval=approval)
+        for config in (self.config(side="SELL"), self.config(quantity=2)):
+            _, reason = runtime.submit_once(config=config, approval_id=approval.approval_id, at=self.at, state=self.state())
+            self.assertEqual(reason, "RESOLVED_CONFIG_INVALID")
+            self.assertEqual(store.get(approval.approval_id).status, ApprovalStatus.APPROVED_FOR_ONE_SUBMIT)
+        self.assertEqual(transport.send_calls, 0)
+        self.assertEqual(adapter.network_send_calls, 0)
+
+    def test_approval_side_or_quantity_tampering_blocks_before_cas(self):
+        for changes in ({"side": "SELL"}, {"quantity": 2}):
+            approval = ActualApproval(
+                "00000000-0000-0000-0000-000000000007", "LIVE_STRATEGY_2", "0193W0",
+                self.at.date(), time(10), time(10, 10), ApprovalStatus.APPROVED_FOR_ONE_SUBMIT,
+                side=changes.get("side", "BUY"), quantity=changes.get("quantity", 1),
+            )
+            runtime, store, transport, adapter = self.runtime(approval=approval)
+            _, reason = runtime.submit_once(config=self.config(), approval_id=approval.approval_id, at=self.at, state=self.state())
+            self.assertEqual(reason, "APPROVAL_CONFIG_MISMATCH")
+            self.assertEqual(store.get(approval.approval_id).status, ApprovalStatus.APPROVED_FOR_ONE_SUBMIT)
+            self.assertEqual(transport.send_calls, 0)
+            self.assertEqual(adapter.network_send_calls, 0)
+
+    def test_approval_creation_validates_scope_and_deterministic_key(self):
+        store = InMemorySmokeApprovalStore()
+        valid = self.approved()
+        store.create_approved(approval=valid, config=self.config())
+        self.assertEqual(store.get(valid.approval_id), valid)
+        invalid = ActualApproval(
+            "00000000-0000-0000-0000-000000000008", "LIVE_STRATEGY_2", "0193W0",
+            self.at.date(), time(10), time(10, 10), ApprovalStatus.APPROVED_FOR_ONE_SUBMIT,
+            broker_idempotency_key="not-derived",
+        )
+        with self.assertRaises(ValueError):
+            store.create_approved(approval=invalid, config=self.config())
+
+    def test_cas_scope_mismatch_cannot_consume_or_issue_context(self):
+        approval = self.approved()
+        store = InMemorySmokeApprovalStore()
+        store.save(approval)
+        self.assertIsNone(store.consume_immediately_before_send(
+            approval.approval_id, approval.broker_idempotency_key, side="SELL", quantity=1,
+        ))
+        self.assertIsNone(store.consume_immediately_before_send(
+            approval.approval_id, approval.broker_idempotency_key, side="BUY", quantity=2,
+        ))
+        self.assertEqual(store.get(approval.approval_id).status, ApprovalStatus.APPROVED_FOR_ONE_SUBMIT)
+
     def test_runtime_module_has_no_kis_or_network_client_import(self):
         with open("src/smoke_send/runtime.py", encoding="utf-8") as file:
             source = file.read().lower()

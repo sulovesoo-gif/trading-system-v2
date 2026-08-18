@@ -35,6 +35,8 @@ class ActualApproval:
     status: ApprovalStatus = ApprovalStatus.NOT_APPROVED
     broker_idempotency_key: str = ""
     broker_state: str = "NOT_SENT"
+    side: str = "BUY"
+    quantity: int = 1
 
     def __post_init__(self):
         if not self.broker_idempotency_key:
@@ -62,11 +64,18 @@ class InMemorySmokeApprovalStore:
         with self._lock:
             self.approvals[approval.approval_id] = approval
 
+    def create_approved(self, *, approval: ActualApproval, config: ResolvedSmokeConfig) -> None:
+        validate_approval_scope(approval=approval, config=config)
+        with self._lock:
+            if approval.approval_id in self.approvals or approval.broker_idempotency_key in self.used_idempotency_keys:
+                raise ValueError("approval already exists")
+            self.approvals[approval.approval_id] = approval
+
     def get(self, approval_id: str) -> ActualApproval | None:
         with self._lock:
             return self.approvals.get(approval_id)
 
-    def consume_immediately_before_send(self, approval_id: str, key: str) -> ActualApproval | None:
+    def consume_immediately_before_send(self, approval_id: str, key: str, *, side: str, quantity: int) -> ActualApproval | None:
         """Atomic compare-and-swap: validation is done before this call."""
         with self._lock:
             approval = self.approvals.get(approval_id)
@@ -74,6 +83,8 @@ class InMemorySmokeApprovalStore:
                 approval is None
                 or approval.status is not ApprovalStatus.APPROVED_FOR_ONE_SUBMIT
                 or approval.broker_idempotency_key != key
+                or approval.side != side
+                or approval.quantity != quantity
                 or key in self.used_idempotency_keys
             ):
                 return None
@@ -105,14 +116,32 @@ class PostgresSmokeApprovalStore:
             cursor.execute(
                 """SELECT approval_id::text, strategy_instance_id, active_stock_code,
                           allowed_date, allowed_time_from, allowed_time_to, status,
-                          broker_idempotency_key, broker_state
+                          broker_idempotency_key, broker_state, side, quantity
                    FROM live_smoke_approval WHERE approval_id=%s""",
                 (approval_id,),
             )
             row = cursor.fetchone()
         return None if row is None else self._row(row)
 
-    def consume_immediately_before_send(self, approval_id: str, key: str) -> ActualApproval | None:
+    def create_approved(self, *, approval: ActualApproval, config: ResolvedSmokeConfig) -> None:
+        """Future explicit approval path; never called by a dry-run or runtime."""
+        validate_approval_scope(approval=approval, config=config)
+        with self._connection_factory() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO live_smoke_approval
+                   (approval_id, phase, strategy_instance_id, active_stock_code,
+                    side, quantity, allowed_date, allowed_time_from, allowed_time_to,
+                    status, broker_idempotency_key)
+                   VALUES (%s, '7C-1', %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (approval.approval_id, approval.strategy_instance_id,
+                 approval.active_stock_code, approval.side, approval.quantity,
+                 approval.allowed_date, approval.allowed_time_from,
+                 approval.allowed_time_to, approval.status.value,
+                 approval.broker_idempotency_key),
+            )
+            connection.commit()
+
+    def consume_immediately_before_send(self, approval_id: str, key: str, *, side: str, quantity: int) -> ActualApproval | None:
         # One SQL compare-and-swap is the lock/transaction boundary immediately
         # before the adapter enters transport.
         with self._connection_factory() as connection, connection.cursor() as cursor:
@@ -122,11 +151,13 @@ class PostgresSmokeApprovalStore:
                    WHERE approval_id=%s
                      AND status='APPROVED_FOR_ONE_SUBMIT'
                      AND broker_idempotency_key=%s
+                     AND side=%s
+                     AND quantity=%s
                    RETURNING approval_id::text, strategy_instance_id,
                              active_stock_code, allowed_date, allowed_time_from,
                              allowed_time_to, status, broker_idempotency_key,
-                             broker_state""",
-                (approval_id, key),
+                             broker_state, side, quantity""",
+                (approval_id, key, side, quantity),
             )
             row = cursor.fetchone()
             if row is not None:
@@ -165,7 +196,7 @@ class PostgresSmokeApprovalStore:
             active_stock_code=str(row[2]), allowed_date=row[3],
             allowed_time_from=row[4], allowed_time_to=row[5],
             status=ApprovalStatus(str(row[6])), broker_idempotency_key=str(row[7]),
-            broker_state=str(row[8]),
+            broker_state=str(row[8]), side=str(row[9]), quantity=int(row[10]),
         )
 
 
@@ -210,7 +241,10 @@ class Phase7CSmokeRuntime:
             return None, reason
         assert approval is not None
         # This is the last operation before entering the adapter/transport.
-        consumed = self.approvals.consume_immediately_before_send(approval_id, approval.broker_idempotency_key)
+        consumed = self.approvals.consume_immediately_before_send(
+            approval_id, approval.broker_idempotency_key,
+            side=approval.side, quantity=approval.quantity,
+        )
         if consumed is None:
             return None, "APPROVAL_ALREADY_CONSUMED"
         order = self._broker_order(consumed)
@@ -238,16 +272,10 @@ class Phase7CSmokeRuntime:
             return "RESOLVED_CONFIG_INVALID"
         if approval is None or approval.status is not ApprovalStatus.APPROVED_FOR_ONE_SUBMIT:
             return "ACTUAL_APPROVAL_REQUIRED"
-        if (
-            approval.active_stock_code != config.active_stock_code
-            or approval.strategy_instance_id != config.strategy_instance_id
-            or approval.allowed_date != config.allowed_date
-            or approval.allowed_time_from != config.allowed_time_from
-            or approval.allowed_time_to != config.allowed_time_to
-        ):
+        try:
+            validate_approval_scope(approval=approval, config=config)
+        except ValueError:
             return "APPROVAL_CONFIG_MISMATCH"
-        if config.side != "BUY" or config.quantity != 1:
-            return "PHASE_SIDE_OR_QTY_BLOCKED"
         if at.date() != config.allowed_date or not config.allowed_time_from <= at.time() <= config.allowed_time_to:
             return "TIME_WINDOW_BLOCKED"
         if state.today_actual_submit_count != 0 or state.open_order_count != 0 or state.unknown_order_count != 0:
@@ -261,8 +289,8 @@ class Phase7CSmokeRuntime:
         broker_order_id = str(uuid5(NAMESPACE_URL, f"7c-broker-order|{approval.approval_id}"))
         payload = {
             "PDNO": approval.active_stock_code,
-            "ORD_QTY": "1",
-            "SLL_BUY_DVSN_CD": "02",
+            "ORD_QTY": str(approval.quantity),
+            "SLL_BUY_DVSN_CD": "02" if approval.side == "BUY" else "01",
             "phase": "7C-1",
             "idempotency_key": approval.broker_idempotency_key,
         }
@@ -271,9 +299,29 @@ class Phase7CSmokeRuntime:
             order_request_id=approval.approval_id,
             strategy_instance_id=approval.strategy_instance_id,
             execution_stock_code=approval.active_stock_code,
-            side="BUY",
-            quantity=1,
+            side=approval.side,
+            quantity=approval.quantity,
             client_order_key=approval.broker_idempotency_key,
             status=BrokerOrderStatus.SUBMITTING,
             payload=payload,
         )
+
+
+def validate_approval_scope(*, approval: ActualApproval, config: ResolvedSmokeConfig) -> None:
+    """Reject any approval/config mismatch before CAS can consume it."""
+    if approval.status is not ApprovalStatus.APPROVED_FOR_ONE_SUBMIT:
+        raise ValueError("approval must be approved for one submit")
+    if approval.broker_idempotency_key != broker_idempotency_key(approval.approval_id):
+        raise ValueError("approval idempotency key mismatch")
+    if (
+        approval.active_stock_code != config.active_stock_code
+        or approval.strategy_instance_id != config.strategy_instance_id
+        or approval.allowed_date != config.allowed_date
+        or approval.allowed_time_from != config.allowed_time_from
+        or approval.allowed_time_to != config.allowed_time_to
+        or approval.side != config.side
+        or approval.quantity != config.quantity
+    ):
+        raise ValueError("approval scope does not match resolved config")
+    if approval.side != "BUY" or approval.quantity != 1:
+        raise ValueError("7C-1 approval must be BUY one share")
