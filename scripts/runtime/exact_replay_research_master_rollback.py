@@ -38,7 +38,10 @@ def main() -> int:
     import psycopg
     from psycopg_pool import ConnectionPool
 
-    parser = argparse.ArgumentParser(); parser.add_argument("trading_date", type=date.fromisoformat); args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("date_from", type=date.fromisoformat)
+    parser.add_argument("date_to", type=date.fromisoformat, nargs="?", help="inclusive; defaults to date_from")
+    args = parser.parse_args(); date_to = args.date_to or args.date_from
     load_dotenv(ROOT / ".env"); settings = DatabaseSettings.from_environment()
     pool = ConnectionPool(kwargs=settings.connection_kwargs(), min_size=1, max_size=1)
     try:
@@ -46,7 +49,7 @@ def main() -> int:
         with psycopg.connect(**settings.connection_kwargs()) as connection:
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute("CALL run_strategy_master_backtest(%s,%s,%s)", (args.trading_date, args.trading_date, 10_000_000))
+                    cursor.execute("CALL run_strategy_master_backtest(%s,%s,%s)", (args.date_from, date_to, 10_000_000))
                     cursor.execute("SELECT max(run_id) FROM research_backtest_run"); run_id = cursor.fetchone()[0]
                     cursor.execute("SELECT strategy_id,signal_time,entry_target_time FROM research_backtest_signal WHERE run_id=%s ORDER BY strategy_id,signal_time", (run_id,))
                     expected_entry = defaultdict(list)
@@ -56,17 +59,24 @@ def main() -> int:
                     for strategy_id, signal, entry, exit_time, reason in cursor.fetchall(): expected_exit[int(strategy_id)].append((_iso(signal), _iso(entry), _iso(exit_time), reason))
                     cache = {}; core = ResearchMasterCore(); mismatches = []; entries_checked = exits_checked = 0
                     for definition in definitions:
-                        source = _bars(cursor, cache, definition.signal_stock_code, args.trading_date)
-                        execution = _bars(cursor, cache, definition.execution_stock_code, args.trading_date)
-                        actual_entries = core.entries(definition, source)
-                        actual_entry = [(item.signal_time.isoformat(), _iso(item.target_time)) for item in actual_entries]
+                        cursor.execute("""SELECT DISTINCT bar_time::date FROM raw_stock_minute
+                                           WHERE stock_code=%s AND collect_cycle='1MIN' AND trading_venue='INTEGRATED'
+                                             AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time::date""",
+                                       (definition.signal_stock_code, args.date_from, date_to))
+                        dates = [row[0] for row in cursor.fetchall()]
+                        actual_entries = []
+                        for trading_date in dates:
+                            source = _bars(cursor, cache, definition.signal_stock_code, trading_date)
+                            execution = _bars(cursor, cache, definition.execution_stock_code, trading_date)
+                            actual_entries.extend((item, source, execution) for item in core.entries(definition, source))
+                        actual_entry = [(item.signal_time.isoformat(), _iso(item.target_time)) for item, _source, _execution in actual_entries]
                         expected = expected_entry[int(definition.strategy_id)]
                         entries_checked += 1
                         if actual_entry != expected:
                             mismatches.append({"kind": "ENTRY", "strategy_id": definition.strategy_id, "expected": expected, "actual": actual_entry})
                             continue
                         actual_exit = []
-                        for item in actual_entries:
+                        for item, source, execution in actual_entries:
                             result = core.exit(definition, item, source, execution)
                             if result and result.target_time:
                                 actual_exit.append((item.signal_time.isoformat(), _iso(item.target_time), _iso(result.target_time), result.exit_reason))
@@ -75,7 +85,7 @@ def main() -> int:
                             exits_checked += 1
                             if actual_exit != expected:
                                 mismatches.append({"kind": "EXIT", "strategy_id": definition.strategy_id, "expected": expected, "actual": actual_exit})
-                print(json.dumps({"date": args.trading_date.isoformat(), "run_id": run_id, "rows": len(definitions), "entries_checked": entries_checked, "exits_checked": exits_checked, "mismatch_count": len(mismatches), "mismatches": mismatches[:20]}, ensure_ascii=False, sort_keys=True))
+                print(json.dumps({"date_from": args.date_from.isoformat(), "date_to": date_to.isoformat(), "run_id": run_id, "rows": len(definitions), "entries_checked": entries_checked, "exits_checked": exits_checked, "mismatch_count": len(mismatches), "mismatches": mismatches[:20]}, ensure_ascii=False, sort_keys=True))
                 return 0 if not mismatches else 3
             finally:
                 connection.rollback()
