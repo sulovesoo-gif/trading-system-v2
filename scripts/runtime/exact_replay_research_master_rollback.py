@@ -19,15 +19,22 @@ from src.research_core.registry import PostgresResearchMasterRegistry
 from src.strategy_core.bars import CompletedBar
 
 
-def _bars(cursor, cache, stock_code: str, trading_date: date):
-    key = stock_code, trading_date
-    if key not in cache:
+def _load_bars(cursor, stock_codes, date_from: date, date_to: date):
+    """Preload each relevant instrument once; exact replay must not do 802×N queries."""
+    cache: dict[tuple[str, date], tuple[CompletedBar, ...]] = {}
+    dates: dict[str, list[date]] = {}
+    for stock_code in sorted(stock_codes):
         cursor.execute("""SELECT bar_time,open_price,high_price,low_price,close_price,volume
                             FROM raw_stock_minute
                            WHERE stock_code=%s AND collect_cycle='1MIN' AND trading_venue='INTEGRATED'
-                             AND bar_time::date=%s ORDER BY bar_time""", key)
-        cache[key] = tuple(CompletedBar(row[0], *(float(value) for value in row[1:])) for row in cursor.fetchall())
-    return cache[key]
+                             AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time""", (stock_code, date_from, date_to))
+        grouped = defaultdict(list)
+        for row in cursor.fetchall():
+            grouped[row[0].date()].append(CompletedBar(row[0], *(float(value) for value in row[1:])))
+        dates[stock_code] = sorted(grouped)
+        for trading_date, bars in grouped.items():
+            cache[stock_code, trading_date] = tuple(bars)
+    return cache, dates
 
 
 def _iso(value):
@@ -57,17 +64,15 @@ def main() -> int:
                     cursor.execute("SELECT strategy_id,signal_time,entry_time,exit_time,exit_reason FROM research_backtest_trade WHERE run_id=%s ORDER BY strategy_id,signal_time", (run_id,))
                     expected_exit = defaultdict(list)
                     for strategy_id, signal, entry, exit_time, reason in cursor.fetchall(): expected_exit[int(strategy_id)].append((_iso(signal), _iso(entry), _iso(exit_time), reason))
-                    cache = {}; core = ResearchMasterCore(); mismatches = []; entries_checked = exits_checked = 0
+                    codes = {definition.signal_stock_code for definition in definitions} | {definition.execution_stock_code for definition in definitions}
+                    cache, dates_by_stock = _load_bars(cursor, codes, args.date_from, date_to)
+                    core = ResearchMasterCore(); mismatches = []; entries_checked = exits_checked = 0
                     for definition in definitions:
-                        cursor.execute("""SELECT DISTINCT bar_time::date FROM raw_stock_minute
-                                           WHERE stock_code=%s AND collect_cycle='1MIN' AND trading_venue='INTEGRATED'
-                                             AND bar_time::date BETWEEN %s AND %s ORDER BY bar_time::date""",
-                                       (definition.signal_stock_code, args.date_from, date_to))
-                        dates = [row[0] for row in cursor.fetchall()]
+                        dates = dates_by_stock[definition.signal_stock_code]
                         actual_entries = []
                         for trading_date in dates:
-                            source = _bars(cursor, cache, definition.signal_stock_code, trading_date)
-                            execution = _bars(cursor, cache, definition.execution_stock_code, trading_date)
+                            source = cache[definition.signal_stock_code, trading_date]
+                            execution = cache.get((definition.execution_stock_code, trading_date), ())
                             actual_entries.extend((item, source, execution) for item in core.entries(definition, source))
                         actual_entry = [(item.signal_time.isoformat(), _iso(item.target_time)) for item, _source, _execution in actual_entries]
                         expected = expected_entry[int(definition.strategy_id)]
