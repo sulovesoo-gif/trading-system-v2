@@ -37,6 +37,9 @@ class ActualApproval:
     broker_state: str = "NOT_SENT"
     side: str = "BUY"
     quantity: int = 1
+    exchange: str = "KRX"
+    order_division: str = "15"
+    order_price: str = "0"
 
     def __post_init__(self):
         if not self.broker_idempotency_key:
@@ -75,7 +78,7 @@ class InMemorySmokeApprovalStore:
         with self._lock:
             return self.approvals.get(approval_id)
 
-    def consume_immediately_before_send(self, approval_id: str, key: str, *, side: str, quantity: int) -> ActualApproval | None:
+    def consume_immediately_before_send(self, approval_id: str, key: str, *, stock_code: str, strategy_instance_id: str, side: str, quantity: int, exchange: str, order_division: str, order_price: str) -> ActualApproval | None:
         """Atomic compare-and-swap: validation is done before this call."""
         with self._lock:
             approval = self.approvals.get(approval_id)
@@ -83,8 +86,13 @@ class InMemorySmokeApprovalStore:
                 approval is None
                 or approval.status is not ApprovalStatus.APPROVED_FOR_ONE_SUBMIT
                 or approval.broker_idempotency_key != key
+                or approval.active_stock_code != stock_code
+                or approval.strategy_instance_id != strategy_instance_id
                 or approval.side != side
                 or approval.quantity != quantity
+                or approval.exchange != exchange
+                or approval.order_division != order_division
+                or approval.order_price != order_price
                 or key in self.used_idempotency_keys
             ):
                 return None
@@ -116,7 +124,8 @@ class PostgresSmokeApprovalStore:
             cursor.execute(
                 """SELECT approval_id::text, strategy_instance_id, active_stock_code,
                           allowed_date, allowed_time_from, allowed_time_to, status,
-                          broker_idempotency_key, broker_state, side, quantity
+                          broker_idempotency_key, broker_state, side, quantity,
+                          exchange, order_division, order_price
                    FROM live_smoke_approval WHERE approval_id=%s""",
                 (approval_id,),
             )
@@ -130,18 +139,20 @@ class PostgresSmokeApprovalStore:
             cursor.execute(
                 """INSERT INTO live_smoke_approval
                    (approval_id, phase, strategy_instance_id, active_stock_code,
-                    side, quantity, allowed_date, allowed_time_from, allowed_time_to,
+                    side, quantity, exchange, order_division, order_price,
+                    allowed_date, allowed_time_from, allowed_time_to,
                     status, broker_idempotency_key)
-                   VALUES (%s, '7C-1', %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, '7C-1', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (approval.approval_id, approval.strategy_instance_id,
                  approval.active_stock_code, approval.side, approval.quantity,
+                 approval.exchange, approval.order_division, approval.order_price,
                  approval.allowed_date, approval.allowed_time_from,
                  approval.allowed_time_to, approval.status.value,
                  approval.broker_idempotency_key),
             )
             connection.commit()
 
-    def consume_immediately_before_send(self, approval_id: str, key: str, *, side: str, quantity: int) -> ActualApproval | None:
+    def consume_immediately_before_send(self, approval_id: str, key: str, *, stock_code: str, strategy_instance_id: str, side: str, quantity: int, exchange: str, order_division: str, order_price: str) -> ActualApproval | None:
         # One SQL compare-and-swap is the lock/transaction boundary immediately
         # before the adapter enters transport.
         with self._connection_factory() as connection, connection.cursor() as cursor:
@@ -151,13 +162,19 @@ class PostgresSmokeApprovalStore:
                    WHERE approval_id=%s
                      AND status='APPROVED_FOR_ONE_SUBMIT'
                      AND broker_idempotency_key=%s
+                     AND active_stock_code=%s
+                     AND strategy_instance_id=%s
                      AND side=%s
                      AND quantity=%s
+                     AND exchange=%s
+                     AND order_division=%s
+                     AND order_price=%s
                    RETURNING approval_id::text, strategy_instance_id,
                              active_stock_code, allowed_date, allowed_time_from,
                              allowed_time_to, status, broker_idempotency_key,
-                             broker_state, side, quantity""",
-                (approval_id, key, side, quantity),
+                             broker_state, side, quantity, exchange, order_division, order_price""",
+                (approval_id, key, stock_code, strategy_instance_id, side, quantity,
+                 exchange, order_division, order_price),
             )
             row = cursor.fetchone()
             if row is not None:
@@ -197,6 +214,7 @@ class PostgresSmokeApprovalStore:
             allowed_time_from=row[4], allowed_time_to=row[5],
             status=ApprovalStatus(str(row[6])), broker_idempotency_key=str(row[7]),
             broker_state=str(row[8]), side=str(row[9]), quantity=int(row[10]),
+            exchange=str(row[11]), order_division=str(row[12]), order_price=str(row[13]),
         )
 
 
@@ -243,7 +261,13 @@ class Phase7CSmokeRuntime:
         # This is the last operation before entering the adapter/transport.
         consumed = self.approvals.consume_immediately_before_send(
             approval_id, approval.broker_idempotency_key,
-            side=approval.side, quantity=approval.quantity,
+            stock_code=config.active_stock_code,
+            strategy_instance_id=config.strategy_instance_id,
+            side=config.side,
+            quantity=config.quantity,
+            exchange=config.exchange,
+            order_division=config.order_division,
+            order_price=config.order_price,
         )
         if consumed is None:
             return None, "APPROVAL_ALREADY_CONSUMED"
@@ -290,7 +314,9 @@ class Phase7CSmokeRuntime:
         payload = {
             "PDNO": approval.active_stock_code,
             "ORD_QTY": str(approval.quantity),
-            "SLL_BUY_DVSN_CD": "02" if approval.side == "BUY" else "01",
+            "EXCG_ID_DVSN_CD": approval.exchange,
+            "ORD_DVSN": approval.order_division,
+            "ORD_UNPR": approval.order_price,
             "phase": "7C-1",
             "idempotency_key": approval.broker_idempotency_key,
         }
@@ -321,7 +347,11 @@ def validate_approval_scope(*, approval: ActualApproval, config: ResolvedSmokeCo
         or approval.allowed_time_to != config.allowed_time_to
         or approval.side != config.side
         or approval.quantity != config.quantity
+        or approval.exchange != config.exchange
+        or approval.order_division != config.order_division
+        or approval.order_price != config.order_price
     ):
         raise ValueError("approval scope does not match resolved config")
-    if approval.side != "BUY" or approval.quantity != 1:
-        raise ValueError("7C-1 approval must be BUY one share")
+    if (approval.side, approval.quantity, approval.exchange,
+        approval.order_division, approval.order_price) != ("BUY", 1, "KRX", "15", "0"):
+        raise ValueError("7C-1 approval must be BUY one KRX IOC-best share at zero price")
