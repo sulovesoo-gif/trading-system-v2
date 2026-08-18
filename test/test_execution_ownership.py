@@ -37,3 +37,16 @@ class OwnershipTest(unittest.TestCase):
         self.assertEqual((ledger.position(smoke).quantity, ledger.position(live).quantity), (1, 0))
         ledger.apply_fill(self.fill(smoke, "smoke-sell", "SELL", 1, 101))
         self.assertEqual((ledger.position(smoke).quantity, ledger.position(live).quantity), (0, 0))
+
+    def test_existing_unattributed_position_is_preserved_across_forward_round_trip(self):
+        ledger = InMemoryOwnershipLedger()
+        forward = OwnershipKey(ExecutionLane.FORWARD, "FORWARD_PATH_A", "0193W0")
+        # A pre-existing broker holding has no V2 allocation and remains so.
+        before = ledger.reconcile({"0193W0": 7})[0]
+        self.assertEqual((before.attributed_quantity, before.unattributed_quantity, before.status), (0, 7, "UNATTRIBUTED"))
+        ledger.apply_fill(self.fill(forward, "forward-buy", "BUY", 1, 100))
+        during = ledger.reconcile({"0193W0": 8})[0]
+        self.assertEqual((during.attributed_quantity, during.unattributed_quantity), (1, 7))
+        ledger.apply_fill(self.fill(forward, "forward-sell", "SELL", 1, 101))
+        after = ledger.reconcile({"0193W0": 7})[0]
+        self.assertEqual((after.attributed_quantity, after.unattributed_quantity, after.status), (0, 7, "UNATTRIBUTED"))
