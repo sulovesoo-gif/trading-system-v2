@@ -37,6 +37,9 @@ class _AuthorizedSendContext:
     active_stock_code: str
     side: str
     quantity: int
+    exchange: str
+    order_division: str
+    order_price: str
     allowed_date: date
     allowed_time_from: time
     allowed_time_to: time
@@ -82,6 +85,9 @@ def _context_from_consumed_approval(approval: "ActualApproval") -> _AuthorizedSe
         active_stock_code=approval.active_stock_code,
         side=approval.side,
         quantity=approval.quantity,
+        exchange=approval.exchange,
+        order_division=approval.order_division,
+        order_price=approval.order_price,
         allowed_date=approval.allowed_date,
         allowed_time_from=approval.allowed_time_from,
         allowed_time_to=approval.allowed_time_to,
@@ -111,5 +117,8 @@ def _assert_order_matches_context(order: BrokerOrder, context: _AuthorizedSendCo
         or order.execution_stock_code != context.active_stock_code
         or order.side != context.side
         or order.quantity != context.quantity
+        or order.payload.get("EXCG_ID_DVSN_CD") != context.exchange
+        or order.payload.get("ORD_DVSN") != context.order_division
+        or order.payload.get("ORD_UNPR") != context.order_price
     ):
         raise SendAuthorizationError("phase-7C context and broker order mismatch")

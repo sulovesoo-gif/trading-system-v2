@@ -79,6 +79,9 @@ class ResolvedSmokeConfig:
     allowed_time_to: time | None
     side: str = "BUY"
     quantity: int = 1
+    exchange: str = "KRX"
+    order_division: str = "15"
+    order_price: str = "0"
     daily_submit_max: int = 1
     open_order_max: int = 1
     retry_on_timeout: bool = False
@@ -112,6 +115,9 @@ class ResolvedSmokeConfig:
         add(registry_valid, "strategy_instance_id is existing/valid")
         add(self.side == "BUY", "side == BUY")
         add(self.quantity == 1, "quantity == 1")
+        add(self.exchange == "KRX", "exchange == KRX")
+        add(self.order_division == "15", "ORD_DVSN == 15 (IOC best)")
+        add(self.order_price == "0", "ORD_UNPR == 0")
         add(self.allowed_date is not None, "allowed_date resolved")
         add(self.allowed_time_from is not None, "allowed_time_from resolved")
         add(self.allowed_time_to is not None, "allowed_time_to resolved")
@@ -146,6 +152,9 @@ class ResolvedSmokeConfig:
             "",
             f"allowed_side           = {self.side}",
             f"quantity               = {self.quantity}",
+            f"exchange               = {self.exchange}",
+            f"order_division         = {self.order_division}",
+            f"order_price            = {self.order_price}",
             f"allowed_date           = {self.allowed_date}",
             f"allowed_time_from      = {self.allowed_time_from} KST",
             f"allowed_time_to        = {self.allowed_time_to} KST",

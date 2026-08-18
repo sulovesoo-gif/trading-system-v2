@@ -2,15 +2,20 @@ import unittest
 from datetime import datetime
 
 from src.broker.contracts import BrokerOrder, BrokerOrderStatus
-from src.collector.raw.kis_order_transport import KISOrderPostTransport, KISOrderTransportConfig
+from src.collector.raw.kis_order_transport import (
+    LIVE_CASH_BUY_TR_ID, LIVE_CASH_SELL_TR_ID,
+    KISOrderPostTransport, KISOrderTransportConfig,
+)
 from src.smoke_send import ActualApproval, ApprovalStatus
 from src.smoke_send.authorization import _context_from_consumed_approval, issue_transport_permit
 
 
-def order(*, side="BUY", qty=1, phase="7C-1", code="0193W0"):
+def order(*, side="BUY", qty=1, phase="7C-1", code="0193W0", exchange="KRX", division="15", price="0"):
     return BrokerOrder(
         "broker-1", "approval-1", "LIVE_STRATEGY_2", code, side, qty,
-        "key-1", BrokerOrderStatus.SUBMITTING, {"phase": phase}, created_at=datetime(2026, 8, 19, 10),
+        "key-1", BrokerOrderStatus.SUBMITTING,
+        {"phase": phase, "EXCG_ID_DVSN_CD": exchange, "ORD_DVSN": division, "ORD_UNPR": price},
+        created_at=datetime(2026, 8, 19, 10),
     )
 
 
@@ -22,7 +27,10 @@ class Client:
 class KISOrderPostTransportTest(unittest.TestCase):
     def transport(self, response={"rt_cd": "0", "output": {"ODNO": "A"}}):
         client = Client(response)
-        config = KISOrderTransportConfig("12345678", "01", "BUY_TR", "SELL_TR", frozenset({"0193W0", "0193L0", "0197X0"}))
+        config = KISOrderTransportConfig(
+            "12345678", "01", LIVE_CASH_BUY_TR_ID, LIVE_CASH_SELL_TR_ID,
+            frozenset({"0193W0", "0193L0", "0197X0"}),
+        )
         return KISOrderPostTransport(client=client, config=config), client
 
     @staticmethod
@@ -42,8 +50,12 @@ class KISOrderPostTransportTest(unittest.TestCase):
         self.assertEqual(transport.invocation_count, 1)
         self.assertEqual(transport.actual_post_send_count, 1)
         self.assertEqual(client.calls[0]["path"], "/uapi/domestic-stock/v1/trading/order-cash")
-        self.assertEqual(client.calls[0]["tr_id"], "BUY_TR")
+        self.assertEqual(client.calls[0]["tr_id"], LIVE_CASH_BUY_TR_ID)
         self.assertEqual(client.calls[0]["payload"]["ORD_QTY"], "1")
+        self.assertEqual(client.calls[0]["payload"]["ORD_DVSN"], "15")
+        self.assertEqual(client.calls[0]["payload"]["ORD_UNPR"], "0")
+        self.assertEqual(client.calls[0]["payload"]["EXCG_ID_DVSN_CD"], "KRX")
+        self.assertEqual(client.calls[0]["custtype"], "P")
         self.assertEqual(transport.audit[-1]["response_classification"], "ACK_ACCEPTED")
 
     def test_direct_or_tampered_transport_calls_never_post(self):
@@ -52,7 +64,12 @@ class KISOrderPostTransportTest(unittest.TestCase):
         with self.assertRaises(Exception):
             transport.submit_once(current_order)
         permit = self.permit(current_order)
-        for invalid in (order(qty=2), order(side="SELL"), order(code="0197X0"), order(phase="OTHER"), order(code="BAD")):
+        for invalid in (
+            order(qty=2), order(side="SELL"), order(code="0197X0"),
+            order(phase="OTHER"), order(code="BAD"), order(exchange="NXT"),
+            order(exchange="SOR"), order(division="01"), order(division="00"),
+            order(price="1000"),
+        ):
             with self.assertRaises(Exception):
                 transport.submit_once(invalid, permit=permit)
         self.assertEqual(len(client.calls), 0)
