@@ -1,0 +1,12 @@
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS trade_return_pct NUMERIC(18,8) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS avg_win NUMERIC(18,2) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS avg_loss NUMERIC(18,2) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS mfe NUMERIC(18,8) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS mae NUMERIC(18,8) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS signal_to_submit_ms BIGINT;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS submit_to_ack_ms BIGINT;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS ack_to_fill_ms BIGINT;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS fill_rate NUMERIC(18,8) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS miss_rate NUMERIC(18,8) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS slippage NUMERIC(18,8) NOT NULL DEFAULT 0;
+ALTER TABLE forward_performance_snapshot ADD COLUMN IF NOT EXISTS expected_vs_fill NUMERIC(18,8) NOT NULL DEFAULT 0;
