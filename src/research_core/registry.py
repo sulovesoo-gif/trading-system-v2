@@ -25,7 +25,8 @@ class PostgresResearchMasterRegistry:
     def definitions(self, *, strategy_id: int | None = None) -> tuple[StrategyDefinition, ...]:
         sql = self._SQL + (" AND strategy_id=%s" if strategy_id is not None else "") + " ORDER BY strategy_id"
         params: tuple[int, ...] = (strategy_id,) if strategy_id is not None else ()
-        with self.pool.connection() as connection, connection.cursor() as cursor:
+        acquire = self.pool.connection if hasattr(self.pool, "connection") else self.pool
+        with acquire() as connection, connection.cursor() as cursor:
             cursor.execute(sql, params)
             names = [item.name for item in cursor.description]
             rows = [dict(zip(names, row)) for row in cursor.fetchall()]
