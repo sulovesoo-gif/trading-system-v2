@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.live_registry.registry import LiveStrategyRegistryRepository
 from src.strategy_core.registry import StrategyDefinition
+from src.research_core.registry import PostgresResearchMasterRegistry
 
 
 class ForwardDefinitionRegistry:
@@ -16,6 +17,12 @@ class ForwardDefinitionRegistry:
         self._live = LiveStrategyRegistryRepository(connection_factory)
 
     def resolve(self, strategy_reference: str) -> tuple[str, StrategyDefinition]:
+        if strategy_reference.startswith("RESEARCH_STRATEGY_"):
+            strategy_id = int(strategy_reference.removeprefix("RESEARCH_STRATEGY_"))
+            definitions = PostgresResearchMasterRegistry(self._live._connection_factory).definitions(strategy_id=strategy_id)
+            if len(definitions) != 1:
+                raise ValueError("Research path must resolve exactly one enabled master row")
+            return strategy_reference, definitions[0]
         matches = [item for item in self._live.resolve_canonical_live() if item.strategy_instance_id == strategy_reference]
         if len(matches) != 1:
             raise ValueError("forward candidate must reference exactly one canonical LIVE instance")
