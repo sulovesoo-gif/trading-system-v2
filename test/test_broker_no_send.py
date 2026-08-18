@@ -8,6 +8,8 @@ def req(code='0197X0',side='BUY',qty=10):return SimpleNamespace(order_request_id
 class BrokerTest(unittest.TestCase):
  def test_no_send_payload_and_network_zero(self):
   a=KisBrokerAdapter(mode=BrokerMode.NO_SEND,account='12345678',whitelist={'0193W0','0193L0','0197X0'});o=a.prepare(req());self.assertEqual(o.status,BrokerOrderStatus.NO_SEND_VALIDATED);self.assertEqual(o.payload['PDNO'],'0197X0');self.assertEqual(a.network_send_calls,0);self.assertRaises(RuntimeError,a.submit,o);self.assertEqual(a.network_send_calls,0)
+ def test_general_live_send_remains_blocked_without_network(self):
+  a=KisBrokerAdapter(mode=BrokerMode.LIVE_SEND,account='x',whitelist={'0197X0'});o=a.prepare(req());self.assertRaises(RuntimeError,a.submit,o);self.assertEqual(a.network_send_calls,0)
  def test_all_products_sell_and_invalid(self):
   a=KisBrokerAdapter(mode=BrokerMode.NO_SEND,account='x',whitelist={'0193W0','0193L0','0197X0'});[self.assertEqual(a.prepare(req(x,'SELL')).payload['SLL_BUY_DVSN_CD'],'01') for x in a.whitelist];self.assertRaises(ValueError,a.prepare,req('BAD'));self.assertRaises(ValueError,a.prepare,req(qty=0))
  def test_fill_durable_model_and_s3_attribution(self):

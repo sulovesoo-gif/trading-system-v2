@@ -43,6 +43,19 @@ class _UrlLibSession:
             raise KISClientError(f"KIS HTTP 오류: {error.code}") from error
 
 
+    def post(self, url: str, *, headers: dict, json: dict, timeout: int):
+        request = Request(
+            url,
+            data=__import__("json").dumps(json).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            return _UrlLibResponse(urlopen(request, timeout=timeout))
+        except HTTPError as error:
+            raise KISClientError(f"KIS HTTP POST error: {error.code}") from error
+
+
 class KISClient:
     TOKEN_EXPIRED_CODES = {"EGW00121", "EGW00123"}
     def __init__(
@@ -124,3 +137,46 @@ class KISClient:
                 f"KIS 업무 오류: {payload.get('msg_cd', 'UNKNOWN')} {payload.get('msg1', '')}".strip()
             )
         raise KISClientError("KIS 토큰 재발급 후에도 요청에 실패했습니다.")
+    def post_once(
+        self,
+        *,
+        path: str,
+        tr_id: str,
+        payload: dict[str, str],
+        custtype: str = "P",
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Make one POST only; timeout and ACK loss are deliberately not retried."""
+        if not self.base_url or not self.app_key or not self.app_secret:
+            raise KISClientError("KIS_BASE_URL, KIS_API_KEY, KIS_API_SECRET configuration is required")
+        self.last_payload = None
+        self.last_response_headers = {}
+        self.last_http_status = None
+        try:
+            token = self.auth.get_token()
+            response = self.session.post(
+                f"{self.base_url}{path}",
+                headers={
+                    "content-type": "application/json",
+                    "authorization": f"Bearer {token}",
+                    "appkey": self.app_key,
+                    "appsecret": self.app_secret,
+                    "tr_id": tr_id,
+                    "custtype": custtype,
+                    **(extra_headers or {}),
+                },
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            self.last_http_status = getattr(response, "status_code", getattr(response, "status", None))
+            decoded = response.json()
+        except Exception as error:
+            # A submit is never token-refreshed and resent by this method.
+            raise KISClientError(f"KIS POST transport error: {type(error).__name__}") from error
+        if not isinstance(decoded, dict):
+            raise KISClientError("KIS POST response top level is not an object")
+        self.last_payload = decoded
+        headers = getattr(response, "headers", {})
+        self.last_response_headers = {str(key).lower(): str(value) for key, value in dict(headers).items()}
+        return decoded
