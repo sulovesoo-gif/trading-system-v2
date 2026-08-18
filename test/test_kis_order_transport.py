@@ -3,6 +3,8 @@ from datetime import datetime
 
 from src.broker.contracts import BrokerOrder, BrokerOrderStatus
 from src.collector.raw.kis_order_transport import KISOrderPostTransport, KISOrderTransportConfig
+from src.smoke_send import ActualApproval, ApprovalStatus
+from src.smoke_send.authorization import _context_from_consumed_approval, issue_transport_permit
 
 
 def order(*, side="BUY", qty=1, phase="7C-1", code="0193W0"):
@@ -23,9 +25,19 @@ class KISOrderPostTransportTest(unittest.TestCase):
         config = KISOrderTransportConfig("12345678", "01", "BUY_TR", "SELL_TR", frozenset({"0193W0", "0193L0", "0197X0"}))
         return KISOrderPostTransport(client=client, config=config), client
 
-    def test_maps_one_phase_order_to_post_without_credentials_in_audit(self):
+    @staticmethod
+    def permit(current_order):
+        approval = ActualApproval(
+            "approval-1", "LIVE_STRATEGY_2", "0193W0", datetime(2026, 8, 19).date(),
+            datetime.strptime("10:00", "%H:%M").time(), datetime.strptime("10:10", "%H:%M").time(),
+            ApprovalStatus.CONSUMED, "key-1",
+        )
+        return issue_transport_permit(_context_from_consumed_approval(approval), current_order)
+
+    def test_maps_runtime_authorized_order_to_post_without_credentials_in_audit(self):
         transport, client = self.transport()
-        response = transport.submit_once(order())
+        current_order = order()
+        response = transport.submit_once(current_order, permit=self.permit(current_order))
         self.assertEqual(response["rt_cd"], "0")
         self.assertEqual(transport.invocation_count, 1)
         self.assertEqual(transport.actual_post_send_count, 1)
@@ -34,10 +46,13 @@ class KISOrderPostTransportTest(unittest.TestCase):
         self.assertEqual(client.calls[0]["payload"]["ORD_QTY"], "1")
         self.assertEqual(transport.audit[-1]["response_classification"], "ACK_ACCEPTED")
 
-    def test_reject_is_not_a_fill_and_invalid_order_never_posts(self):
+    def test_direct_or_tampered_transport_calls_never_post(self):
         transport, client = self.transport({"rt_cd": "1", "msg_cd": "REJECT"})
-        transport.submit_once(order())
-        self.assertEqual(transport.audit[-1]["response_classification"], "ACK_REJECTED")
-        for invalid in (order(qty=2), order(phase="OTHER"), order(code="BAD")):
-            with self.assertRaises(Exception): transport.submit_once(invalid)
-        self.assertEqual(len(client.calls), 1)
+        current_order = order()
+        with self.assertRaises(Exception):
+            transport.submit_once(current_order)
+        permit = self.permit(current_order)
+        for invalid in (order(qty=2), order(side="SELL"), order(code="0197X0"), order(phase="OTHER"), order(code="BAD")):
+            with self.assertRaises(Exception):
+                transport.submit_once(invalid, permit=permit)
+        self.assertEqual(len(client.calls), 0)

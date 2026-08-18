@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from src.broker.contracts import BrokerOrder
+from src.smoke_send.authorization import validate_transport_permit
 
 from .kis_client import KISClient, KISClientError
 
@@ -41,8 +42,8 @@ class KISOrderPostTransport:
         self.actual_post_send_count = 0
         self.audit: list[dict[str, str]] = []
 
-    def submit_once(self, order: BrokerOrder) -> Mapping[str, object]:
-        self._validate(order)
+    def submit_once(self, order: BrokerOrder, *, permit: object = None) -> Mapping[str, object]:
+        self._validate(order, permit)
         self.invocation_count += 1
         payload = {
             "CANO": self._config.account_number,
@@ -74,7 +75,8 @@ class KISOrderPostTransport:
     def lookup(self, _idempotency_key: str):
         raise KISOrderTransportError("broker lookup is a separate recovery adapter")
 
-    def _validate(self, order: BrokerOrder) -> None:
+    def _validate(self, order: BrokerOrder, permit: object) -> None:
+        validate_transport_permit(permit, order)
         if order.payload.get("phase") != "7C-1":
             raise KISOrderTransportError("phase-7C broker order required")
         if order.execution_stock_code not in self._config.whitelist:
