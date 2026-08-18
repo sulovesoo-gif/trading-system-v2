@@ -10,7 +10,7 @@ from threading import RLock
 from uuid import NAMESPACE_URL, uuid5
 
 from src.broker import BrokerMode, BrokerOrder, BrokerOrderStatus, KisBrokerAdapter
-from src.smoke_gate import ResolvedSmokeConfig
+from src.smoke_gate import ResolvedSmokeConfig, SMOKE_OWNERSHIP_ID
 from .authorization import _context_from_consumed_approval, validate_transport_permit
 
 
@@ -52,6 +52,7 @@ class SmokeGateState:
     today_actual_submit_count: int
     open_order_count: int
     unknown_order_count: int
+    smoke_logical_position_quantity: int = 0
 
 
 class InMemorySmokeApprovalStore:
@@ -304,6 +305,8 @@ class Phase7CSmokeRuntime:
             return "TIME_WINDOW_BLOCKED"
         if state.today_actual_submit_count != 0 or state.open_order_count != 0 or state.unknown_order_count != 0:
             return "ORDER_STATE_BLOCKED"
+        if config.phase == "7C-2" and state.smoke_logical_position_quantity != 1:
+            return "SMOKE_LOGICAL_POSITION_REQUIRED"
         if state.global_trade_yn != "N":
             return "GLOBAL_TRADE_MUST_REMAIN_DISABLED"
         return None
@@ -339,6 +342,8 @@ def validate_approval_scope(*, approval: ActualApproval, config: ResolvedSmokeCo
         raise ValueError("approval must be approved for one submit")
     if approval.broker_idempotency_key != broker_idempotency_key(approval.approval_id):
         raise ValueError("approval idempotency key mismatch")
+    if approval.strategy_instance_id != SMOKE_OWNERSHIP_ID or config.strategy_instance_id != SMOKE_OWNERSHIP_ID:
+        raise ValueError("smoke may not use a LIVE strategy instance as ownership")
     if (
         approval.active_stock_code != config.active_stock_code
         or approval.strategy_instance_id != config.strategy_instance_id
@@ -352,6 +357,7 @@ def validate_approval_scope(*, approval: ActualApproval, config: ResolvedSmokeCo
         or approval.order_price != config.order_price
     ):
         raise ValueError("approval scope does not match resolved config")
-    if (approval.side, approval.quantity, approval.exchange,
-        approval.order_division, approval.order_price) != ("BUY", 1, "KRX", "15", "0"):
-        raise ValueError("7C-1 approval must be BUY one KRX IOC-best share at zero price")
+    if approval.quantity != 1 or (approval.exchange, approval.order_division, approval.order_price) != ("KRX", "15", "0"):
+        raise ValueError("smoke approval must be one KRX IOC-best share at zero price")
+    if (config.phase, approval.side) not in {("7C-1", "BUY"), ("7C-2", "SELL")}:
+        raise ValueError("smoke side must match its separately approved phase")

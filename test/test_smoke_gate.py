@@ -1,9 +1,6 @@
 import unittest
 from datetime import date, datetime, time
-from decimal import Decimal
-
-from src.live_registry import LiveStrategyResolution
-from src.smoke_gate import ResolvedSmokeConfig, SmokeConfig, SmokeGate, SmokeRequest
+from src.smoke_gate import SMOKE_OWNERSHIP_ID, ResolvedSmokeConfig, SmokeConfig, SmokeGate, SmokeRequest
 
 
 class SmokeGateTest(unittest.TestCase):
@@ -24,21 +21,7 @@ class SmokeGateTest(unittest.TestCase):
         self.assertEqual(gate.validate(config, request)[1], "NO_SUBMIT_IMPLEMENTED")
 
     def test_valid_fixture_is_dry_run_only(self):
-        registry = LiveStrategyResolution(
-            live_strategy_id=41,
-            strategy_instance_id="LIVE_STRATEGY_41",
-            strategy_id=802,
-            strategy_code="SAMSUNG_S1_LONG",
-            live_name="TEST_ONLY",
-            live_yn="N",
-            signal_stock_code="005930",
-            signal_direction="LONG",
-            execution_stock_code="0193W0",
-            execution_direction="LONG",
-            initial_live_capital=Decimal("1000000"),
-            master_live_enabled_yn="Y",
-        )
-        fixture = ResolvedSmokeConfig("0193W0", registry.strategy_instance_id, date(2026, 8, 1), time(10), time(11), registry_resolution=registry)
+        fixture = ResolvedSmokeConfig("0193W0", SMOKE_OWNERSHIP_ID, date(2026, 8, 1), time(10), time(11))
         output = fixture.render()
         self.assertIn("DRY_RUN_ONLY", output)
         self.assertIn("network_send_enabled   = N", output)
@@ -48,7 +31,7 @@ class SmokeGateTest(unittest.TestCase):
     def test_invalid_contracts_are_blocked(self):
         base = dict(
             active_stock_code="0197X0",
-            strategy_instance_id="TEST_ONLY",
+            strategy_instance_id=SMOKE_OWNERSHIP_ID,
             allowed_date=date(2026, 8, 1),
             allowed_time_from=time(10),
             allowed_time_to=time(11),

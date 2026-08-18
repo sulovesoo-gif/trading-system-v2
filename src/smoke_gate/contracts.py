@@ -6,6 +6,9 @@ if TYPE_CHECKING:
     from src.live_registry import LiveStrategyResolution
 
 
+SMOKE_OWNERSHIP_ID = "ORDER_SMOKE_TEST"
+
+
 @dataclass(frozen=True)
 class SmokeConfig:
     phase: str
@@ -93,6 +96,7 @@ class ResolvedSmokeConfig:
     global_trade_yn: str = "N"
     network_send_enabled: bool = False
     registry_resolution: "LiveStrategyResolution | None" = None
+    phase: str = "7C-1"
 
     def validate(self):
         checks = []
@@ -106,14 +110,11 @@ class ResolvedSmokeConfig:
             "active_stock_code is whitelisted",
         )
         add(bool(self.strategy_instance_id), "strategy_instance_id exactly one")
-        registry_valid = (
-            self.registry_resolution is not None
-            and self.registry_resolution.strategy_instance_id == self.strategy_instance_id
-            and self.registry_resolution.execution_stock_code == self.active_stock_code
-            and self.registry_resolution.smoke_safe
-        )
-        add(registry_valid, "strategy_instance_id is existing/valid")
-        add(self.side == "BUY", "side == BUY")
+        # Smoke has its own durable owner.  It must never borrow a LIVE
+        # strategy instance merely to pass attribution validation.
+        registry_valid = self.strategy_instance_id == SMOKE_OWNERSHIP_ID and self.registry_resolution is None
+        add(registry_valid, "strategy_instance_id is ORDER_SMOKE_TEST")
+        add((self.phase == "7C-1" and self.side == "BUY") or (self.phase == "7C-2" and self.side == "SELL"), "phase side is authorized")
         add(self.quantity == 1, "quantity == 1")
         add(self.exchange == "KRX", "exchange == KRX")
         add(self.order_division == "15", "ORD_DVSN == 15 (IOC best)")
@@ -149,6 +150,7 @@ class ResolvedSmokeConfig:
             "7C-1 RESOLVED SMOKE CONFIG",
             f"active_stock_code      = {self.active_stock_code}",
             f"strategy_instance_id   = {self.strategy_instance_id}",
+            f"execution_origin       = {SMOKE_OWNERSHIP_ID}",
             "",
             f"allowed_side           = {self.side}",
             f"quantity               = {self.quantity}",

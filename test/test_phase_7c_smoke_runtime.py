@@ -1,12 +1,10 @@
 import unittest
 from datetime import date, datetime, time
-from decimal import Decimal
 from threading import Barrier, Thread
 from unittest.mock import patch
 
 from src.broker import BrokerMode, KisBrokerAdapter
-from src.live_registry import LiveStrategyResolution
-from src.smoke_gate import ResolvedSmokeConfig
+from src.smoke_gate import SMOKE_OWNERSHIP_ID, ResolvedSmokeConfig
 from src.smoke_send import (
     ActualApproval,
     ApprovalStatus,
@@ -22,20 +20,15 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
     at = datetime(2026, 8, 19, 10, 5)
 
     def config(self, **changes):
-        registry = LiveStrategyResolution(
-            2, "LIVE_STRATEGY_2", 802, "SAMSUNG_S1_LONG", "TEST", "N",
-            "005930", "LONG", "0193W0", "LONG", Decimal("1000000"), "Y",
-        )
         values = dict(
-            active_stock_code="0193W0", strategy_instance_id="LIVE_STRATEGY_2",
+            active_stock_code="0193W0", strategy_instance_id=SMOKE_OWNERSHIP_ID,
             allowed_date=self.at.date(), allowed_time_from=time(10), allowed_time_to=time(10, 10),
-            registry_resolution=registry,
         )
         values.update(changes)
         return ResolvedSmokeConfig(**values)
 
     def approved(self, status=ApprovalStatus.APPROVED_FOR_ONE_SUBMIT):
-        return ActualApproval("00000000-0000-0000-0000-000000000007", "LIVE_STRATEGY_2", "0193W0", self.at.date(), time(10), time(10, 10), status)
+        return ActualApproval("00000000-0000-0000-0000-000000000007", SMOKE_OWNERSHIP_ID, "0193W0", self.at.date(), time(10), time(10, 10), status)
 
     def runtime(self, outcome="ACK", approval=None):
         store = InMemorySmokeApprovalStore()
@@ -111,6 +104,21 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
         self.assertEqual(reason, "ORDER_STATE_BLOCKED")
         self.assertEqual(transport.send_calls, 0)
 
+    def test_smoke_sell_requires_its_own_approval_and_one_smoke_share(self):
+        approval = ActualApproval(
+            "00000000-0000-0000-0000-000000000009", SMOKE_OWNERSHIP_ID, "0193W0",
+            self.at.date(), time(10), time(10, 10), ApprovalStatus.APPROVED_FOR_ONE_SUBMIT,
+            side="SELL",
+        )
+        runtime, store, transport, _ = self.runtime(approval=approval)
+        sell_config = self.config(phase="7C-2", side="SELL")
+        _, reason = runtime.submit_once(config=sell_config, approval_id=approval.approval_id, at=self.at, state=self.state())
+        self.assertEqual(reason, "SMOKE_LOGICAL_POSITION_REQUIRED")
+        self.assertEqual(store.get(approval.approval_id).status, ApprovalStatus.APPROVED_FOR_ONE_SUBMIT)
+        _, reason = runtime.submit_once(config=sell_config, approval_id=approval.approval_id, at=self.at, state=self.state(smoke_logical_position_quantity=1))
+        self.assertEqual(reason, "ACK")
+        self.assertEqual(transport.send_calls, 1)
+
     def test_concurrent_invocation_consumes_once(self):
         approval = self.approved()
         runtime, store, transport, adapter = self.runtime(approval=approval)
@@ -180,7 +188,7 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
             {"order_division": "00"}, {"order_price": "1000"},
         ):
             approval = ActualApproval(
-                "00000000-0000-0000-0000-000000000007", "LIVE_STRATEGY_2", "0193W0",
+                "00000000-0000-0000-0000-000000000007", SMOKE_OWNERSHIP_ID, "0193W0",
                 self.at.date(), time(10), time(10, 10), ApprovalStatus.APPROVED_FOR_ONE_SUBMIT,
                 side=changes.get("side", "BUY"), quantity=changes.get("quantity", 1),
                 exchange=changes.get("exchange", "KRX"),
@@ -200,7 +208,7 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
         store.create_approved(approval=valid, config=self.config())
         self.assertEqual(store.get(valid.approval_id), valid)
         invalid = ActualApproval(
-            "00000000-0000-0000-0000-000000000008", "LIVE_STRATEGY_2", "0193W0",
+            "00000000-0000-0000-0000-000000000008", SMOKE_OWNERSHIP_ID, "0193W0",
             self.at.date(), time(10), time(10, 10), ApprovalStatus.APPROVED_FOR_ONE_SUBMIT,
             broker_idempotency_key="not-derived",
         )
@@ -213,19 +221,19 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
         store.save(approval)
         self.assertIsNone(store.consume_immediately_before_send(
             approval.approval_id, approval.broker_idempotency_key,
-            stock_code="0193W0", strategy_instance_id="LIVE_STRATEGY_2",
+            stock_code="0193W0", strategy_instance_id=SMOKE_OWNERSHIP_ID,
             side="SELL", quantity=1, exchange="KRX", order_division="15", order_price="0",
         ))
         self.assertIsNone(store.consume_immediately_before_send(
             approval.approval_id, approval.broker_idempotency_key,
-            stock_code="0193W0", strategy_instance_id="LIVE_STRATEGY_2",
+            stock_code="0193W0", strategy_instance_id=SMOKE_OWNERSHIP_ID,
             side="BUY", quantity=2, exchange="KRX", order_division="15", order_price="0",
         ))
         for changes in (
             {"stock_code": "0197X0"}, {"strategy_instance_id": "LIVE_STRATEGY_3"},
             {"exchange": "NXT"}, {"order_division": "01"}, {"order_price": "1000"},
         ):
-            values = dict(stock_code="0193W0", strategy_instance_id="LIVE_STRATEGY_2",
+            values = dict(stock_code="0193W0", strategy_instance_id=SMOKE_OWNERSHIP_ID,
                           side="BUY", quantity=1, exchange="KRX",
                           order_division="15", order_price="0")
             values.update(changes)

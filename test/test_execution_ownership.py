@@ -28,3 +28,12 @@ class OwnershipTest(unittest.TestCase):
         self.assertEqual(ledger.position(live).quantity, 20)
         result = ledger.reconcile({"0197X0": 22})[0]
         self.assertEqual((result.attributed_quantity, result.unattributed_quantity, result.status), (21, 1, "UNATTRIBUTED"))
+
+    def test_smoke_round_trip_is_not_attributed_to_a_live_strategy(self):
+        ledger = InMemoryOwnershipLedger()
+        smoke = OwnershipKey(ExecutionLane.SMOKE, "ORDER_SMOKE_TEST", "0193W0")
+        live = OwnershipKey(ExecutionLane.LIVE, "LIVE_STRATEGY_2", "0193W0")
+        ledger.apply_fill(self.fill(smoke, "smoke-buy", "BUY", 1, 100))
+        self.assertEqual((ledger.position(smoke).quantity, ledger.position(live).quantity), (1, 0))
+        ledger.apply_fill(self.fill(smoke, "smoke-sell", "SELL", 1, 101))
+        self.assertEqual((ledger.position(smoke).quantity, ledger.position(live).quantity), (0, 0))

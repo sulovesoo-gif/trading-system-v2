@@ -8,11 +8,12 @@ from src.collector.raw.kis_order_transport import (
 )
 from src.smoke_send import ActualApproval, ApprovalStatus
 from src.smoke_send.authorization import _context_from_consumed_approval, issue_transport_permit
+from src.smoke_gate import SMOKE_OWNERSHIP_ID
 
 
 def order(*, side="BUY", qty=1, phase="7C-1", code="0193W0", exchange="KRX", division="15", price="0"):
     return BrokerOrder(
-        "broker-1", "approval-1", "LIVE_STRATEGY_2", code, side, qty,
+        "broker-1", "approval-1", SMOKE_OWNERSHIP_ID, code, side, qty,
         "key-1", BrokerOrderStatus.SUBMITTING,
         {"phase": phase, "EXCG_ID_DVSN_CD": exchange, "ORD_DVSN": division, "ORD_UNPR": price},
         created_at=datetime(2026, 8, 19, 10),
@@ -36,7 +37,7 @@ class KISOrderPostTransportTest(unittest.TestCase):
     @staticmethod
     def permit(current_order):
         approval = ActualApproval(
-            "approval-1", "LIVE_STRATEGY_2", "0193W0", datetime(2026, 8, 19).date(),
+            "approval-1", SMOKE_OWNERSHIP_ID, "0193W0", datetime(2026, 8, 19).date(),
             datetime.strptime("10:00", "%H:%M").time(), datetime.strptime("10:10", "%H:%M").time(),
             ApprovalStatus.CONSUMED, "key-1",
         )
