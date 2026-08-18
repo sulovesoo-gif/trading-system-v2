@@ -1,1 +1,1 @@
-from .contracts import SmokeConfig,SmokeRequest,SmokeGate
+from .contracts import SmokeConfig,SmokeRequest,SmokeGate,ResolvedSmokeConfig
