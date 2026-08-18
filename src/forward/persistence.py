@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from .contracts import ForwardCandidate, ForwardExecutionPath
 
 
@@ -33,3 +35,26 @@ class PostgresForwardRegistry:
             )
             connection.commit()
         return path
+
+    def active_candidates(self) -> tuple[ForwardCandidate, ...]:
+        """Reload human-approved active candidates without a code deployment."""
+        with self._connection_factory() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT c.forward_candidate_id,c.strategy_reference,c.signal_stock_code,
+                          c.selection_reason,c.approved_at,c.approved_by,
+                          p.entry_identity,p.exit_identity,p.execution_stock_code
+                     FROM forward_candidate c JOIN forward_execution_path p
+                       ON p.forward_execution_id=c.forward_execution_id
+                    WHERE c.active_yn='Y' AND p.active_yn='Y'
+                    ORDER BY c.created_at,c.forward_candidate_id"""
+            )
+            rows = cursor.fetchall()
+        return tuple(
+            ForwardCandidate(
+                candidate_id=str(row[0]), strategy_reference=str(row[1]),
+                signal_stock_code=str(row[2]), selection_reason=str(row[3]),
+                approved_at=row[4] if isinstance(row[4], datetime) else row[4],
+                approved_by=str(row[5]),
+                path=ForwardExecutionPath(str(row[6]), str(row[7]), str(row[8])), active=True,
+            ) for row in rows
+        )
