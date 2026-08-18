@@ -15,6 +15,11 @@ class Session:
     def get(self, *args, **kwargs): return Response(self.payload)
 
 
+class PostSession:
+    def __init__(self, payload): self.payload, self.calls = payload, []
+    def post(self, *args, **kwargs): self.calls.append(kwargs); return Response(self.payload)
+
+
 class SequenceSession:
     def __init__(self, payloads):
         self.payloads = list(payloads)
@@ -106,3 +111,11 @@ class KISClientTest(unittest.TestCase):
         with self.assertRaises(KISClientError) as context:
             client.get(path="/x", tr_id="TEST", params={})
         self.assertNotIn("TOP_SECRET", str(context.exception))
+
+    def test_post_once_uses_existing_auth_without_retry(self):
+        session = PostSession({"rt_cd": "0", "output": {"ODNO": "123"}})
+        client = KISClient(base_url="https://example.test", app_key="key", app_secret="secret", auth=Auth(), session=session)
+        payload = client.post_once(path="/order", tr_id="BUY_TR", payload={"PDNO": "0193W0"})
+        self.assertEqual(payload["output"]["ODNO"], "123")
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(session.calls[0]["headers"]["tr_id"], "BUY_TR")

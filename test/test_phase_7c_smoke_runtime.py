@@ -89,6 +89,16 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
         self.assertEqual(reason, "ACTUAL_APPROVAL_REQUIRED")
         self.assertEqual(transport.send_calls, 1)
 
+    def test_explicit_reject_is_consumed_and_never_creates_a_fill(self):
+        approval = self.approved()
+        runtime, store, transport, _ = self.runtime("REJECT", approval)
+        response, reason = runtime.submit_once(config=self.config(), approval_id=approval.approval_id, at=self.at, state=self.state())
+        self.assertEqual(reason, "REJECTED")
+        self.assertEqual(response["rt_cd"], "1")
+        self.assertEqual(store.get(approval.approval_id).status, ApprovalStatus.CONSUMED)
+        self.assertEqual(store.get(approval.approval_id).broker_state, "ACK_REJECTED")
+        self.assertEqual(transport.send_calls, 1)
+
     def test_global_and_open_order_state_block_before_consumption(self):
         approval = self.approved()
         runtime, store, transport, _ = self.runtime(approval=approval)

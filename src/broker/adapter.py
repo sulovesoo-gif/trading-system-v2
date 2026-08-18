@@ -16,5 +16,5 @@ class KisBrokerAdapter:
    if self.phase_7c_transport is None:raise RuntimeError('PHASE_7C_TRANSPORT_REQUIRED')
    self.network_send_calls+=1
    return self.phase_7c_transport.submit_once(order)
-  self.network_send_calls+=1;raise RuntimeError('LIVE_SEND disabled in phase 7B')
+  raise RuntimeError('LIVE_SEND disabled in phase 7B')
  def parse_response(self,raw):return BrokerOrderStatus.ACCEPTED if raw.get('rt_cd')=='0' else BrokerOrderStatus.REJECTED

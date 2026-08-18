@@ -83,11 +83,14 @@ class InMemorySmokeApprovalStore:
             return consumed
 
     def mark_unknown(self, approval_id: str) -> None:
+        self.mark_broker_state(approval_id, "UNKNOWN_BROKER_STATE")
+        self.audits.append(("UNKNOWN_BROKER_STATE", approval_id))
+
+    def mark_broker_state(self, approval_id: str, state: str) -> None:
         with self._lock:
             approval = self.approvals[approval_id]
             # Consumption is terminal irrespective of broker outcome.
-            self.approvals[approval_id] = replace(approval, broker_state="UNKNOWN_BROKER_STATE")
-            self.audits.append(("UNKNOWN_BROKER_STATE", approval_id))
+            self.approvals[approval_id] = replace(approval, broker_state=state)
 
 
 class PostgresSmokeApprovalStore:
@@ -136,18 +139,21 @@ class PostgresSmokeApprovalStore:
         return None if row is None else self._row(row)
 
     def mark_unknown(self, approval_id: str) -> None:
+        self.mark_broker_state(approval_id, "UNKNOWN_BROKER_STATE")
+
+    def mark_broker_state(self, approval_id: str, state: str) -> None:
         with self._connection_factory() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """UPDATE live_smoke_approval
-                   SET broker_state='UNKNOWN_BROKER_STATE'
+                   SET broker_state=%s
                    WHERE approval_id=%s AND status='CONSUMED'""",
-                (approval_id,),
+                (state, approval_id),
             )
             cursor.execute(
                 """INSERT INTO live_smoke_approval_audit
                     (approval_id,event_type,detail)
-                    VALUES (%s,'UNKNOWN_BROKER_STATE',%s::jsonb)""",
-                (approval_id, '{}'),
+                    VALUES (%s,%s,%s::jsonb)""",
+                (approval_id, state, '{}'),
             )
             connection.commit()
 
@@ -178,6 +184,8 @@ class DeterministicTransport:
         self.send_calls += 1
         if self.outcome == "TIMEOUT":
             raise TimeoutError("deterministic timeout")
+        if self.outcome == "REJECT":
+            return {"rt_cd": "1", "msg_cd": "STUB_REJECT"}
         return {"rt_cd": "0", "odno": "STUB-ACK"}
 
     def lookup(self, key: str):
@@ -209,7 +217,11 @@ class Phase7CSmokeRuntime:
         except TimeoutError:
             self.approvals.mark_unknown(approval_id)
             return None, "UNKNOWN_BROKER_STATE"
-        return response, "ACK"
+        if response.get("rt_cd") == "0":
+            self.approvals.mark_broker_state(approval_id, "ACK_ACCEPTED")
+            return response, "ACK"
+        self.approvals.mark_broker_state(approval_id, "ACK_REJECTED")
+        return response, "REJECTED"
 
     def recover(self, approval_id: str):
         approval = self.approvals.get(approval_id)
