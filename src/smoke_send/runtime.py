@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from src.broker import BrokerMode, BrokerOrder, BrokerOrderStatus, KisBrokerAdapter
 from src.smoke_gate import ResolvedSmokeConfig
+from .authorization import _context_from_consumed_approval, validate_transport_permit
 
 
 class ApprovalStatus(str, Enum):
@@ -177,7 +178,8 @@ class DeterministicTransport:
         self.lookup_calls = 0
         self.seen_keys: set[str] = set()
 
-    def submit_once(self, order: BrokerOrder):
+    def submit_once(self, order: BrokerOrder, *, permit: object = None):
+        validate_transport_permit(permit, order)
         if order.client_order_key in self.seen_keys:
             raise RuntimeError("DUPLICATE_TRANSPORT_KEY")
         self.seen_keys.add(order.client_order_key)
@@ -212,8 +214,9 @@ class Phase7CSmokeRuntime:
         if consumed is None:
             return None, "APPROVAL_ALREADY_CONSUMED"
         order = self._broker_order(consumed)
+        authorized_context = _context_from_consumed_approval(consumed)
         try:
-            response = self.adapter.submit(order)
+            response = self.adapter.submit(order, authorized_context=authorized_context)
         except TimeoutError:
             self.approvals.mark_unknown(approval_id)
             return None, "UNKNOWN_BROKER_STATE"

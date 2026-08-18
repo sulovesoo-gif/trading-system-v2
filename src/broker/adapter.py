@@ -10,11 +10,13 @@ class KisBrokerAdapter:
   payload={'CANO':self.account,'PDNO':request.execution_stock_code,'ORD_DVSN':'01','ORD_QTY':str(request.requested_quantity),'SLL_BUY_DVSN_CD':'02' if request.side=='BUY' else '01','client_order_key':client_key(request.order_request_id),'execution_target_time':request.execution_target_time.isoformat()}
   status=BrokerOrderStatus.NO_SEND_VALIDATED if self.mode==BrokerMode.NO_SEND else BrokerOrderStatus.PREPARED
   return BrokerOrder(request.order_request_id,request.order_request_id,request.strategy_instance_id,request.execution_stock_code,request.side,request.requested_quantity,payload['client_order_key'],status,payload)
- def submit(self,order):
+ def submit(self,order,*,authorized_context=None):
   if self.mode==BrokerMode.NO_SEND:raise RuntimeError('NO_SEND: network submit forbidden')
   if self.mode==BrokerMode.PHASE_7C_SMOKE_SEND:
    if self.phase_7c_transport is None:raise RuntimeError('PHASE_7C_TRANSPORT_REQUIRED')
+   from src.smoke_send.authorization import issue_transport_permit
+   permit=issue_transport_permit(authorized_context,order)
    self.network_send_calls+=1
-   return self.phase_7c_transport.submit_once(order)
+   return self.phase_7c_transport.submit_once(order,permit=permit)
   raise RuntimeError('LIVE_SEND disabled in phase 7B')
  def parse_response(self,raw):return BrokerOrderStatus.ACCEPTED if raw.get('rt_cd')=='0' else BrokerOrderStatus.REJECTED

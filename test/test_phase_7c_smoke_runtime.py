@@ -2,6 +2,7 @@ import unittest
 from datetime import date, datetime, time
 from decimal import Decimal
 from threading import Barrier, Thread
+from unittest.mock import patch
 
 from src.broker import BrokerMode, KisBrokerAdapter
 from src.live_registry import LiveStrategyResolution
@@ -14,6 +15,7 @@ from src.smoke_send import (
     Phase7CSmokeRuntime,
     SmokeGateState,
 )
+from src.smoke_send.authorization import _context_from_consumed_approval
 
 
 class Phase7CSmokeRuntimeTest(unittest.TestCase):
@@ -124,6 +126,37 @@ class Phase7CSmokeRuntimeTest(unittest.TestCase):
         self.assertEqual(sorted(results), ["ACK", "ACTUAL_APPROVAL_REQUIRED"])
         self.assertEqual(transport.send_calls, 1)
         self.assertEqual(adapter.network_send_calls, 1)
+
+    def test_direct_phase_adapter_requires_runtime_context_and_context_is_one_shot(self):
+        approval = self.approved(ApprovalStatus.CONSUMED)
+        _, _, transport, adapter = self.runtime()
+        order = Phase7CSmokeRuntime._broker_order(approval)
+        with self.assertRaises(RuntimeError):
+            adapter.submit(order)
+        with self.assertRaises(RuntimeError):
+            adapter.submit(order, authorized_context="approval-id-only")
+        context = _context_from_consumed_approval(approval)
+        adapter.submit(order, authorized_context=context)
+        self.assertEqual(transport.send_calls, 1)
+        with self.assertRaises(RuntimeError):
+            adapter.submit(order, authorized_context=context)
+        self.assertEqual(transport.send_calls, 1)
+
+    def test_context_is_issued_only_after_successful_cas(self):
+        runtime, _, transport, _ = self.runtime(approval=self.approved(ApprovalStatus.NOT_APPROVED))
+        with patch("src.smoke_send.runtime._context_from_consumed_approval") as factory:
+            _, reason = runtime.submit_once(config=self.config(), approval_id=self.approved().approval_id, at=self.at, state=self.state())
+        self.assertEqual(reason, "ACTUAL_APPROVAL_REQUIRED")
+        factory.assert_not_called()
+        self.assertEqual(transport.send_calls, 0)
+
+        approval = self.approved()
+        runtime, _, transport, _ = self.runtime(approval=approval)
+        with patch("src.smoke_send.runtime._context_from_consumed_approval", wraps=_context_from_consumed_approval) as factory:
+            _, reason = runtime.submit_once(config=self.config(), approval_id=approval.approval_id, at=self.at, state=self.state())
+        self.assertEqual(reason, "ACK")
+        factory.assert_called_once()
+        self.assertEqual(transport.send_calls, 1)
 
     def test_runtime_module_has_no_kis_or_network_client_import(self):
         with open("src/smoke_send/runtime.py", encoding="utf-8") as file:
