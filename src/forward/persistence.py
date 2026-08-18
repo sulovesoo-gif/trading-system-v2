@@ -58,3 +58,18 @@ class PostgresForwardRegistry:
                 path=ForwardExecutionPath(str(row[6]), str(row[7]), str(row[8])), active=True,
             ) for row in rows
         )
+
+    def deactivate_research_path(self, path: ForwardExecutionPath) -> int:
+        """Exclude a Research path without deleting its registry/audit history."""
+        with self._connection_factory() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """UPDATE forward_candidate c
+                      SET active_yn='N'
+                     WHERE c.forward_execution_id=%s
+                       AND c.strategy_reference LIKE 'RESEARCH_STRATEGY_%%'
+                       AND c.active_yn='Y'""",
+                (path.path_id,),
+            )
+            changed = cursor.rowcount
+            connection.commit()
+        return changed
