@@ -1,5 +1,9 @@
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.live_registry import LiveStrategyResolution
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,7 @@ class ResolvedSmokeConfig:
     kill_switch: str = "ARMED_FOR_ONE_SUBMIT"
     global_trade_yn: str = "N"
     network_send_enabled: bool = False
+    registry_resolution: "LiveStrategyResolution | None" = None
 
     def validate(self):
         checks = []
@@ -98,9 +103,13 @@ class ResolvedSmokeConfig:
             "active_stock_code is whitelisted",
         )
         add(bool(self.strategy_instance_id), "strategy_instance_id exactly one")
-        # The explicit, non-empty value is the only approved instance in this
-        # resolved record. There is deliberately no implicit instance default.
-        add(bool(self.strategy_instance_id), "strategy_instance_id is approved for this smoke")
+        registry_valid = (
+            self.registry_resolution is not None
+            and self.registry_resolution.strategy_instance_id == self.strategy_instance_id
+            and self.registry_resolution.execution_stock_code == self.active_stock_code
+            and self.registry_resolution.smoke_safe
+        )
+        add(registry_valid, "strategy_instance_id is existing/valid")
         add(self.side == "BUY", "side == BUY")
         add(self.quantity == 1, "quantity == 1")
         add(self.allowed_date is not None, "allowed_date resolved")
