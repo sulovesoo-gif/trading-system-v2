@@ -13,7 +13,7 @@ def main():
  with psycopg.connect(**s.connection_kwargs()) as c,c.cursor() as q:
   q.execute('SELECT strategy_id,strategy_code,signal_stock_code,execution_stock_code FROM research_strategy_master ORDER BY strategy_id')
   rows=q.fetchall()
- executable=[r for r in rows if r[1] in CORE_CODES and r[2] and r[3]]
+  executable=[r for r in rows if r[1] in CORE_CODES and r[2] and r[3]]
   reasons={str(r[0]):('CORE_UNSUPPORTED' if r[1] not in CORE_CODES else 'MAPPING_MISSING') for r in rows if r not in executable}
  print(json.dumps({'research_total_rows':len(rows),'executable_rows':len(executable),'non_executable_rows':len(rows)-len(executable),'non_executable_reasons':reasons},default=str))
 if __name__=='__main__':raise SystemExit(main())
