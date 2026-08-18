@@ -8,7 +8,7 @@ from pathlib import Path
 from src.repository.database import DatabaseSettings
 
 
-DDL_FILES = ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql", "database/ddl/38_live_strategy_instance_role.sql")
+DDL_FILES = ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql", "database/ddl/38_live_strategy_instance_role.sql", "database/ddl/39_forward_performance_metrics.sql")
 
 
 def main() -> int:
@@ -21,7 +21,7 @@ def main() -> int:
         for path in DDL_FILES:
             cursor.execute(Path(path).read_text(encoding="utf-8"))
         connection.commit()
-    print("APPLIED additive execution DDL 36/37")
+    print("APPLIED additive execution DDL 36/37/38/39")
     return 0
 
 
