@@ -101,6 +101,20 @@ class LiveStrategyRegistryRepository:
             raise LiveStrategyRegistryError("live_strategy_id does not exist")
         return self._resolution(row)
 
+    def resolve_canonical_live(self) -> tuple[LiveStrategyResolution, ...]:
+        """Only explicit canonical instances are eligible for LIVE/Forward runtime."""
+        with self._connection_factory() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT l.live_strategy_id,l.strategy_id,m.strategy_code,l.live_name,l.live_yn,
+                              m.signal_stock_code,m.signal_direction,m.execution_stock_code,m.execution_direction,
+                              l.initial_live_capital,m.enabled_live_yn
+                              FROM research_live_strategy l JOIN research_strategy_master m USING(strategy_id)
+                              WHERE l.instance_role='CANONICAL_LIVE' ORDER BY l.live_strategy_id""")
+            rows = cursor.fetchall()
+        required = {294, 299, 802, 623}
+        if {int(row[1]) for row in rows} != required or len(rows) != 4:
+            raise LiveStrategyRegistryError("canonical LIVE registry must contain exactly 294,299,802,623")
+        return tuple(self._resolution(row) for row in rows)
+
     def resolve_smoke_candidate(self, *, active_stock_code: str) -> LiveStrategyResolution:
         """Return exactly one disabled registry row matching the approved product."""
         with self._connection_factory() as connection, connection.cursor() as cursor:

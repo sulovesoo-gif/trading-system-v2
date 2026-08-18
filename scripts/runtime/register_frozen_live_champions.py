@@ -31,7 +31,10 @@ def main() -> int:
                 # Existing rows must be inspected rather than silently repurposed.
                 print(f"BLOCKED strategy_id={champion.strategy_id}: {exc}")
                 continue
-            print(f"CREATED {resolved.strategy_instance_id} strategy_id={resolved.strategy_id} live_yn={resolved.live_yn}")
+                with pool.connection() as connection, connection.cursor() as cursor:
+                    cursor.execute("UPDATE research_live_strategy SET instance_role='CANONICAL_LIVE' WHERE live_strategy_id=%s", (resolved.live_strategy_id,))
+                    connection.commit()
+                print(f"CREATED {resolved.strategy_instance_id} strategy_id={resolved.strategy_id} live_yn={resolved.live_yn}")
     finally:
         pool.close()
     return 0
