@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.strategy_core.bars import CompletedBar, S1Evidence, S2Evidence
-from src.strategy_core.contracts import DecisionType
+from src.strategy_core.contracts import DecisionType, SignalDecision
+from src.strategy_core.historical import HistoricalDataProvider, HistoricalExecutionAdapter
 from src.strategy_core.registry import strategy_from_registry_row
 from src.strategy_core.state import S1State, S2State, S3State
 from src.strategy_core.strategies import (
@@ -64,6 +65,22 @@ class GoldenArtifactTest(unittest.TestCase):
 
 
 class DecisionCoreTest(unittest.TestCase):
+    def test_s1_eod_exit_uses_last_same_day_execution_bar_when_1519_is_missing(self):
+        decision = SignalDecision(
+            decision_id="s1-eod", strategy_id=802, strategy_code="S1_OR_PULLBACK_RESTART",
+            strategy_version="1.0.0", code_commit="test", signal_stock_code="005930",
+            signal_direction="LONG", signal_time=dt("2026-08-01T15:19:00"),
+            execution_stock_code="0193W0", execution_direction="LONG", decision_type=DecisionType.EXIT,
+            exit_reason="EOD_1519", target_time=dt("2026-08-01T15:19:00"),
+        )
+        provider = HistoricalDataProvider({"0193W0": (
+            bar("2026-08-01T15:18:00", close=101),
+            bar("2026-08-02T09:00:00", close=102),
+        )})
+        execution = HistoricalExecutionAdapter(provider)
+        resolved = execution.exit_bar(decision, eod_uses_close=True)
+        self.assertEqual(resolved.time, dt("2026-08-01T15:18:00"))
+
     def test_registry_mapping_keeps_signal_and_execution_coordinates_separate(self):
         item = definition("S3_VOLUME_CLIMAX_REVERSAL", instance="HYNIX_S3_SHORT_3BAR")
         self.assertEqual((item.signal_stock_code, item.signal_direction), ("000660", "SHORT"))

@@ -80,6 +80,19 @@ class HistoricalExecutionAdapter:
         if decision.target_time is None:
             raise ValueError("exit decision requires target_time")
         bar = self.provider.bar_at(decision.execution_stock_code, decision.target_time)
+        if bar is None and eod_uses_close:
+            # The frozen S1 baseline defines EOD as the exact 15:19 execution
+            # bar when available, otherwise the last actual execution bar on
+            # that same trading day.  This is execution mapping only; the Core
+            # decision and S1's within-30 invalidation semantics stay intact.
+            candidates = (
+                item for item in self.provider.bars(
+                    decision.execution_stock_code,
+                    decision.target_time.date().isoformat(),
+                )
+                if item.time <= decision.target_time
+            )
+            bar = max(candidates, key=lambda item: item.time, default=None)
         if bar is None:
             raise LookupError(f"missing exact exit execution bar: {decision.execution_stock_code} {decision.target_time}")
         return bar
