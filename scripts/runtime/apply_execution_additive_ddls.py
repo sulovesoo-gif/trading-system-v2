@@ -8,7 +8,7 @@ from pathlib import Path
 from src.repository.database import DatabaseSettings
 
 
-DDL_FILES = ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql")
+DDL_FILES = ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql", "database/ddl/38_live_strategy_instance_role.sql")
 
 
 def main() -> int:

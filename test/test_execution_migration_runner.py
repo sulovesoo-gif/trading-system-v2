@@ -11,4 +11,4 @@ class ExecutionMigrationRunnerTest(unittest.TestCase):
             main()
 
     def test_only_declares_the_two_additive_execution_files(self):
-        self.assertEqual(DDL_FILES, ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql"))
+        self.assertEqual(DDL_FILES, ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql", "database/ddl/38_live_strategy_instance_role.sql"))
