@@ -3,5 +3,7 @@
 from .contracts import ForwardCandidate, ForwardExecutionPath, ForwardPerformance, ForwardPerformanceTracker, ForwardRegistry
 from .persistence import PostgresForwardRegistry
 from .runtime import ForwardObservationRuntime, ForwardPlan
+from .raw_provider import PostgresCompletedMinuteProvider
+from .definition_registry import ForwardDefinitionRegistry
 
-__all__ = ["ForwardCandidate", "ForwardExecutionPath", "ForwardPerformance", "ForwardPerformanceTracker", "ForwardRegistry", "PostgresForwardRegistry", "ForwardObservationRuntime", "ForwardPlan"]
+__all__ = ["ForwardCandidate", "ForwardExecutionPath", "ForwardPerformance", "ForwardPerformanceTracker", "ForwardRegistry", "PostgresForwardRegistry", "ForwardObservationRuntime", "ForwardPlan", "PostgresCompletedMinuteProvider", "ForwardDefinitionRegistry"]
