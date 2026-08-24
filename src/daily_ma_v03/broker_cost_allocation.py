@@ -67,6 +67,8 @@ class CostAllocation:
 
 def _allocate(total: Decimal, targets: tuple[CostAllocationTarget, ...]) -> dict[tuple[int, str], Decimal]:
     """Allocate whole won pro-rata, then residual by stable deterministic key."""
+    if total != total.quantize(Decimal("1")):
+        raise ValueError("BROKER_COST_WON_PRECISION_REQUIRED")
     if total == 0:
         return {(target.live_trade_id, target.side): Decimal("0") for target in targets}
     denominator = sum((target.fill_notional for target in targets), Decimal("0"))
