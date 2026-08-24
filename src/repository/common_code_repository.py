@@ -84,12 +84,23 @@ class CommonCodeRepository:
     def enabled_daily_stocks(self) -> list[StockDailyConfig]:
         """Official daily RAW collection targets declared by STOCK_DAILY."""
         rows = self._fetchall(
-            "SELECT code, code_name, COALESCE(NULLIF(BTRIM(attr1), ''), 'KOSPI'), "
-            "COALESCE(NULLIF(BTRIM(attr2), ''), 'KRX') "
+            "SELECT code, code_name, attr1, attr2, attr7 "
             "FROM common_code WHERE group_cd='STOCK_DAILY' AND use_yn='Y' "
             "ORDER BY sort_order, code"
         )
-        return [StockDailyConfig(row[0], row[1] or row[0], row[2], row[3]) for row in rows]
+        result = []
+        for code, name, attr1, attr2, attr7 in rows:
+            # New STOCK_DAILY rows use attr1/attr2 = market/venue.  Existing
+            # deployed rows predate that contract and retain STOCK-layout
+            # fields (attr1=instrument type, attr7=legacy venue).  Daily MA's
+            # official source is KRX, so normalize only that legacy layout;
+            # do not rewrite common-code history merely to run the collector.
+            if str(attr2 or "").strip() in {"KRX", "NXT", "INTEGRATED"}:
+                market, venue = str(attr1 or "KOSPI").strip(), str(attr2).strip()
+            else:
+                market, venue = "KOSPI", "KRX"
+            result.append(StockDailyConfig(str(code), str(name or code), market, venue))
+        return result
 
     def active_ma_config(self, code: str) -> MaConfig:
         row = self._fetchone(

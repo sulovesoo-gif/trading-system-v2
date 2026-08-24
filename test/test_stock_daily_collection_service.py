@@ -29,7 +29,7 @@ class _CommonCodeProbe(CommonCodeRepository):
     def __init__(self): pass
     def _fetchall(self, sql):
         self.sql = sql
-        return [("000660", "SK hynix", "KOSPI", "KRX")]
+        return [("000660", "SK hynix", "KOSPI", "KRX", None)]
 
 
 class StockDailyCollectionTest(unittest.TestCase):
@@ -42,6 +42,11 @@ class StockDailyCollectionTest(unittest.TestCase):
         probe = _CommonCodeProbe()
         self.assertEqual(probe.enabled_daily_stocks(), [StockDailyConfig("000660", "SK hynix", "KOSPI", "KRX")])
         self.assertIn("group_cd='STOCK_DAILY' AND use_yn='Y'", probe.sql)
+
+    def test_legacy_stock_layout_normalizes_to_krx_without_rewriting_row(self):
+        class Legacy(_CommonCodeProbe):
+            def _fetchall(self, sql): return [("005930", "Samsung", "STOCK", "Y", "INTEGRATED")]
+        self.assertEqual(Legacy().enabled_daily_stocks(), [StockDailyConfig("005930", "Samsung", "KOSPI", "KRX")])
 
     def test_existing_raw_is_idempotent_and_failures_are_isolated(self):
         backfill = _Backfill(failures={"0193T0"})
