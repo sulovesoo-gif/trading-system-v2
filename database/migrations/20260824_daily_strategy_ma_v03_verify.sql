@@ -72,7 +72,7 @@ WITH view_rows AS (
 )
 SELECT view_name,
        count(*) AS rows,
-       count(DISTINCT strategy_id) AS strategy_count,
+       count(DISTINCT v.strategy_id) AS strategy_count,
        count(*) FILTER (WHERE m.strategy_role = 'CANONICAL' AND m.is_enabled = 'Y') AS canonical_rows,
        count(*) FILTER (WHERE m.strategy_role = 'LEGACY_BRAKE_COMPARISON') AS legacy_rows
   FROM view_rows v
