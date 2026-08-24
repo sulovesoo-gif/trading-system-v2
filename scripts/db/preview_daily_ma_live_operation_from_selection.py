@@ -1,6 +1,6 @@
 """Read-only first LIVE operation preview; it intentionally writes nothing."""
 from __future__ import annotations
-import json,sys
+import json,os,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT))
 from dotenv import load_dotenv
@@ -18,5 +18,10 @@ def main():
                  AND s.decision_status='SELECTED'
                ORDER BY CASE s.selection_tier WHEN 'CORE' THEN 1 WHEN 'ACTIVE' THEN 2 ELSE 3 END,s.strategy_id""")
   rows=[dict(zip(['strategy_id','selection_tier','recommended_amount','current_operation_status','current_allocated_amount','proposed_operation_status','proposed_initial_capital','proposed_capital_epoch_no'],r)) for r in q.fetchall()]
- print(json.dumps({'preview_only':True,'selected_count':len(rows),'rows':rows},default=str))
+ if os.getenv('SUMMARY_ONLY')=='YES':
+  print(json.dumps({'preview_only':True,'selected_count':len(rows),
+   'core':sum(r['selection_tier']=='CORE' for r in rows),'active':sum(r['selection_tier']=='ACTIVE' for r in rows),
+   'observe':sum(r['selection_tier']=='OBSERVE' for r in rows),'current_live':sum(r['current_operation_status']=='LIVE' for r in rows),
+   'proposed_initial_capital_total':str(sum((r['proposed_initial_capital'] or 0) for r in rows))},default=str))
+ else: print(json.dumps({'preview_only':True,'selected_count':len(rows),'rows':rows},default=str))
 if __name__=='__main__':raise SystemExit(main())
