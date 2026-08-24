@@ -21,7 +21,7 @@ def main() -> int:
     load_dotenv(ROOT / ".env")
     lookup = KISBrokerAvailableCashLookup(client=KISClient(), account=KISOrderAccount.from_environment())
     result = lookup.orderable_cash(stock_code="005930", order_price=Decimal("1000"))
-    print(json.dumps({"endpoint": "inquire-psbl-order", "method": "GET", "ord_psbl_cash": "PRESENT",
+    print(json.dumps({"endpoint": "inquire-psbl-order", "method": "GET", "cash_field": result.source_field,
                       "cash_value_masked": True,
                       "includes_pending_order_reservations": result.includes_pending_order_reservations}))
     return 0

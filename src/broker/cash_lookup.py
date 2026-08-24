@@ -1,7 +1,8 @@
 """Read-only KIS domestic-stock orderable-cash lookup.
 
 The endpoint is an account inquiry (GET), never an order transport.  Its
-``ord_psbl_cash`` is treated as broker-authoritative orderable cash; callers
+``nrcvb_buy_amt`` (the official no-credit purchase-possible amount) is treated
+as broker-authoritative orderable cash; callers
 must not subtract application reservations again.
 """
 
@@ -14,6 +15,7 @@ from decimal import Decimal
 @dataclass(frozen=True)
 class KISOrderableCash:
     amount: Decimal
+    source_field: str
     includes_pending_order_reservations: bool = True
 
 
@@ -35,7 +37,11 @@ class KISBrokerAvailableCashLookup:
             "OVRS_ICLD_YN": "N",
         })
         output = payload.get("output", {})
-        raw = str(output.get("ord_psbl_cash", "")).strip()
+        # KIS domestic-stock [007] documents nrcvb_buy_amt for cash accounts
+        # that do not use credit.  Keep the older ord_psbl_cash only as a
+        # compatibility fallback for an otherwise valid response.
+        field = "nrcvb_buy_amt" if str(output.get("nrcvb_buy_amt", "")).strip() else "ord_psbl_cash"
+        raw = str(output.get(field, "")).strip()
         if not raw:
-            raise ValueError("KIS orderable-cash response omitted ord_psbl_cash")
-        return KISOrderableCash(amount=Decimal(raw), includes_pending_order_reservations=True)
+            raise ValueError("KIS orderable-cash response omitted nrcvb_buy_amt")
+        return KISOrderableCash(amount=Decimal(raw), source_field=field, includes_pending_order_reservations=True)

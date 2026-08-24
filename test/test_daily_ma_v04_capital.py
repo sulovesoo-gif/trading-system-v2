@@ -89,11 +89,12 @@ class DailyMaV04CapitalTest(unittest.TestCase):
             def __init__(self): self.kwargs = None
             def get(self, **kwargs):
                 self.kwargs = kwargs
-                return {"output": {"ord_psbl_cash": "123456"}}
+                return {"output": {"nrcvb_buy_amt": "123456"}}
         class Account: cano, account_product_code = "12345678", "01"
         client = Client()
         result = KISBrokerAvailableCashLookup(client=client, account=Account()).orderable_cash(stock_code="005930", order_price=Decimal("1000"))
         self.assertEqual(result.amount, Decimal("123456"))
+        self.assertEqual(result.source_field, "nrcvb_buy_amt")
         self.assertTrue(result.includes_pending_order_reservations)
         self.assertEqual(client.kwargs["path"], "/uapi/domestic-stock/v1/trading/inquire-psbl-order")
         self.assertEqual(client.kwargs["params"]["PDNO"], "005930")
