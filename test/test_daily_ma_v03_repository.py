@@ -15,6 +15,10 @@ class PaperRuntimeRepositoryTest(unittest.TestCase):
         self.assertIn("DAILY_MA_V03", source)
         self.assertNotIn("KISOrderPostTransport", source)
 
+    def test_transition_identity_uses_named_contract_fields(self):
+        source = Path("src/daily_ma_v03/repository.py").read_text(encoding="utf-8")
+        self.assertIn("transition_key(paper_trade_id=paper_trade_id", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,7 +119,7 @@ class PostgresPaperRuntimeRepository:
                       (paper_trade_id,transition_key,transition_type,source_bar_time,
                        execution_target_time,snapshot_hash,detail)
                    VALUES (%s,%s,'ENTRY_CREATED',%s,%s,%s,%s)""",
-                (paper_trade_id, transition_key(paper_trade_id, "ENTRY_CREATED", event.source_bar_time),
+                (paper_trade_id, transition_key(paper_trade_id=paper_trade_id, transition_type="ENTRY_CREATED", source_bar_time=event.source_bar_time),
                  event.source_bar_time, execution_time, snapshot_digest, Jsonb(snapshot)),
             )
             connection.commit()
@@ -197,7 +197,7 @@ class PostgresPaperRuntimeRepository:
                        execution_target_time,snapshot_hash,detail)
                    VALUES (%s,%s,'NORMAL_EXIT',%s,%s,%s,%s)
                    ON CONFLICT (transition_key) DO NOTHING""",
-                (paper_trade_id, transition_key(paper_trade_id, "NORMAL_EXIT", signal_time), signal_time,
+                (paper_trade_id, transition_key(paper_trade_id=paper_trade_id, transition_type="NORMAL_EXIT", source_bar_time=signal_time), signal_time,
                  execution_time, digest, Jsonb(detail)),
             )
             connection.commit()
@@ -259,7 +259,7 @@ class PostgresPaperRuntimeRepository:
                        execution_target_time,snapshot_hash,detail)
                    VALUES (%s,%s,'DAY20_TRIGGERED',%s,%s,%s,%s)
                    ON CONFLICT (transition_key) DO NOTHING""",
-                (paper_trade_id, transition_key(paper_trade_id, "DAY20_TRIGGERED", trigger_time), trigger_time,
+                (paper_trade_id, transition_key(paper_trade_id=paper_trade_id, transition_type="DAY20_TRIGGERED", source_bar_time=trigger_time), trigger_time,
                  execution_time, digest, Jsonb(detail)),
             )
             cursor.execute(
@@ -268,7 +268,7 @@ class PostgresPaperRuntimeRepository:
                        execution_target_time,snapshot_hash,detail)
                    VALUES (%s,%s,'ACTUAL_EXIT',%s,%s,%s,%s)
                    ON CONFLICT (transition_key) DO NOTHING""",
-                (paper_trade_id, transition_key(paper_trade_id, "ACTUAL_EXIT", trigger_time), trigger_time,
+                (paper_trade_id, transition_key(paper_trade_id=paper_trade_id, transition_type="ACTUAL_EXIT", source_bar_time=trigger_time), trigger_time,
                  execution_time, digest, Jsonb(detail)),
             )
             connection.commit()
