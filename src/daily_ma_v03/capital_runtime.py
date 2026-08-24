@@ -19,7 +19,7 @@ class DailyMaV04CapitalNoSendRuntime:
                    execution_stock_code: str, strategy_instance_id: str,
                    reference_price: Decimal, signal_time: datetime, execution_target_time: datetime,
                    capital_epoch_no: int, available_cash: AvailableCash,
-                   operation_status: str, reconciliation_healthy: bool,
+                   operation_status: str, reconciliation_healthy: bool, live_risk_status: str = "ENABLED",
                    locally_reserved_amount: Decimal = Decimal("0")):
         if self.global_trade_yn != "N":
             raise ValueError("Daily MA V0.4 no-send requires GLOBAL_TRADE_YN=N")
@@ -27,6 +27,8 @@ class DailyMaV04CapitalNoSendRuntime:
             return None, "OPERATION_NOT_LIVE"
         if not reconciliation_healthy:
             return None, "RECONCILIATION_REQUIRED"
+        if live_risk_status != "ENABLED":
+            return None, "THREE_STRIKE_SUSPENDED"
         intent = NoSendIntent(entry_intent_key(strategy_id=strategy_id, signal_event_key=signal_event_key),
                               paper_trade_id, strategy_id, signal_event_key, "ENTRY", "BUY", 1,
                               reference_price, signal_time)

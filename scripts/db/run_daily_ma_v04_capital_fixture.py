@@ -36,6 +36,7 @@ def main() -> int:
                                 JOIN daily_strategy_master m USING(strategy_id)
                                 JOIN daily_strategy_operation o USING(strategy_id)
                                WHERE m.strategy_role='CANONICAL' AND p.source_system='DAILY_MA_V03'
+                                 AND NOT EXISTS (SELECT 1 FROM daily_strategy_compound_capital c WHERE c.strategy_id=m.strategy_id)
                                ORDER BY p.paper_trade_id LIMIT 1""")
             paper_trade_id, strategy_id, stock, operation_id = cursor.fetchone()
             cursor.execute("""INSERT INTO daily_strategy_compound_capital
