@@ -35,6 +35,15 @@ class DailyMaV03LiveNoSendTest(unittest.TestCase):
         self.assertEqual(first[1], "NO_SEND_VALIDATED")
         self.assertEqual(first[0], second[0])
 
+    def test_exit_is_ownership_scoped_and_normal_is_suppressed_after_day20_close(self):
+        runtime = DailyMaLiveNoSendRuntime(store=InMemoryDailyMaLiveNoSendStore())
+        args = dict(paper_trade_id=9, strategy_id="802", signal_event_key="event", execution_stock_code="0193W0", strategy_instance_id="DAILY_MA_802", quantity=1, reference_price=Decimal("100"), source_event_time=datetime(2026,8,24,10,0))
+        self.assertEqual(runtime.plan_exit(**args, exit_reason="DAY20_EXIT", ownership_remaining=0)[1], "OWNERSHIP_REQUIRED")
+        first = runtime.plan_exit(**args, exit_reason="DAY20_EXIT", ownership_remaining=1)
+        duplicate = runtime.plan_exit(**args, exit_reason="DAY20_EXIT", ownership_remaining=1)
+        self.assertEqual(first[0], duplicate[0])
+        self.assertEqual(runtime.plan_exit(**args, exit_reason="NORMAL_EXIT", ownership_remaining=1, live_actual_closed=True)[1], "LIVE_ALREADY_CLOSED")
+
     def test_postgres_store_has_no_broker_transport_dependency(self):
         content = Path("src/daily_ma_v03/live_nosend_repository.py").read_text(encoding="utf-8")
         self.assertIn("NO_SEND_VALIDATED", content)

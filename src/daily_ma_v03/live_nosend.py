@@ -36,6 +36,7 @@ class NoSendIntent:
     quantity: int
     reference_price: Decimal
     source_event_time: datetime
+    exit_reason: str | None = None
     status: str = "NO_SEND_VALIDATED"
     live_trade_id: int | None = None
 
@@ -123,5 +124,22 @@ class DailyMaLiveNoSendRuntime:
         request, _ = self.store.prepare(intent=intent, execution_stock_code=execution_stock_code,
                                         strategy_instance_id=strategy_instance_id,
                                         execution_target_time=execution_target_time,
+                                        global_trade_yn=self.global_trade_yn)
+        return request, "NO_SEND_VALIDATED"
+
+    def plan_exit(self, *, paper_trade_id: int, strategy_id: str, signal_event_key: str,
+                  execution_stock_code: str, strategy_instance_id: str, quantity: int,
+                  reference_price: Decimal, source_event_time: datetime, exit_reason: str,
+                  ownership_remaining: int, live_actual_closed: bool = False) -> tuple[NoSendOrderRequest | None, str]:
+        if live_actual_closed and exit_reason == "NORMAL_EXIT":
+            return None, "LIVE_ALREADY_CLOSED"
+        if ownership_remaining < quantity or quantity <= 0:
+            return None, "OWNERSHIP_REQUIRED"
+        key = exit_intent_key(paper_trade_id=paper_trade_id, exit_reason=exit_reason, source_event_time=source_event_time)
+        intent = NoSendIntent(key, paper_trade_id, strategy_id, signal_event_key, "EXIT", "SELL", quantity,
+                              reference_price, source_event_time, exit_reason)
+        request, _ = self.store.prepare(intent=intent, execution_stock_code=execution_stock_code,
+                                        strategy_instance_id=strategy_instance_id,
+                                        execution_target_time=source_event_time,
                                         global_trade_yn=self.global_trade_yn)
         return request, "NO_SEND_VALIDATED"

@@ -9,8 +9,9 @@ from .live_nosend import CapitalReservation, NoSendIntent, NoSendOrderRequest
 
 
 class PostgresDailyMaLiveNoSendStore:
-    def __init__(self, connection_factory) -> None:
+    def __init__(self, connection_factory, *, commit: bool = True) -> None:
         self._connection_factory = connection_factory
+        self._commit = commit
 
     def prepare(self, *, intent: NoSendIntent, execution_stock_code: str,
                 strategy_instance_id: str, execution_target_time, global_trade_yn: str) -> tuple[NoSendOrderRequest, bool]:
@@ -27,7 +28,7 @@ class PostgresDailyMaLiveNoSendStore:
                    ON CONFLICT (intent_key) DO NOTHING RETURNING intent_id""",
                 (str(uuid5(NAMESPACE_URL, "daily-ma-live-intent|" + intent.intent_key)), intent.intent_key,
                  intent.paper_trade_id, intent.strategy_id, intent.signal_event_key, intent.intent_type,
-                 "" if intent.intent_type == "ENTRY" else "NORMAL_EXIT", intent.source_event_time,
+                 "" if intent.intent_type == "ENTRY" else str(intent.exit_reason or "NORMAL_EXIT"), intent.source_event_time,
                  intent.quantity, intent.reference_price, intent.reference_price * intent.quantity),
             )
             created = cursor.fetchone() is not None
@@ -50,5 +51,6 @@ class PostgresDailyMaLiveNoSendStore:
                      str(uuid5(NAMESPACE_URL, "daily-ma-live-intent|" + intent.intent_key)),
                      Decimal(intent.reference_price) * intent.quantity),
                 )
-            connection.commit()
+            if self._commit:
+                connection.commit()
         return request, created
