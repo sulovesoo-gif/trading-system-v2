@@ -31,7 +31,7 @@ class PostgresDailyMaCapitalStore:
         with self._connection_factory() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"daily-ma-v04-capital|{strategy_id}|{capital_epoch_no}",))
             cursor.execute("""SELECT trade_status,strategy_id,capital_epoch_no,capital_settled_at
-                                FROM daily_strategy_live_trade WHERE live_trade_id=%s FOR UPDATE"", (live_trade_id,))
+                                FROM daily_strategy_live_trade WHERE live_trade_id=%s FOR UPDATE""", (live_trade_id,))
             trade = cursor.fetchone()
             if trade is None or trade[0] != "CLOSED" or str(trade[1]) != strategy_id or int(trade[2]) != capital_epoch_no:
                 raise ValueError("CLOSED_LIVE_TRADE_REQUIRED")
