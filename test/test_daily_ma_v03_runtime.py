@@ -55,5 +55,11 @@ class DailyMaPaperRuntimeTest(unittest.TestCase):
         self.assertEqual(1, runtime.evaluate_day20(datetime(2026, 8, 24, 10, 0)))
         self.assertEqual(datetime(2026, 8, 24, 10, 1), repo.day20["execution_time"])
 
+    def test_strategy_filter_limits_a_write_fixture_to_one_strategy(self):
+        strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)
+        repo = Repository(strategy)
+        runtime = DailyMaPaperRuntime(repository=repo, raw_provider=Raw(), strategy_ids={"OTHER"})
+        self.assertEqual((), runtime.evaluate_1518(datetime(2026, 8, 24, 15, 18)))
+
 
 if __name__ == "__main__": unittest.main()

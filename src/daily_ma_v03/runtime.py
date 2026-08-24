@@ -51,9 +51,11 @@ class PaperRuntimeRepository(Protocol):
 class DailyMaPaperRuntime:
     """Evaluates all canonical strategies at 15:18 with DB writes delegated."""
 
-    def __init__(self, *, repository: PaperRuntimeRepository, raw_provider) -> None:
+    def __init__(self, *, repository: PaperRuntimeRepository, raw_provider,
+                 strategy_ids: set[str] | None = None) -> None:
         self.repository = repository
         self.raw_provider = raw_provider
+        self.strategy_ids = strategy_ids
 
     def evaluate_1518(self, at: datetime) -> tuple[EvaluationResult, ...]:
         if at.hour != 15 or at.minute != 18:
@@ -64,6 +66,8 @@ class DailyMaPaperRuntime:
         # same batch is still allowed below.
         self._evaluate_normal_exits(at)
         for strategy in self.repository.canonical_strategies():
+            if self.strategy_ids is not None and strategy.strategy_id not in self.strategy_ids:
+                continue
             source = self.raw_provider.source_bar(strategy.signal_code, at)
             if source is None:
                 continue
