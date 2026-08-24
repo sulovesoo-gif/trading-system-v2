@@ -30,10 +30,19 @@ def main() -> int:
         paper_rows = cursor.fetchone()[0]
         cursor.execute("SELECT count(*) FROM daily_strategy_paper_event")
         event_rows = cursor.fetchone()[0]
+        cursor.execute("SELECT count(*) FROM daily_strategy_paper_transition")
+        transition_rows = cursor.fetchone()[0]
+        cursor.execute("""SELECT count(*) FROM (
+                            SELECT strategy_id,signal_event_key,event_kind,count(*)
+                              FROM daily_strategy_paper_event
+                             GROUP BY strategy_id,signal_event_key,event_kind HAVING count(*)>1
+                        ) x""")
+        duplicate_events = cursor.fetchone()[0]
         cursor.execute("SELECT attr1 FROM common_code WHERE group_cd='SYSTEM_SWITCH' AND code='GLOBAL_TRADE_YN'")
         global_trade = cursor.fetchone()[0]
     print(json.dumps({"runtime_tables": tables, "canonical_runtime_strategies": canonical,
                       "daily_ma_v03_paper_rows": paper_rows, "paper_event_rows": event_rows,
+                      "paper_transition_rows": transition_rows, "duplicate_event_keys": duplicate_events,
                       "global_trade_yn": global_trade}, sort_keys=True))
     return 0
 

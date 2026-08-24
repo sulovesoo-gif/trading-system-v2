@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 
 from src.daily_ma_v03.evaluator import DailyMaStrategy
-from src.daily_ma_v03.runtime import DailyMaPaperRuntime, OpenDay20Trade
+from src.daily_ma_v03.runtime import DailyMaPaperRuntime, OpenDay20Trade, OpenNormalTrade
 from src.daily_ma_v03.contracts import ExecutionBar
 
 
@@ -37,6 +37,18 @@ class Day20Raw(Raw):
     def execution_bars_after(self, stock_code, at): return (ExecutionBar(datetime(2026, 8, 24, 10, 1), 99),)
 
 
+class NormalExitRepository(Repository):
+    def __init__(self, strategy): super().__init__(strategy); self.normal = None
+    def open_normal_tracking_trades(self):
+        return [OpenNormalTrade(9, datetime(2026, 8, 23).date(), self.strategy)]
+    def record_normal_exit(self, **kwargs): self.normal = kwargs; return True
+
+
+class NormalExitRaw(Raw):
+    def source_bar(self, stock_code, at): return {"bar_time": at.isoformat(), "open": 20, "high": 20, "low": 10, "close": 10, "volume": 1}
+    def prior_daily_closes(self, stock_code, before, limit): return [20] * limit
+
+
 class DailyMaPaperRuntimeTest(unittest.TestCase):
     def test_no_write_duplicate_and_normal_exit_are_independent(self):
         strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)
@@ -60,6 +72,16 @@ class DailyMaPaperRuntimeTest(unittest.TestCase):
         repo = Repository(strategy)
         runtime = DailyMaPaperRuntime(repository=repo, raw_provider=Raw(), strategy_ids={"OTHER"})
         self.assertEqual((), runtime.evaluate_1518(datetime(2026, 8, 24, 15, 18)))
+
+    def test_existing_open_trade_gets_its_own_normal_exit_evaluation(self):
+        # Existing long position's 3/5 normal exit crosses down on today's 15:18
+        # completed close. This is independent from whether a new entry exists.
+        strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)
+        repo = NormalExitRepository(strategy)
+        runtime = DailyMaPaperRuntime(repository=repo, raw_provider=NormalExitRaw())
+        runtime.evaluate_1518(datetime(2026, 8, 24, 15, 18))
+        self.assertEqual(9, repo.normal["paper_trade_id"])
+        self.assertEqual(datetime(2026, 8, 24, 15, 19), repo.normal["execution_time"])
 
 
 if __name__ == "__main__": unittest.main()
