@@ -86,9 +86,119 @@ COMMENT ON COLUMN daily_strategy_master.day20_enabled IS
 COMMENT ON COLUMN daily_strategy_paper_trade.normal_tracking_status IS
     'DAY20 actual close may leave normal MA path OPEN until its later normal exit is observed.';
 
--- Historical/all-lineage views stay intact. New V0.3 runtime and official
--- V0.3 reporting must use the canonical-only views below. Existing operation
--- rows are preserved; NONE rows are excluded by the master role predicate.
+-- First copy the current definitions into independent history views.  Do not
+-- rename existing views: PostgreSQL dependencies are OID-based.  Dashboard
+-- history is created only after its leaf histories exist, and is rewritten to
+-- depend on those copies rather than on the official names below.
+DO $$
+DECLARE
+    source_view TEXT;
+    history_view TEXT;
+    definition_sql TEXT;
+BEGIN
+    FOREACH source_view IN ARRAY ARRAY[
+        'vw_daily_strategy_current_operation',
+        'vw_daily_strategy_performance_all',
+        'vw_daily_strategy_recent10',
+        'vw_daily_strategy_live_exposure',
+        'vw_daily_strategy_paper_live_audit',
+        'vw_daily_strategy_latest_dominance'
+    ]
+    LOOP
+        history_view := source_view || '_history';
+        IF to_regclass('public.' || history_view) IS NULL THEN
+            SELECT pg_get_viewdef(('public.' || source_view)::regclass, TRUE)
+              INTO definition_sql;
+            EXECUTE format('CREATE VIEW public.%I AS %s', history_view, definition_sql);
+        END IF;
+    END LOOP;
+
+    IF to_regclass('public.vw_daily_strategy_dashboard_history') IS NULL THEN
+        SELECT pg_get_viewdef('public.vw_daily_strategy_dashboard'::regclass, TRUE)
+          INTO definition_sql;
+        definition_sql := replace(
+            definition_sql,
+            'vw_daily_strategy_current_operation',
+            'vw_daily_strategy_current_operation_history');
+        definition_sql := replace(
+            definition_sql,
+            'vw_daily_strategy_performance_all',
+            'vw_daily_strategy_performance_all_history');
+        definition_sql := replace(
+            definition_sql,
+            'vw_daily_strategy_recent10',
+            'vw_daily_strategy_recent10_history');
+        EXECUTE format(
+            'CREATE VIEW public.%I AS %s',
+            'vw_daily_strategy_dashboard_history',
+            definition_sql);
+    END IF;
+END $$;
+
+-- Keep the official names and output contracts intact, but make them V0.3
+-- canonical defaults.  The history copies above retain all 4,800 lineage.
+CREATE OR REPLACE VIEW vw_daily_strategy_current_operation AS
+SELECT h.*
+  FROM vw_daily_strategy_current_operation_history h
+  JOIN daily_strategy_master m ON m.strategy_id = h.strategy_id
+ WHERE m.strategy_role = 'CANONICAL'
+   AND m.is_enabled = 'Y';
+
+CREATE OR REPLACE VIEW vw_daily_strategy_performance_all AS
+SELECT h.*
+  FROM vw_daily_strategy_performance_all_history h
+  JOIN daily_strategy_master m ON m.strategy_id = h.strategy_id
+ WHERE m.strategy_role = 'CANONICAL'
+   AND m.is_enabled = 'Y';
+
+CREATE OR REPLACE VIEW vw_daily_strategy_recent10 AS
+SELECT h.*
+  FROM vw_daily_strategy_recent10_history h
+  JOIN daily_strategy_master m ON m.strategy_id = h.strategy_id
+ WHERE m.strategy_role = 'CANONICAL'
+   AND m.is_enabled = 'Y';
+
+CREATE OR REPLACE VIEW vw_daily_strategy_live_exposure AS
+SELECT m.signal_code,
+       m.direction,
+       m.execution_code,
+       count(*) AS open_live_trade_count,
+       sum(l.allocated_amount) AS allocated_exposure_amount,
+       sum(COALESCE(l.entry_quantity, 0) * COALESCE(l.live_entry_avg_price, 0))
+           AS estimated_entry_gross_amount,
+       count(DISTINCT l.strategy_id) AS open_live_strategy_count
+  FROM daily_strategy_live_trade l
+  JOIN daily_strategy_master m ON m.strategy_id = l.strategy_id
+ WHERE l.trade_status = 'OPEN'
+   AND m.strategy_role = 'CANONICAL'
+   AND m.is_enabled = 'Y'
+ GROUP BY m.signal_code, m.direction, m.execution_code;
+
+CREATE OR REPLACE VIEW vw_daily_strategy_paper_live_audit AS
+SELECT h.*
+  FROM vw_daily_strategy_paper_live_audit_history h
+  JOIN daily_strategy_master m ON m.strategy_id = h.strategy_id
+ WHERE m.strategy_role = 'CANONICAL'
+   AND m.is_enabled = 'Y';
+
+CREATE OR REPLACE VIEW vw_daily_strategy_latest_dominance AS
+SELECT h.*
+  FROM vw_daily_strategy_latest_dominance_history h
+  JOIN daily_strategy_master a ON a.strategy_id = h.strategy_a_id
+  JOIN daily_strategy_master b ON b.strategy_id = h.strategy_b_id
+ WHERE a.strategy_role = 'CANONICAL' AND a.is_enabled = 'Y'
+   AND b.strategy_role = 'CANONICAL' AND b.is_enabled = 'Y';
+
+CREATE OR REPLACE VIEW vw_daily_strategy_dashboard AS
+SELECT h.*
+  FROM vw_daily_strategy_dashboard_history h
+  JOIN daily_strategy_master m ON m.strategy_id = h.strategy_id
+ WHERE m.strategy_role = 'CANONICAL'
+   AND m.is_enabled = 'Y';
+
+-- Runtime needs the master parameters in addition to the canonical current
+-- operation view. Existing operation rows are preserved; NONE rows are
+-- excluded solely by the master role predicate.
 CREATE OR REPLACE VIEW vw_daily_strategy_v03_runtime AS
 SELECT m.strategy_id,
        m.strategy_name,

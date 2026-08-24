@@ -43,6 +43,59 @@ SELECT count(*) = 2400 AS canonical_runtime_rows,
 SELECT count(*) = 2400 AS legacy_comparison_rows
   FROM vw_daily_strategy_v03_legacy_brake_comparison;
 
+-- Official names must be canonical-only; history views retain the former
+-- all-lineage populations for audit and comparison.
+WITH view_rows AS (
+    SELECT 'official_current_operation'::text AS view_name, o.strategy_id
+      FROM vw_daily_strategy_current_operation o
+    UNION ALL
+    SELECT 'history_current_operation', o.strategy_id
+      FROM vw_daily_strategy_current_operation_history o
+    UNION ALL
+    SELECT 'official_dashboard', d.strategy_id
+      FROM vw_daily_strategy_dashboard d
+    UNION ALL
+    SELECT 'history_dashboard', d.strategy_id
+      FROM vw_daily_strategy_dashboard_history d
+    UNION ALL
+    SELECT 'official_performance_all', p.strategy_id
+      FROM vw_daily_strategy_performance_all p
+    UNION ALL
+    SELECT 'history_performance_all', p.strategy_id
+      FROM vw_daily_strategy_performance_all_history p
+    UNION ALL
+    SELECT 'official_recent10', r.strategy_id
+      FROM vw_daily_strategy_recent10 r
+    UNION ALL
+    SELECT 'history_recent10', r.strategy_id
+      FROM vw_daily_strategy_recent10_history r
+)
+SELECT view_name,
+       count(*) AS rows,
+       count(DISTINCT strategy_id) AS strategy_count,
+       count(*) FILTER (WHERE m.strategy_role = 'CANONICAL' AND m.is_enabled = 'Y') AS canonical_rows,
+       count(*) FILTER (WHERE m.strategy_role = 'LEGACY_BRAKE_COMPARISON') AS legacy_rows
+  FROM view_rows v
+  JOIN daily_strategy_master m ON m.strategy_id = v.strategy_id
+ GROUP BY view_name
+ ORDER BY view_name;
+
+SELECT count(*) AS official_live_exposure_rows,
+       count(*) AS canonical_only_by_definition
+  FROM vw_daily_strategy_live_exposure;
+
+SELECT count(*) AS official_paper_live_audit_rows,
+       count(*) FILTER (WHERE m.strategy_role = 'LEGACY_BRAKE_COMPARISON') AS legacy_rows_must_be_zero
+  FROM vw_daily_strategy_paper_live_audit a
+  JOIN daily_strategy_master m ON m.strategy_id = a.strategy_id;
+
+SELECT count(*) AS official_dominance_rows,
+       count(*) FILTER (WHERE a.strategy_role = 'LEGACY_BRAKE_COMPARISON'
+                          OR b.strategy_role = 'LEGACY_BRAKE_COMPARISON') AS legacy_pair_rows_must_be_zero
+  FROM vw_daily_strategy_latest_dominance d
+  JOIN daily_strategy_master a ON a.strategy_id = d.strategy_a_id
+  JOIN daily_strategy_master b ON b.strategy_id = d.strategy_b_id;
+
 SELECT count(*) AS canonical_identity_duplicates
   FROM (
         SELECT signal_code, execution_code, direction,
