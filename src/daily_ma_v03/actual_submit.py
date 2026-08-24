@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from .kis_order_history import UnknownResolution
+
 class SubmitState(str,Enum): PREPARED='PREPARED'; ACCEPTED='ACCEPTED'; REJECTED='REJECTED'; UNKNOWN_BROKER_STATE='UNKNOWN_BROKER_STATE'
 @dataclass
 class SubmitRecord: request_key:str; state:SubmitState=SubmitState.PREPARED; broker_order_number:str|None=None
@@ -39,3 +41,15 @@ class DailyMaBrokerSubmitRuntime:
   except TimeoutError:r.state=SubmitState.UNKNOWN_BROKER_STATE;return r,'UNKNOWN_BROKER_STATE'
   if raw.get('rt_cd')=='0':r.state=SubmitState.ACCEPTED;r.broker_order_number=str(raw.get('output',{}).get('ODNO') or '');return r,'ACK'
   r.state=SubmitState.REJECTED;return r,'REJECTED'
+
+ def recover_unknown(self,*,order,history_lookup,order_date):
+  """Read-only recovery.  UNRESOLVED deliberately leaves resend forbidden."""
+  r=self.store.get_or_create(order.client_order_key)
+  if r.state is not SubmitState.UNKNOWN_BROKER_STATE:return r,'NOT_UNKNOWN'
+  records=history_lookup.orders_for_day(order_date=order_date,stock_code=order.execution_stock_code,side=order.side,order_number=r.broker_order_number or '')
+  resolution,match=history_lookup.resolve(records=records,expected_quantity=order.quantity,known_order_number=r.broker_order_number or '')
+  if resolution is UnknownResolution.ACCEPTED:
+   r.state=SubmitState.ACCEPTED;r.broker_order_number=match.order_number;return r,'RECOVERED_ACK'
+  if resolution is UnknownResolution.REJECTED:
+   r.state=SubmitState.REJECTED;r.broker_order_number=match.order_number;return r,'RECOVERED_REJECTED'
+  return r,'RECOVERY_UNRESOLVED'
