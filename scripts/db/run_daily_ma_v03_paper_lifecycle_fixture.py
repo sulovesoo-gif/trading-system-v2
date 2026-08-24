@@ -93,6 +93,15 @@ def main() -> int:
         normal_first = restarted.record_normal_exit(paper_trade_id=paper_trade_id,
             signal_time=FIXTURE_EVENT_TIME, execution_time=datetime(2026, 8, 24, 15, 19),
             execution_price=110.0)
+        # Same 15:18 batch: a normal exit for an existing open trade must not
+        # block an independent new entry for the same strategy.
+        simultaneous_event = SignalEvent(strategy.signal_code, strategy.direction,
+                                         strategy.entry_fast_ma, strategy.entry_slow_ma,
+                                         "2026-08-24", FIXTURE_EVENT_TIME)
+        simultaneous_entry = restarted.record_entry(
+            strategy=strategy, event=simultaneous_event,
+            snapshot={"fixture": "NORMAL_EXIT_AND_NEW_ENTRY_SAME_BATCH"}, snapshot_digest="b" * 64,
+            execution_time=datetime(2026, 8, 24, 15, 19), execution_price=120.0)
         with pool.connection() as connection, connection.cursor() as cursor:
             cursor.execute("""SELECT trade_status,day20_applied,day20_exit_time,day20_exit_price,
                                      paper_exit_time,paper_exit_price,normal_tracking_status,
@@ -106,9 +115,15 @@ def main() -> int:
             cursor.execute("SELECT count(*) FROM daily_strategy_paper_transition WHERE paper_trade_id=%s",
                            (paper_trade_id,))
             transitions = cursor.fetchone()[0]
+            cursor.execute("""SELECT count(*) FROM daily_strategy_paper_trade
+                               WHERE source_trade_key=%s""",
+                           (f"{strategy.strategy_id}|{simultaneous_event.key()}",))
+            simultaneous_entry_rows = cursor.fetchone()[0]
         print(json.dumps({"fixture_paper_trade_id": paper_trade_id, "no_execution_created": no_execution_created,
                           "no_execution_rerun": no_execution_rerun, "no_execution_events": no_execution_events,
                           "day20_first": day20_first, "normal_first_after_restart": normal_first,
+                          "simultaneous_entry_created": simultaneous_entry,
+                          "simultaneous_entry_rows": simultaneous_entry_rows,
                           "trade_status": row[0], "day20_applied": row[1], "day20_exit_time": row[2],
                           "day20_exit_price": str(row[3]), "actual_exit_time": row[4],
                           "actual_exit_price": str(row[5]), "normal_tracking_status": row[6],

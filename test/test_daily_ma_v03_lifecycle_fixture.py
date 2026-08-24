@@ -8,6 +8,7 @@ class DailyMaV03LifecycleFixtureTest(unittest.TestCase):
         self.assertIn("RUN_DAILY_MA_V03_PAPER_LIFECYCLE_FIXTURE", content)
         self.assertIn('settings.name != "trading_system_v2_test"', content)
         self.assertIn("PostgresPaperRuntimeRepository(pool, write_enabled=True)", content)
+        self.assertIn("NORMAL_EXIT_AND_NEW_ENTRY_SAME_BATCH", content)
         self.assertNotIn("KISOrderPostTransport", content)
         self.assertNotIn("KisBrokerAdapter", content)
 
