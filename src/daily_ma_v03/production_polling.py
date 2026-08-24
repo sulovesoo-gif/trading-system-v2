@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from hashlib import sha256
 from .broker_cost_allocation import BrokerCostSnapshot, BrokerCostStatus
 from .broker_cost_finalization import next_krx_trading_date
+from .broker_cost_allocation import CostAllocationTarget
 
 class ProductionCheckpointPoller:
  def __init__(self,*,repository,history_lookup,checkpoint_store):self.repository=repository;self.history_lookup=history_lookup;self.checkpoint_store=checkpoint_store
@@ -38,5 +39,14 @@ class ProductionCostFinalizer:
     q.execute("SELECT broker_order_id,checkpoint_version,delta_quantity,delta_amount FROM daily_strategy_live_checkpoint_allocation WHERE stock_code=%s AND broker_event_time::date=%s ORDER BY broker_order_id,checkpoint_version",(stock_code,trade_date))
     digest=sha256(repr(q.fetchall()).encode()).hexdigest()
    state=self.cost_store.observe_stable_recheck(observed=observed,fill_set_fingerprint=digest,unattributed_activity=False,next_trade_date=next_day,minimum_interval=timedelta(minutes=10))
-   finalized+=int(state.snapshot.status is BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK)
+   if state.snapshot.status is BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK:
+    with self.connection_factory() as c,c.cursor() as q:
+     q.execute("""SELECT t.live_trade_id,a.side,sum(a.delta_amount),min(a.broker_order_id::text)
+                    FROM daily_strategy_live_checkpoint_allocation a
+                    JOIN daily_strategy_live_trade t ON t.ownership_id=a.ownership_id
+                   WHERE a.stock_code=%s AND a.broker_event_time::date=%s
+                   GROUP BY t.live_trade_id,a.side ORDER BY t.live_trade_id,a.side""",(stock_code,trade_date))
+     targets=tuple(CostAllocationTarget(int(x[0]),str(x[1]),x[2],str(x[3])) for x in q.fetchall())
+    self.cost_store.apply(snapshot=state.snapshot,targets=targets,unattributed_activity=False)
+    finalized+=1
   return {'pending_rechecks':len(rows),'finalized':finalized}
