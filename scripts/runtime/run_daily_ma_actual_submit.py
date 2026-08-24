@@ -1,6 +1,9 @@
 """Daily MA actual-runtime entrypoint; fake mode is the TEST systemd E2E lane."""
 from __future__ import annotations
 import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 if os.getenv('DAILY_MA_ACTUAL_SEND','N') != 'Y': print('Daily MA actual submit runtime started: SEND_LOCKED')
 elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'FAKE':
  from datetime import date
