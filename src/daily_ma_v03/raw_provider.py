@@ -28,6 +28,9 @@ class DailyMaRawProvider:
     def source_bar(self, stock_code: str, at: datetime) -> dict[str, object] | None:
         if at.time() != time(15, 18):
             raise ValueError("Daily MA V0.3 source evaluation is fixed at 15:18 KST")
+        return self.completed_source_bar(stock_code, at)
+
+    def completed_source_bar(self, stock_code: str, at: datetime) -> dict[str, object] | None:
         sql = """SELECT bar_time,open_price,high_price,low_price,close_price,volume
                    FROM raw_stock_minute
                   WHERE stock_code=%s AND bar_time=%s
@@ -42,6 +45,10 @@ class DailyMaRawProvider:
         return {"bar_time": row[0].isoformat(), "open": float(row[1]), "high": float(row[2]),
                 "low": float(row[3]), "close": float(row[4]), "volume": int(row[5] or 0)}
 
+    def previous_official_close(self, stock_code: str, before: datetime) -> float | None:
+        closes = self.prior_daily_closes(stock_code, before.date(), 1)
+        return closes[-1] if closes else None
+
     def execution_bars(self, stock_code: str, signal_time: datetime) -> tuple[ExecutionBar, ...]:
         sql = """SELECT bar_time,open_price
                    FROM raw_stock_minute
@@ -55,6 +62,22 @@ class DailyMaRawProvider:
             rows = cursor.fetchall()
         # Raw primary-key guarantees one value per venue/code/time; retain an
         # explicit time de-duplication to make a provider invariant visible.
+        unique: dict[datetime, ExecutionBar] = {}
+        for row in rows:
+            unique.setdefault(row[0], ExecutionBar(row[0], float(row[1])))
+        return tuple(unique.values())
+
+    def execution_bars_after(self, stock_code: str, after: datetime) -> tuple[ExecutionBar, ...]:
+        sql = """SELECT bar_time,open_price
+                   FROM raw_stock_minute
+                  WHERE stock_code=%s AND bar_time::date=%s AND bar_time > %s
+                    AND data_source='KIS' AND trading_venue='KRX' AND collect_cycle='1MIN'
+                    AND bar_time::time BETWEEN TIME '09:00' AND TIME '15:30'
+                    AND open_price IS NOT NULL AND open_price > 0
+                  ORDER BY bar_time, collected_at DESC NULLS LAST"""
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, (stock_code, after.date(), after))
+            rows = cursor.fetchall()
         unique: dict[datetime, ExecutionBar] = {}
         for row in rows:
             unique.setdefault(row[0], ExecutionBar(row[0], float(row[1])))

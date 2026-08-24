@@ -18,3 +18,15 @@ def first_actual_execution_bar(*, bars: Iterable[ExecutionBar], signal_time: dat
         key=lambda bar: bar.time,
     )
     return candidates[0] if candidates else None
+
+
+def first_actual_bar_after(*, bars: Iterable[ExecutionBar], after: datetime) -> ExecutionBar | None:
+    """DAY20 execution: next same-day actual execution OPEN, never post-close."""
+    candidates = sorted(
+        (bar for bar in bars
+         if bar.time.date() == after.date()
+         and bar.time > after
+         and time(9, 0) <= bar.time.time() <= time(15, 30)),
+        key=lambda bar: bar.time,
+    )
+    return candidates[0] if candidates else None

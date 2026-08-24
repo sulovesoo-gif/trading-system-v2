@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 
 from src.daily_ma_v03.evaluator import DailyMaStrategy
-from src.daily_ma_v03.runtime import DailyMaPaperRuntime
+from src.daily_ma_v03.runtime import DailyMaPaperRuntime, OpenDay20Trade
 from src.daily_ma_v03.contracts import ExecutionBar
 
 
@@ -16,13 +16,25 @@ class Repository:
     def record_entry(self, **kwargs):
         self.entries[(kwargs["strategy"].strategy_id, kwargs["event"].key())] = kwargs["snapshot_digest"]
         return True
-    def evaluate_open_normal_exits(self, *, signal_time): self.exit_calls += 1; return 0
+    def open_normal_tracking_trades(self): self.exit_calls += 1; return []
+    def record_normal_exit(self, **kwargs): return False
 
 
 class Raw:
     def source_bar(self, stock_code, at): return {"bar_time": at.isoformat(), "open": 10, "high": 20, "low": 10, "close": 20, "volume": 1}
     def prior_daily_closes(self, stock_code, before, limit): return [10] * limit
     def execution_bars(self, stock_code, at): return (ExecutionBar(datetime(2026, 8, 24, 15, 19), 100),)
+
+
+class Day20Repository(Repository):
+    def open_day20_trades(self): return [OpenDay20Trade(4, self.strategy)]
+    def record_day20_exit(self, **kwargs): self.day20 = kwargs; return True
+
+
+class Day20Raw(Raw):
+    def completed_source_bar(self, stock_code, at): return {"bar_time": at.isoformat(), "close": 80}
+    def previous_official_close(self, stock_code, at): return 100
+    def execution_bars_after(self, stock_code, at): return (ExecutionBar(datetime(2026, 8, 24, 10, 1), 99),)
 
 
 class DailyMaPaperRuntimeTest(unittest.TestCase):
@@ -35,6 +47,13 @@ class DailyMaPaperRuntimeTest(unittest.TestCase):
         rerun = runtime.evaluate_1518(datetime(2026, 8, 24, 15, 18))
         self.assertFalse(rerun[0].entry_created)
         self.assertEqual(2, repo.exit_calls)
+
+    def test_day20_uses_next_actual_intraday_execution_bar(self):
+        strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)
+        repo = Day20Repository(strategy)
+        runtime = DailyMaPaperRuntime(repository=repo, raw_provider=Day20Raw())
+        self.assertEqual(1, runtime.evaluate_day20(datetime(2026, 8, 24, 10, 0)))
+        self.assertEqual(datetime(2026, 8, 24, 10, 1), repo.day20["execution_time"])
 
 
 if __name__ == "__main__": unittest.main()
