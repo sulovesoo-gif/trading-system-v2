@@ -83,7 +83,8 @@ class InMemoryDailyMaLiveNoSendStore:
         self.reservations: dict[str, CapitalReservation] = {}
 
     def prepare(self, *, intent: NoSendIntent, execution_stock_code: str,
-                execution_target_time: datetime, global_trade_yn: str) -> tuple[NoSendOrderRequest, bool]:
+                strategy_instance_id: str, execution_target_time: datetime,
+                global_trade_yn: str) -> tuple[NoSendOrderRequest, bool]:
         if global_trade_yn != "N":
             raise ValueError("Daily MA LIVE NO_SEND requires GLOBAL_TRADE_YN=N")
         if intent.quantity <= 0 or intent.reference_price <= 0:
@@ -98,3 +99,29 @@ class InMemoryDailyMaLiveNoSendStore:
         if intent.intent_type == "ENTRY":
             self.reservations.setdefault(intent.intent_key, CapitalReservation(intent.intent_key, intent.reservation_amount))
         return request, True
+
+
+class DailyMaLiveNoSendRuntime:
+    """Bridges a durable PAPER entry event to a LIVE no-send plan only."""
+
+    def __init__(self, *, store, global_trade_yn: str = "N") -> None:
+        self.store = store
+        self.global_trade_yn = global_trade_yn
+
+    def plan_entry(self, *, paper_trade_id: int, strategy_id: str, signal_event_key: str,
+                   execution_stock_code: str, strategy_instance_id: str,
+                   quantity: int, reference_price: Decimal, signal_time: datetime,
+                   execution_target_time: datetime, operation_status: str,
+                   reconciliation_healthy: bool) -> tuple[NoSendOrderRequest | None, str]:
+        if operation_status != "LIVE":
+            return None, "OPERATION_NOT_LIVE"
+        if not reconciliation_healthy:
+            return None, "RECONCILIATION_REQUIRED"
+        key = entry_intent_key(strategy_id=strategy_id, signal_event_key=signal_event_key)
+        intent = NoSendIntent(key, paper_trade_id, strategy_id, signal_event_key, "ENTRY", "BUY",
+                              quantity, reference_price, signal_time)
+        request, _ = self.store.prepare(intent=intent, execution_stock_code=execution_stock_code,
+                                        strategy_instance_id=strategy_instance_id,
+                                        execution_target_time=execution_target_time,
+                                        global_trade_yn=self.global_trade_yn)
+        return request, "NO_SEND_VALIDATED"
