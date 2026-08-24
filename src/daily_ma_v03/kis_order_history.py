@@ -24,6 +24,7 @@ class DailyMaBrokerHistoryOrder:
     order_quantity: int
     average_fill_price: Decimal
     total_filled_quantity: int
+    total_filled_amount: Decimal
     remaining_quantity: int
     rejected_quantity: int
     cancelled: bool
@@ -82,6 +83,7 @@ class DailyMaKISOrderHistoryLookup:
             str(row.get("ord_dt", "")), str(row.get("odno", "")), str(row.get("ord_gno_brno", "")),
             str(row.get("pdno", "")), "BUY" if str(row.get("sll_buy_dvsn_cd", "")) == "02" else "SELL",
             integer("ord_qty"), Decimal(str(row.get("avg_prvs", "0") or "0")), integer("tot_ccld_qty"),
+            Decimal(str(row.get("tot_ccld_amt", "0") or "0")),
             integer("rmn_qty"), integer("rjct_qty"), str(row.get("cncl_yn", "")).upper() == "Y",
             str(row.get("ord_tmd", "")),
         )
