@@ -6,12 +6,53 @@ from uuid import NAMESPACE_URL, uuid5
 from .broker_cost_allocation import (
     BrokerCostSnapshot, BrokerCostStatus, CostAllocationTarget, allocate_final_costs, classify_snapshot,
 )
+from .broker_cost_finalization import StableCostRecheck, stable_recheck
 
 
 class PostgresDailyMaBrokerCostStore:
     """Idempotently persists final cost allocation; never creates broker fills."""
     def __init__(self, connection_factory, *, commit: bool = True) -> None:
         self.connection_factory, self.commit = connection_factory, commit
+
+    def observe_stable_recheck(self, *, observed: BrokerCostSnapshot, fill_set_fingerprint: str,
+                               unattributed_activity: bool, next_trade_date, minimum_interval):
+        """Persist T+1 evidence so restart cannot accidentally count twice."""
+        with self.connection_factory() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT broker_buy_fee,broker_sell_fee,broker_sell_tax,broker_other_cost,broker_snapshot_at,
+                                     finalization_status,fill_set_fingerprint,stable_confirmation_count,last_stable_recheck_at
+                                FROM daily_strategy_live_broker_cost_snapshot
+                               WHERE trade_date=%s AND execution_stock_code=%s FOR UPDATE""",
+                           (observed.trade_date, observed.execution_stock_code))
+            row = cursor.fetchone()
+            stored = None
+            if row:
+                from .broker_cost_allocation import BrokerCostTotals
+                prior = BrokerCostSnapshot(observed.trade_date, observed.execution_stock_code, BrokerCostTotals(*row[:4]),
+                    row[4], row[5] == BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK.value, BrokerCostStatus(row[5]))
+                stored = StableCostRecheck(prior, row[6] or '', False, int(row[7]), row[8])
+            state = stable_recheck(stored=stored, observed=observed, fill_set_fingerprint=fill_set_fingerprint,
+                                  unattributed_activity=unattributed_activity, next_trade_date=next_trade_date,
+                                  minimum_interval=minimum_interval)
+            snapshot_id = str(uuid5(NAMESPACE_URL, f"daily-ma-v042-cost|{observed.trade_date}|{observed.execution_stock_code}"))
+            cursor.execute("""INSERT INTO daily_strategy_live_broker_cost_snapshot
+                              (broker_cost_snapshot_id,trade_date,execution_stock_code,broker_buy_fee,broker_sell_fee,broker_sell_tax,
+                               broker_other_cost,broker_snapshot_at,finalization_status,stable_confirmation_count,
+                               fill_set_fingerprint,last_stable_recheck_at,finalized_at)
+                              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                              ON CONFLICT (trade_date,execution_stock_code) DO UPDATE SET
+                               broker_buy_fee=EXCLUDED.broker_buy_fee,broker_sell_fee=EXCLUDED.broker_sell_fee,
+                               broker_sell_tax=EXCLUDED.broker_sell_tax,broker_other_cost=EXCLUDED.broker_other_cost,
+                               broker_snapshot_at=EXCLUDED.broker_snapshot_at,finalization_status=EXCLUDED.finalization_status,
+                               stable_confirmation_count=EXCLUDED.stable_confirmation_count,
+                               fill_set_fingerprint=EXCLUDED.fill_set_fingerprint,last_stable_recheck_at=EXCLUDED.last_stable_recheck_at,
+                               finalized_at=EXCLUDED.finalized_at,updated_at=CURRENT_TIMESTAMP""",
+                (snapshot_id, observed.trade_date, observed.execution_stock_code, state.snapshot.totals.buy_fee,
+                 state.snapshot.totals.sell_fee, state.snapshot.totals.sell_tax, state.snapshot.totals.other_cost,
+                 state.snapshot.broker_snapshot_at, state.snapshot.status.value, state.confirmation_count,
+                 state.fill_set_fingerprint, state.last_confirmed_at,
+                 state.snapshot.broker_snapshot_at if state.snapshot.final else None))
+            if self.commit: connection.commit()
+        return state
 
     def apply(self, *, snapshot: BrokerCostSnapshot, targets: tuple[CostAllocationTarget, ...],
               unattributed_activity: bool = False) -> BrokerCostStatus:
@@ -26,7 +67,7 @@ class PostgresDailyMaBrokerCostStore:
             if row is not None:
                 from .broker_cost_allocation import BrokerCostTotals
                 stored = BrokerCostSnapshot(snapshot.trade_date, snapshot.execution_stock_code,
-                    BrokerCostTotals(*row[1:5]), row[5], row[6] == BrokerCostStatus.FINALIZED.value,
+                    BrokerCostTotals(*row[1:5]), row[5], row[6] == BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK.value,
                     BrokerCostStatus(row[6]))
             status = classify_snapshot(stored=stored, observed=snapshot)
             snapshot_id = str(uuid5(NAMESPACE_URL, f"daily-ma-v042-cost|{snapshot.trade_date}|{snapshot.execution_stock_code}"))
@@ -45,12 +86,12 @@ class PostgresDailyMaBrokerCostStore:
                     (snapshot_id, snapshot.trade_date, snapshot.execution_stock_code, snapshot.totals.buy_fee,
                      snapshot.totals.sell_fee, snapshot.totals.sell_tax, snapshot.totals.other_cost,
                      snapshot.broker_snapshot_at, status.value, snapshot.broker_snapshot_at if snapshot.final else None))
-            if status is not BrokerCostStatus.FINALIZED:
+            if status is not BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK:
                 if self.commit: connection.commit()
                 return status
             allocation_status, allocations = allocate_final_costs(snapshot=snapshot, targets=targets,
                                                                    unattributed_activity=unattributed_activity)
-            if allocation_status is not BrokerCostStatus.FINALIZED:
+            if allocation_status is not BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK:
                 cursor.execute("""UPDATE daily_strategy_live_broker_cost_snapshot
                                    SET finalization_status=%s,updated_at=CURRENT_TIMESTAMP
                                  WHERE broker_cost_snapshot_id=%s""", (allocation_status.value, snapshot_id))
@@ -67,10 +108,10 @@ class PostgresDailyMaBrokerCostStore:
                      allocation.buy_fee, allocation.sell_fee, allocation.sell_tax, allocation.other_cost, stable_key))
             cursor.execute("""UPDATE daily_strategy_live_broker_cost_snapshot
                                SET buy_fill_notional_denominator=%s,sell_fill_notional_denominator=%s,
-                                   finalization_status='FINALIZED',finalized_at=%s,updated_at=CURRENT_TIMESTAMP
+                                   finalization_status='FINALIZED_BY_STABLE_RECHECK',finalized_at=%s,updated_at=CURRENT_TIMESTAMP
                              WHERE broker_cost_snapshot_id=%s""",
                 (sum((a.fill_notional for a in allocations if a.side == 'BUY'), 0),
                  sum((a.fill_notional for a in allocations if a.side == 'SELL'), 0),
                  snapshot.broker_snapshot_at, snapshot_id))
             if self.commit: connection.commit()
-        return BrokerCostStatus.FINALIZED
+        return BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK

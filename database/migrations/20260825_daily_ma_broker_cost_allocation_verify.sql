@@ -11,7 +11,7 @@ SELECT count(*) AS allocation_total_mismatch FROM (
   SELECT s.broker_cost_snapshot_id
     FROM daily_strategy_live_broker_cost_snapshot s
     LEFT JOIN daily_strategy_live_broker_cost_allocation a USING(broker_cost_snapshot_id)
-   WHERE s.finalization_status='FINALIZED'
+   WHERE s.finalization_status='FINALIZED_BY_STABLE_RECHECK'
    GROUP BY s.broker_cost_snapshot_id,s.broker_buy_fee,s.broker_sell_fee,s.broker_sell_tax,s.broker_other_cost
   HAVING COALESCE(sum(a.allocated_buy_fee),0) <> s.broker_buy_fee
       OR COALESCE(sum(a.allocated_sell_fee),0) <> s.broker_sell_fee

@@ -15,7 +15,7 @@ from enum import Enum
 
 class BrokerCostStatus(str, Enum):
     PENDING_BROKER_COST = "PENDING_BROKER_COST"
-    FINALIZED = "FINALIZED"
+    FINALIZED_BY_STABLE_RECHECK = "FINALIZED_BY_STABLE_RECHECK"
     BROKER_COST_ATTRIBUTION_BLOCKED = "BROKER_COST_ATTRIBUTION_BLOCKED"
     BROKER_COST_SNAPSHOT_REGRESSION = "BROKER_COST_SNAPSHOT_REGRESSION"
 
@@ -90,7 +90,7 @@ def allocate_final_costs(*, snapshot: BrokerCostSnapshot, targets: tuple[CostAll
     """Allocate only a final, attributable snapshot; otherwise fail closed."""
     if unattributed_activity:
         return BrokerCostStatus.BROKER_COST_ATTRIBUTION_BLOCKED, ()
-    if not snapshot.final or snapshot.status is not BrokerCostStatus.FINALIZED:
+    if not snapshot.final or snapshot.status is not BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK:
         return BrokerCostStatus.PENDING_BROKER_COST, ()
     buys = tuple(target for target in targets if target.side == "BUY")
     sells = tuple(target for target in targets if target.side == "SELL")
@@ -112,7 +112,7 @@ def allocate_final_costs(*, snapshot: BrokerCostSnapshot, targets: tuple[CostAll
        or sum((row.sell_fee for row in rows), Decimal("0")) != snapshot.totals.sell_fee \
        or sum((row.sell_tax for row in rows), Decimal("0")) != snapshot.totals.sell_tax:
         raise AssertionError("BROKER_COST_ALLOCATION_NOT_RECONCILED")
-    return BrokerCostStatus.FINALIZED, rows
+    return BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK, rows
 
 
 def classify_snapshot(*, stored: BrokerCostSnapshot | None, observed: BrokerCostSnapshot) -> BrokerCostStatus:
@@ -126,7 +126,7 @@ def classify_snapshot(*, stored: BrokerCostSnapshot | None, observed: BrokerCost
         (prior.buy_fee, prior.sell_fee, prior.sell_tax, prior.other_cost),
     ))
     changed = current != prior
-    if stored.status is BrokerCostStatus.FINALIZED and (decreased or changed):
+    if stored.status is BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK and (decreased or changed):
         return BrokerCostStatus.BROKER_COST_SNAPSHOT_REGRESSION
     if decreased:
         return BrokerCostStatus.BROKER_COST_SNAPSHOT_REGRESSION

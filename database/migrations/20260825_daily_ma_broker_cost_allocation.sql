@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS daily_strategy_live_broker_cost_snapshot (
     sell_fill_notional_denominator NUMERIC(20,2) NOT NULL DEFAULT 0 CHECK (sell_fill_notional_denominator >= 0),
     broker_snapshot_at TIMESTAMP NOT NULL,
     finalization_status VARCHAR(48) NOT NULL CHECK (finalization_status IN (
-      'PENDING_BROKER_COST','FINALIZED','BROKER_COST_ATTRIBUTION_BLOCKED','BROKER_COST_SNAPSHOT_REGRESSION'
+      'PENDING_BROKER_COST','FINALIZED_BY_STABLE_RECHECK','BROKER_COST_ATTRIBUTION_BLOCKED','BROKER_COST_SNAPSHOT_REGRESSION'
     )),
     reconciliation_status VARCHAR(48) NOT NULL DEFAULT 'PENDING',
     finalized_at TIMESTAMP NULL,
