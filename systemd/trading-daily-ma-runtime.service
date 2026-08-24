@@ -8,6 +8,7 @@ User=ubuntu
 WorkingDirectory=/home/ubuntu/projects/trading-system-v2
 EnvironmentFile=/home/ubuntu/projects/trading-system-v2/.env
 Environment=DAILY_MA_ACTUAL_SEND=N
+Environment=DAILY_MA_RUNTIME_TRANSPORT=REAL
 ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/runtime/run_daily_ma_actual_submit.py
 NoNewPrivileges=true
 [Install]

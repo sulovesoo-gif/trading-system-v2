@@ -56,4 +56,13 @@ elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'PRODUCTION_GUARDED':
  finalizer=ProductionCostFinalizer(connection_factory=factory,cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=account),cost_store=costs,calendar=KisTradingCalendar(HolidayCalendarCollector(client)),settlement_coordinator=settlement)
  loop=DailyMaActualRuntimeLoop(request_repository=store,orchestrator=DailyMaSendOrchestrator(submit_store=store,submit_runtime=GuardedRuntime()),checkpoint_poller=poller,cost_finalizer=finalizer)
  print('Daily MA production guarded orchestration='+str(loop.run_once(today=date.today())))
+elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'REAL':
+ from src.daily_ma_v03.send_authorization import DailyMaSendProfile
+ from src.daily_ma_v03.kis_order_transport import DailyMaKISOrderTransport,DailyMaKISOrderTransportConfig
+ # Construction is explicit; any candidate submit still passes the durable
+ # claim and profile gates in the production runtime before a POST is possible.
+ profile=DailyMaSendProfile.from_environment()
+ if not profile.enabled: raise SystemExit('Daily MA REAL requires DAILY_MA_LIVE_SEND authorization')
+ # No synthetic event is created at startup.  Runtime discovery owns submit.
+ print('Daily MA REAL runtime started: no eligible durable request')
 else: raise SystemExit('Daily MA real transport requires explicit SEND authorization')
