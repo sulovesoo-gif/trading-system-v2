@@ -1,6 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 import unittest
+from pathlib import Path
 
 from src.daily_ma_v03.live_nosend import InMemoryDailyMaLiveNoSendStore, NoSendIntent, entry_intent_key
 
@@ -23,3 +24,9 @@ class DailyMaV03LiveNoSendTest(unittest.TestCase):
         intent = NoSendIntent("key", 1, "1", "event", "ENTRY", "BUY", 1, Decimal("10"), datetime(2026, 8, 24, 15, 18))
         with self.assertRaisesRegex(ValueError, "GLOBAL_TRADE_YN=N"):
             InMemoryDailyMaLiveNoSendStore().prepare(intent=intent, execution_stock_code="X", execution_target_time=datetime(2026, 8, 24, 15, 19), global_trade_yn="Y")
+
+    def test_postgres_store_has_no_broker_transport_dependency(self):
+        content = Path("src/daily_ma_v03/live_nosend_repository.py").read_text(encoding="utf-8")
+        self.assertIn("NO_SEND_VALIDATED", content)
+        self.assertNotIn("KisBrokerAdapter", content)
+        self.assertNotIn("KISOrderPostTransport", content)
