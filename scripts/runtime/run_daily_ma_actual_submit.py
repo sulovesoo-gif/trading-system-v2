@@ -59,10 +59,28 @@ elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'PRODUCTION_GUARDED':
 elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'REAL':
  from src.daily_ma_v03.send_authorization import DailyMaSendProfile
  from src.daily_ma_v03.kis_order_transport import DailyMaKISOrderTransport,DailyMaKISOrderTransportConfig
+ from src.daily_ma_v03.actual_submit import DailyMaBrokerSubmitRuntime,InMemoryDailyMaSubmitStore
+ from src.daily_ma_v03.actual_submit_repository import PostgresDailyMaActualSubmitStore
+ from src.daily_ma_v03.runtime_loop import DailyMaActualRuntimeLoop
+ from src.daily_ma_v03.send_orchestration import DailyMaSendOrchestrator
+ from src.repository.database import DatabaseSettings
+ from src.collector.raw.kis_client import KISClient
+ import psycopg
  # Construction is explicit; any candidate submit still passes the durable
  # claim and profile gates in the production runtime before a POST is possible.
  profile=DailyMaSendProfile.from_environment()
  if not profile.enabled: raise SystemExit('Daily MA REAL requires DAILY_MA_LIVE_SEND authorization')
- # No synthetic event is created at startup.  Runtime discovery owns submit.
- print('Daily MA REAL runtime started: no eligible durable request')
+ settings=DatabaseSettings.from_environment();factory=lambda:psycopg.connect(**settings.connection_kwargs())
+ with factory() as c,c.cursor() as q:
+  q.execute("SELECT DISTINCT execution_code FROM daily_strategy_master WHERE strategy_role='CANONICAL' AND is_enabled='Y'")
+  whitelist=frozenset(str(r[0]) for r in q.fetchall())
+ transport=DailyMaKISOrderTransport(client=KISClient(),config=DailyMaKISOrderTransportConfig.from_environment(whitelist=whitelist))
+ durable=PostgresDailyMaActualSubmitStore(factory)
+ runtime=DailyMaBrokerSubmitRuntime(store=InMemoryDailyMaSubmitStore(),transport=transport,profile=profile)
+ class Poll:
+  def poll_and_recover(self,**_):return 'REAL_READ_ONLY_POLL'
+ class Cost:
+  def finalize_due(self,**_):return 'REAL_COST_PENDING'
+ loop=DailyMaActualRuntimeLoop(request_repository=durable,orchestrator=DailyMaSendOrchestrator(submit_store=durable,submit_runtime=runtime),checkpoint_poller=Poll(),cost_finalizer=Cost())
+ print('Daily MA REAL orchestration='+str(loop.run_once(today=date.today())))
 else: raise SystemExit('Daily MA real transport requires explicit SEND authorization')
