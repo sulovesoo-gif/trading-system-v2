@@ -12,9 +12,9 @@ elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'FAKE':
  class Store:
   def __init__(self):self.claimed=False
   def discover_ready_request_keys(self):return ('SYSTEMD_FAKE',) if not self.claimed else ()
-  def claim(self,k):
+  def claim(self,request_key):
    if self.claimed:return None
-   self.claimed=True;return type('Order',(),{'client_order_key':k})()
+   self.claimed=True;return type('Order',(),{'client_order_key':request_key})()
   def acknowledge(self,**_):pass
   def mark_unknown(self,**_):pass
  class Runtime:
