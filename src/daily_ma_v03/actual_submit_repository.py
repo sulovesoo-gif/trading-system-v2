@@ -26,6 +26,22 @@ class PostgresDailyMaActualSubmitStore:
                              ORDER BY r.created_at,r.request_key""")
             return tuple(str(row[0]) for row in cursor.fetchall())
 
+    def pending_broker_orders(self):
+        """Read-only polling inputs; only mapped Daily MA orders are eligible."""
+        from datetime import date
+        from types import SimpleNamespace
+        with self._connection_factory() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT b.broker_order_id,b.broker_order_number,r.execution_stock_code,r.side,
+                                     COALESCE(t.ownership_id,'')
+                              FROM live_broker_order b
+                              JOIN daily_strategy_live_broker_order_mapping m USING(broker_order_id)
+                              JOIN daily_strategy_live_order_request r USING(order_request_id)
+                              LEFT JOIN daily_strategy_live_order_intent i USING(intent_id)
+                              LEFT JOIN daily_strategy_live_trade t ON t.live_trade_id=i.live_trade_id
+                             WHERE b.status IN ('ACCEPTED','PARTIALLY_FILLED','UNKNOWN_BROKER_STATE')
+                             ORDER BY b.created_at""")
+            return tuple(SimpleNamespace(broker_order_id=str(x[0]),broker_order_number=str(x[1]),stock_code=str(x[2]),side=str(x[3]),ownership_id=str(x[4]),order_date=date.today()) for x in cursor.fetchall())
+
     def claim(self, *, request_key: str) -> BrokerOrder | None:
         with self._connection_factory() as connection, connection.cursor() as cursor:
             cursor.execute("""SELECT r.order_request_id,r.strategy_instance_id,r.execution_stock_code,r.side,r.quantity,
