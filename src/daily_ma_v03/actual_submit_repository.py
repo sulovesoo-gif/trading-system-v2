@@ -17,6 +17,15 @@ class PostgresDailyMaActualSubmitStore:
     def __init__(self, connection_factory) -> None:
         self._connection_factory = connection_factory
 
+    def discover_ready_request_keys(self) -> tuple[str, ...]:
+        with self._connection_factory() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT r.request_key FROM daily_strategy_live_order_request r
+                              JOIN daily_strategy_live_order_intent i USING(intent_id)
+                             WHERE r.request_status='NO_SEND_VALIDATED'
+                               AND i.lifecycle_status='NO_SEND_VALIDATED'
+                             ORDER BY r.created_at,r.request_key""")
+            return tuple(str(row[0]) for row in cursor.fetchall())
+
     def claim(self, *, request_key: str) -> BrokerOrder | None:
         with self._connection_factory() as connection, connection.cursor() as cursor:
             cursor.execute("""SELECT r.order_request_id,r.strategy_instance_id,r.execution_stock_code,r.side,r.quantity,
