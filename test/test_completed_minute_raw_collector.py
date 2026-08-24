@@ -36,3 +36,23 @@ class CompletedMinuteRawCollectorTest(unittest.TestCase):
 
     def test_candidate_zero_sources_are_the_two_frozen_signal_sources(self):
         self.assertEqual(Sources(("005930", "000660")).stock_codes(), ("005930", "000660"))
+
+    def test_krx_post_close_is_not_requested_or_stored(self):
+        collector = Collector({"005930": [row(datetime(2026, 8, 19, 15, 31))]})
+        repository = Repository()
+        result = CompletedMinuteRawCollector(
+            collector=collector, repository=repository, source_registry=Sources(("005930",))
+        ).run_cycle(now=datetime(2026, 8, 19, 15, 32, 1))
+        self.assertEqual(result, {"005930": "OUTSIDE_REGULAR_SESSION"})
+        self.assertEqual(collector.calls, [])
+        self.assertEqual(repository.rows, [])
+
+    def test_krx_final_1530_bar_remains_eligible_when_present(self):
+        final_bar = row(datetime(2026, 8, 19, 15, 30))
+        collector = Collector({"005930": [final_bar]})
+        repository = Repository()
+        result = CompletedMinuteRawCollector(
+            collector=collector, repository=repository, source_registry=Sources(("005930",))
+        ).run_cycle(now=datetime(2026, 8, 19, 15, 31, 1))
+        self.assertEqual(result["005930"].inserted_count, 1)
+        self.assertEqual(len(collector.calls), 1)

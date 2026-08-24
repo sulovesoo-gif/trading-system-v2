@@ -171,3 +171,17 @@ class StockMinuteBackfillServiceTest(unittest.TestCase):
                 trade_date=date(2026, 7, 28),
             )
         self.assertEqual([event[0] for event in repository.events], ["mark_running", "mark_failed"])
+
+    def test_post_close_api_rows_are_not_persisted(self):
+        rows = [minute_output("153000"), minute_output("153100")]
+        collector = StockHistoricalMinuteCollector(FakeClient({"output2": rows}), now_provider=lambda: NOW)
+        ingestion = FakeIngestionService()
+        StockMinuteBackfillService(
+            collector=collector, ingestion_service=ingestion, backfill_repository=FakeBackfillRepository()
+        ).run_segment(
+            segment=BackfillSegment(11, 1, "000660", "KRX", date(2026, 7, 28), 1),
+            target=StockMinuteBackfillTarget("000660", "KOSPI"),
+            trade_date=date(2026, 7, 28),
+        )
+        persisted = ingestion.calls[0][1]
+        self.assertEqual([item["bar_time"].time().isoformat() for item in persisted], ["15:30:00"])

@@ -12,6 +12,7 @@ from typing import Callable
 
 from src.repository.backfill_repository import BackfillSegment
 from src.repository.raw_specs import RawTable
+from src.collector.runtime.market_session import is_regular_completed_minute
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,7 @@ class StockMinuteBackfillService:
         cursor_hour = segment.cursor_time or input_hour
         try:
             for _ in range(max_pages):
-                rows = self.collector.collect(
+                api_rows = self.collector.collect(
                     stock_code=target.stock_code,
                     market_code=target.market_code,
                     trading_venue=target.trading_venue,
@@ -60,17 +61,23 @@ class StockMinuteBackfillService:
                     input_hour=cursor_hour,
                     previous_data_include_yn="N",
                 )
+                # Continue pagination from the raw API page but persist only
+                # the same regular-session interval used by realtime intake.
+                rows = [row for row in api_rows if is_regular_completed_minute(
+                    trading_venue=target.trading_venue, bar_time=row["bar_time"]
+                )]
                 write_result = self.ingestion_service.store(RawTable.STOCK_MINUTE, rows)
+                api_times = [row["bar_time"] for row in api_rows]
                 times = [row["bar_time"] for row in rows]
-                oldest = min(times) if times else None
-                is_full_page = len(rows) == 120
+                oldest = min(api_times) if api_times else None
+                is_full_page = len(api_rows) == 120
                 next_cursor = oldest - timedelta(minutes=1) if oldest and is_full_page else None
                 self.backfill_repository.record_page(
                     segment_id=segment.segment_id,
                     continuation_code=None,
                     cursor_date=next_cursor.strftime("%Y%m%d") if next_cursor else None,
                     cursor_time=next_cursor.strftime("%H%M%S") if next_cursor else None,
-                    returned_count=len(rows),
+                    returned_count=len(api_rows),
                     inserted_count=write_result.inserted_count,
                     duplicate_count=write_result.duplicate_count,
                     minimum_bar_time=min(times) if times else None,

@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from src.repository.raw_specs import RawTable
 from src.service.raw_ingestion_service import RawIngestionService
 
+from .market_session import is_regular_completed_minute
+
 
 class CompletedMinuteRawCollector:
     """Persist just the immediately preceding completed bar for each source.
@@ -25,6 +27,11 @@ class CompletedMinuteRawCollector:
     def run_cycle(self, *, now: datetime) -> dict[str, object]:
         target_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
         results: dict[str, object] = {}
+        # Do not call the intraday API outside a persisted regular-session
+        # minute.  This prevents KIS's post-close last-price response from
+        # becoming a sequence of synthetic completed bars.
+        if not is_regular_completed_minute(trading_venue=self.venue, bar_time=target_time):
+            return {stock_code: "OUTSIDE_REGULAR_SESSION" for stock_code in self.source_registry.stock_codes()}
         for stock_code in self.source_registry.stock_codes():
             rows = self.collector.collect(
                 stock_code=stock_code,
