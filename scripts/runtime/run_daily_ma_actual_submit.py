@@ -35,6 +35,8 @@ elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'PRODUCTION_GUARDED':
  from src.daily_ma_v03.kis_order_history import DailyMaKISOrderHistoryLookup
  from src.daily_ma_v03.kis_cost_history import DailyMaKISProductDayCostLookup
  from src.daily_ma_v03.broker_cost_repository import PostgresDailyMaBrokerCostStore
+ from src.daily_ma_v03.capital_repository import PostgresDailyMaCapitalStore
+ from src.daily_ma_v03.settlement_coordinator import DailyMaSettlementCoordinator
  from src.collector.raw.kis_client import KISClient
  from src.collector.raw.kis_order_account import KISOrderAccount
  from src.collector.raw.domestic_stock.holiday_calendar_collector import HolidayCalendarCollector
@@ -49,7 +51,9 @@ elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'PRODUCTION_GUARDED':
  store=PostgresDailyMaActualSubmitStore(factory)
  client=KISClient(); account=KISOrderAccount.from_environment()
  poller=ProductionCheckpointPoller(repository=store,history_lookup=DailyMaKISOrderHistoryLookup(client=client,account=account),checkpoint_store=PostgresDailyMaFillCheckpointStore(factory))
- finalizer=ProductionCostFinalizer(connection_factory=factory,cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=account),cost_store=PostgresDailyMaBrokerCostStore(factory),calendar=KisTradingCalendar(HolidayCalendarCollector(client)))
+ costs=PostgresDailyMaBrokerCostStore(factory)
+ settlement=DailyMaSettlementCoordinator(repository=costs,capital_store=PostgresDailyMaCapitalStore(factory))
+ finalizer=ProductionCostFinalizer(connection_factory=factory,cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=account),cost_store=costs,calendar=KisTradingCalendar(HolidayCalendarCollector(client)),settlement_coordinator=settlement)
  loop=DailyMaActualRuntimeLoop(request_repository=store,orchestrator=DailyMaSendOrchestrator(submit_store=store,submit_runtime=GuardedRuntime()),checkpoint_poller=poller,cost_finalizer=finalizer)
  print('Daily MA production guarded orchestration='+str(loop.run_once(today=date.today())))
 else: raise SystemExit('Daily MA real transport requires explicit SEND authorization')

@@ -20,7 +20,7 @@ class ProductionCheckpointPoller:
 
 class ProductionCostFinalizer:
  """Uses the V0.4.2 repository; live data remains PENDING until T+1 recheck."""
- def __init__(self,*,connection_factory,cost_lookup,cost_store,calendar):self.connection_factory=connection_factory;self.cost_lookup=cost_lookup;self.cost_store=cost_store;self.calendar=calendar
+ def __init__(self,*,connection_factory,cost_lookup,cost_store,calendar,settlement_coordinator=None):self.connection_factory=connection_factory;self.cost_lookup=cost_lookup;self.cost_store=cost_store;self.calendar=calendar;self.settlement_coordinator=settlement_coordinator
  def finalize_due(self,*,today:date):
   # Only already-persisted product/day snapshots are eligible.  Querying KIS is
   # read-only; the store itself enforces two stable T+1 observations.
@@ -49,4 +49,5 @@ class ProductionCostFinalizer:
      targets=tuple(CostAllocationTarget(int(x[0]),str(x[1]),x[2],str(x[3])) for x in q.fetchall())
     self.cost_store.apply(snapshot=state.snapshot,targets=targets,unattributed_activity=False)
     finalized+=1
-  return {'pending_rechecks':len(rows),'finalized':finalized}
+  settled=self.settlement_coordinator.settle_due() if self.settlement_coordinator else 0
+  return {'pending_rechecks':len(rows),'finalized':finalized,'settled':settled}

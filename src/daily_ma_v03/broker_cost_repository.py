@@ -115,3 +115,23 @@ class PostgresDailyMaBrokerCostStore:
                  snapshot.broker_snapshot_at, snapshot_id))
             if self.commit: connection.commit()
         return BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK
+
+    def closed_cost_finalized_trades(self):
+        """Actual fill amounts are the CLOSED trade averages × quantities."""
+        from types import SimpleNamespace
+        from .broker_cost_allocation import CostAllocation
+        with self.connection_factory() as c,c.cursor() as q:
+            q.execute("""SELECT t.live_trade_id,t.strategy_id,t.capital_epoch_no,
+                              t.live_entry_avg_price*t.entry_quantity,t.live_exit_avg_price*t.exit_quantity,
+                              a.allocation_side,a.fill_notional,a.allocated_buy_fee,a.allocated_sell_fee,a.allocated_sell_tax,a.allocated_other_cost
+                         FROM daily_strategy_live_trade t
+                         JOIN daily_strategy_live_broker_cost_allocation a USING(live_trade_id)
+                         JOIN daily_strategy_live_broker_cost_snapshot s USING(broker_cost_snapshot_id)
+                        WHERE t.trade_status='CLOSED' AND s.finalization_status='FINALIZED_BY_STABLE_RECHECK'
+                          AND NOT EXISTS (SELECT 1 FROM daily_strategy_live_capital_settlement x WHERE x.live_trade_id=t.live_trade_id)
+                        ORDER BY t.live_trade_id,a.allocation_side""")
+            grouped={}
+            for r in q.fetchall():
+                item=grouped.setdefault(int(r[0]),[r[1],int(r[2]),r[3],r[4],[]])
+                item[4].append(CostAllocation(int(r[0]),str(r[5]),r[6],r[7],r[8],r[9],r[10]))
+            return tuple(SimpleNamespace(live_trade_id=k,strategy_id=str(v[0]),capital_epoch_no=v[1],entry_filled_amount=v[2],exit_filled_amount=v[3],allocations=tuple(v[4])) for k,v in grouped.items())
