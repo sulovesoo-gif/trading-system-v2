@@ -83,9 +83,17 @@ class PostgresDailyMaCapitalStore:
             previous_skip = cursor.fetchone()
             if previous_skip is not None:
                 return None, str(previous_skip[0])
-            cursor.execute("SELECT intent_id FROM daily_strategy_live_order_intent WHERE intent_key=%s FOR UPDATE", (intent.intent_key,))
-            if cursor.fetchone() is not None:
-                return NoSendOrderRequest(intent.request_key, intent.intent_key, execution_stock_code, "BUY", intent.quantity, execution_target_time), "NO_SEND_VALIDATED"
+            cursor.execute("""SELECT requested_quantity FROM daily_strategy_live_order_intent
+                               WHERE intent_key=%s FOR UPDATE""", (intent.intent_key,))
+            existing = cursor.fetchone()
+            if existing is not None:
+                return NoSendOrderRequest(intent.request_key, intent.intent_key, execution_stock_code, "BUY", int(existing[0]), execution_target_time), "NO_SEND_VALIDATED"
+            if not available_cash.includes_pending_order_reservations:
+                cursor.execute("""SELECT COALESCE(SUM(r.remaining_reserved_amount),0)
+                                   FROM daily_strategy_live_capital_reservation r
+                                   JOIN daily_strategy_live_order_intent i USING(intent_id)
+                                  WHERE i.intent_type='ENTRY' AND r.reservation_status IN ('RESERVED','PARTIALLY_CONSUMED')""")
+                locally_reserved_amount = Decimal(cursor.fetchone()[0])
             decision = decide_entry(capital=capital, available_cash=available_cash,
                                     reference_price=intent.reference_price, locally_reserved_amount=locally_reserved_amount)
             if decision.status != "NO_SEND_VALIDATED":

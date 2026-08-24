@@ -36,3 +36,8 @@ class DailyMaV04CapitalNoSendRuntime:
                                                      capital_epoch_no=capital_epoch_no,
                                                      available_cash=available_cash,
                                                      locally_reserved_amount=locally_reserved_amount)
+
+    def plan_entry_with_broker_cash(self, *, cash_lookup, **kwargs):
+        """Obtain only the read-only KIS orderable-cash snapshot, then plan."""
+        cash = cash_lookup.orderable_cash(stock_code=kwargs["execution_stock_code"], order_price=kwargs["reference_price"])
+        return self.plan_entry(available_cash=AvailableCash(cash.amount, cash.includes_pending_order_reservations), **kwargs)

@@ -68,6 +68,22 @@ class DailyMaV04CapitalTest(unittest.TestCase):
         self.assertEqual(runtime.plan_entry(**base, operation_status="PAPER", reconciliation_healthy=True)[1], "OPERATION_NOT_LIVE")
         self.assertEqual(runtime.plan_entry(**base, operation_status="LIVE", reconciliation_healthy=False)[1], "RECONCILIATION_REQUIRED")
 
+    def test_runtime_can_use_read_only_cash_lookup(self):
+        store = _Store()
+        runtime = DailyMaV04CapitalNoSendRuntime(capital_store=store)
+        class Lookup:
+            def orderable_cash(self, **kwargs):
+                self.kwargs = kwargs
+                return type("Cash", (), {"amount": Decimal("1000"), "includes_pending_order_reservations": True})()
+        lookup = Lookup()
+        runtime.plan_entry_with_broker_cash(cash_lookup=lookup, paper_trade_id=1, strategy_id="DS000103",
+            signal_event_key="cash-event", execution_stock_code="0193W0", strategy_instance_id="DAILY_MA_DS000103",
+            reference_price=Decimal("100"), signal_time=datetime(2026, 8, 24, 15, 18),
+            execution_target_time=datetime(2026, 8, 24, 15, 19), capital_epoch_no=1,
+            operation_status="LIVE", reconciliation_healthy=True)
+        self.assertEqual(lookup.kwargs["stock_code"], "0193W0")
+        self.assertEqual(store.calls[0]["available_cash"].amount, Decimal("1000"))
+
     def test_kis_orderable_cash_is_get_only_and_marks_broker_cash_authoritative(self):
         class Client:
             def __init__(self): self.kwargs = None
