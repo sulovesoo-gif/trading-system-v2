@@ -6,7 +6,9 @@ ALTER TABLE daily_strategy_live_broker_cost_snapshot
   ADD COLUMN IF NOT EXISTS last_stable_recheck_at TIMESTAMP NULL;
 
 ALTER TABLE daily_strategy_live_broker_cost_snapshot
-  DROP CONSTRAINT IF EXISTS daily_strategy_live_broker_cost_snapshot_finalization_status_check;
+  DROP CONSTRAINT IF EXISTS daily_strategy_live_broker_cost_snaps_finalization_status_check;
+ALTER TABLE daily_strategy_live_broker_cost_snapshot
+  DROP CONSTRAINT IF EXISTS ck_daily_ma_broker_cost_finalization_status;
 ALTER TABLE daily_strategy_live_broker_cost_snapshot
   ADD CONSTRAINT ck_daily_ma_broker_cost_finalization_status CHECK (finalization_status IN (
     'PENDING_BROKER_COST','FINALIZED_BY_STABLE_RECHECK','BROKER_COST_ATTRIBUTION_BLOCKED','BROKER_COST_SNAPSHOT_REGRESSION'
