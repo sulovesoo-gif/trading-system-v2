@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 
 from src.repository.database import DatabaseSettings
 
 
-ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "database" / "migrations" / "20260824_daily_strategy_ma_v03_paper_runtime_schema.sql"
 
 
