@@ -53,3 +53,15 @@ class DailyMaBrokerSubmitRuntime:
   if resolution is UnknownResolution.REJECTED:
    r.state=SubmitState.REJECTED;r.broker_order_number=match.order_number;return r,'RECOVERED_REJECTED'
   return r,'RECOVERY_UNRESOLVED'
+
+
+class DailyMaDurableSubmitService:
+ """Claim durably first, then make at most one transport attempt."""
+ def __init__(self,*,store,runtime):self.store,self.runtime=store,runtime
+ def submit_request(self,request_key):
+  order=self.store.claim(request_key=request_key)
+  if order is None:return None,'RESEND_FORBIDDEN'
+  record,status=self.runtime.submit(order)
+  if status=='ACK':self.store.acknowledge(order=order,raw={'output':{'ODNO':record.broker_order_number}})
+  elif status=='UNKNOWN_BROKER_STATE':self.store.mark_unknown(order=order)
+  return record,status
