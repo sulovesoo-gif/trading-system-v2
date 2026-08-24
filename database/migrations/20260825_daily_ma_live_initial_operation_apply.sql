@@ -22,14 +22,14 @@ END $$;
 INSERT INTO daily_strategy_live_initial_capital_approval(selection_batch_id,strategy_id,approved_initial_capital,approved_by,approval_reference)
 SELECT s.selection_batch_id,s.strategy_id,s.recommended_amount,'USER_APPROVED_20260825','DAILY_MA_SEL_20260824_V1 initial LIVE capital approval'
 FROM daily_strategy_selection_snapshot s WHERE s.selection_batch_id='DAILY_MA_SEL_20260824_V1' AND s.decision_status='SELECTED';
-UPDATE daily_strategy_operation o SET effective_to=CURRENT_TIMESTAMP,change_reason='SEL_LIVE_INITIAL',
+UPDATE daily_strategy_operation o SET effective_to=CURRENT_TIMESTAMP,change_reason='ADMIN',
  changed_by='USER_APPROVED_20260825',memo='superseded by initial approved LIVE operation'
 FROM daily_strategy_selection_snapshot s
 WHERE s.selection_batch_id='DAILY_MA_SEL_20260824_V1' AND s.decision_status='SELECTED'
  AND o.strategy_id=s.strategy_id AND o.effective_to IS NULL AND o.operation_status='PAPER';
 WITH inserted AS (
  INSERT INTO daily_strategy_operation(strategy_id,operation_status,allocated_amount,capital_epoch_no,effective_from,change_reason,changed_by,memo)
- SELECT strategy_id,'LIVE',recommended_amount,1,CURRENT_TIMESTAMP,'SEL_LIVE_INITIAL','USER_APPROVED_20260825','initial LIVE operation; actual send remains locked'
+ SELECT strategy_id,'LIVE',recommended_amount,1,CURRENT_TIMESTAMP,'ADMIN','USER_APPROVED_20260825','initial LIVE operation; actual send remains locked'
  FROM daily_strategy_selection_snapshot WHERE selection_batch_id='DAILY_MA_SEL_20260824_V1' AND decision_status='SELECTED'
  RETURNING operation_id,strategy_id,allocated_amount,capital_epoch_no
 )
