@@ -26,4 +26,5 @@ SELECT count(*) = 2680 AS canonical_rows,
                           AND normal_fixed_basis_pnl IS NULL
                           AND day20_delta_return_pct IS NULL
                           AND day20_delta_fixed_basis_pnl IS NULL) = 2680
-           AS calculated_metrics_still_held;
+           AS calculated_metrics_still_held
+  FROM canonical;
