@@ -4,6 +4,7 @@ import unittest
 
 from src.daily_ma_v03.capital import AvailableCash, CapitalEpoch, SettlementAmounts, decide_entry
 from src.daily_ma_v03.capital_runtime import DailyMaV04CapitalNoSendRuntime
+from src.broker.cash_lookup import KISBrokerAvailableCashLookup
 
 
 class _Store:
@@ -66,6 +67,20 @@ class DailyMaV04CapitalTest(unittest.TestCase):
                     capital_epoch_no=1, available_cash=AvailableCash(Decimal("1000000"), True))
         self.assertEqual(runtime.plan_entry(**base, operation_status="PAPER", reconciliation_healthy=True)[1], "OPERATION_NOT_LIVE")
         self.assertEqual(runtime.plan_entry(**base, operation_status="LIVE", reconciliation_healthy=False)[1], "RECONCILIATION_REQUIRED")
+
+    def test_kis_orderable_cash_is_get_only_and_marks_broker_cash_authoritative(self):
+        class Client:
+            def __init__(self): self.kwargs = None
+            def get(self, **kwargs):
+                self.kwargs = kwargs
+                return {"output": {"ord_psbl_cash": "123456"}}
+        class Account: cano, account_product_code = "12345678", "01"
+        client = Client()
+        result = KISBrokerAvailableCashLookup(client=client, account=Account()).orderable_cash(stock_code="005930", order_price=Decimal("1000"))
+        self.assertEqual(result.amount, Decimal("123456"))
+        self.assertTrue(result.includes_pending_order_reservations)
+        self.assertEqual(client.kwargs["path"], "/uapi/domestic-stock/v1/trading/inquire-psbl-order")
+        self.assertEqual(client.kwargs["params"]["PDNO"], "005930")
 
 
 if __name__ == "__main__":
