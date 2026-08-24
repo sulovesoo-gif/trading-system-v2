@@ -144,6 +144,13 @@ class PostgresPaperRuntimeRepository:
                                                   int(row[10]) if row[10] is not None else None, bool(row[11])))
             for row in rows)
 
+    def completed_trade_return(self, paper_trade_id: int) -> tuple[str, float] | None:
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT strategy_id,return_pct FROM daily_strategy_paper_trade
+                               WHERE paper_trade_id=%s AND trade_status='CLOSED' AND return_pct IS NOT NULL""", (paper_trade_id,))
+            row=cursor.fetchone()
+        return (str(row[0]),float(row[1])) if row else None
+
     def record_normal_exit(self, *, paper_trade_id: int, signal_time: datetime,
                            execution_time: datetime, execution_price: float) -> bool:
         """Idempotently close normal tracking without rewriting an actual DAY20 exit."""

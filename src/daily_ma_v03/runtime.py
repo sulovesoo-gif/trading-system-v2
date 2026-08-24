@@ -47,16 +47,26 @@ class PaperRuntimeRepository(Protocol):
     def open_day20_trades(self) -> Sequence[OpenDay20Trade]: ...
     def record_day20_exit(self, *, paper_trade_id: int, trigger_time: datetime,
                           execution_time: datetime, execution_price: float) -> bool: ...
+    def completed_trade_return(self, paper_trade_id: int) -> tuple[str, float] | None: ...
 
 
 class DailyMaPaperRuntime:
     """Evaluates all canonical strategies at 15:18 with DB writes delegated."""
 
     def __init__(self, *, repository: PaperRuntimeRepository, raw_provider,
-                 strategy_ids: set[str] | None = None) -> None:
+                 strategy_ids: set[str] | None = None, risk_store=None) -> None:
         self.repository = repository
         self.raw_provider = raw_provider
         self.strategy_ids = strategy_ids
+        self.risk_store = risk_store
+
+    def _apply_risk(self, paper_trade_id: int) -> None:
+        if self.risk_store is None:
+            return
+        completed = self.repository.completed_trade_return(paper_trade_id)
+        if completed is not None:
+            self.risk_store.apply_completed_paper_trade(paper_trade_id=paper_trade_id,
+                                                        strategy_id=completed[0], return_pct=completed[1])
 
     def evaluate_1518(self, at: datetime) -> tuple[EvaluationResult, ...]:
         if at.hour != 15 or at.minute != 18:
@@ -126,6 +136,7 @@ class DailyMaPaperRuntime:
                 execution_time=execution.time, execution_price=execution.open_price,
             ):
                 closed += 1
+                self._apply_risk(trade.paper_trade_id)
         return closed
 
     def evaluate_day20(self, at: datetime) -> int:
@@ -155,4 +166,5 @@ class DailyMaPaperRuntime:
                 execution_time=execution.time, execution_price=execution.open_price,
             ):
                 closed += 1
+                self._apply_risk(trade.paper_trade_id)
         return closed

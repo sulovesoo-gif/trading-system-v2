@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from src.daily_ma_v03.raw_provider import DailyMaRawProvider
 from src.daily_ma_v03.repository import PostgresPaperRuntimeRepository
 from src.daily_ma_v03.runtime import DailyMaPaperRuntime
+from src.daily_ma_v03.risk import PostgresThreeStrikeRiskStore
 from src.repository.database import DatabaseSettings, create_connection_pool
 
 
@@ -55,7 +56,8 @@ def main() -> int:
     try:
         repository = PostgresPaperRuntimeRepository(pool, write_enabled=write_enabled)
         runtime = DailyMaPaperRuntime(repository=repository, raw_provider=DailyMaRawProvider(pool),
-                                      strategy_ids={args.strategy_id} if args.strategy_id else None)
+                                      strategy_ids={args.strategy_id} if args.strategy_id else None,
+                                      risk_store=PostgresThreeStrikeRiskStore(pool.connection) if write_enabled else None)
         if args.day20_at:
             applied = runtime.evaluate_day20(at)
             result = ()
