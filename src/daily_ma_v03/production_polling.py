@@ -1,6 +1,9 @@
 """Production read-only TTTC0081R polling; it never submits an order."""
 from __future__ import annotations
-from datetime import date
+from datetime import date, timedelta
+from hashlib import sha256
+from .broker_cost_allocation import BrokerCostSnapshot, BrokerCostStatus
+from .broker_cost_finalization import next_krx_trading_date
 
 class ProductionCheckpointPoller:
  def __init__(self,*,repository,history_lookup,checkpoint_store):self.repository=repository;self.history_lookup=history_lookup;self.checkpoint_store=checkpoint_store
@@ -23,4 +26,17 @@ class ProductionCostFinalizer:
   with self.connection_factory() as c,c.cursor() as q:
    q.execute("SELECT trade_date,execution_stock_code FROM daily_strategy_live_broker_cost_snapshot WHERE finalization_status='PENDING_BROKER_COST' ORDER BY trade_date")
    rows=q.fetchall()
-  return {'pending_rechecks':len(rows),'finalized':0}
+  finalized=0
+  for trade_date,stock_code in rows:
+   next_day=next_krx_trading_date(trade_date=trade_date,calendar=self.calendar)
+   if today<next_day:continue
+   raw=self.cost_lookup.lookup(trade_date=trade_date,execution_stock_code=stock_code)
+   observed=BrokerCostSnapshot(trade_date,stock_code,raw.totals,raw.broker_snapshot_at,False,BrokerCostStatus.PENDING_BROKER_COST)
+   # Allocation rows are append-only checkpoint deltas; their stable digest
+   # makes a changed ownership/fill set fail the stable-recheck condition.
+   with self.connection_factory() as c,c.cursor() as q:
+    q.execute("SELECT broker_order_id,checkpoint_version,delta_quantity,delta_amount FROM daily_strategy_live_checkpoint_allocation WHERE stock_code=%s AND broker_event_time::date=%s ORDER BY broker_order_id,checkpoint_version",(stock_code,trade_date))
+    digest=sha256(repr(q.fetchall()).encode()).hexdigest()
+   state=self.cost_store.observe_stable_recheck(observed=observed,fill_set_fingerprint=digest,unattributed_activity=False,next_trade_date=next_day,minimum_interval=timedelta(minutes=10))
+   finalized+=int(state.snapshot.status is BrokerCostStatus.FINALIZED_BY_STABLE_RECHECK)
+  return {'pending_rechecks':len(rows),'finalized':finalized}
