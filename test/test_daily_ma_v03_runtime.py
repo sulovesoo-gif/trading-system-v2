@@ -49,6 +49,17 @@ class NormalExitRaw(Raw):
     def prior_daily_closes(self, stock_code, before, limit): return [20] * limit
 
 
+class NoExecutionRaw(Raw):
+    def execution_bars(self, stock_code, at): return ()
+
+
+class NoExecutionRepository(Repository):
+    def record_entry(self, **kwargs):
+        self.entries[(kwargs["strategy"].strategy_id, kwargs["event"].key())] = kwargs["snapshot_digest"]
+        self.no_execution = (kwargs["execution_time"], kwargs["execution_price"])
+        return True
+
+
 class DailyMaPaperRuntimeTest(unittest.TestCase):
     def test_no_write_duplicate_and_normal_exit_are_independent(self):
         strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)
@@ -89,6 +100,15 @@ class DailyMaPaperRuntimeTest(unittest.TestCase):
         runtime.evaluate_1518(datetime(2026, 8, 24, 15, 18))
         self.assertEqual(9, repo.normal["paper_trade_id"])
         self.assertEqual(datetime(2026, 8, 24, 15, 19), repo.normal["execution_time"])
+
+    def test_no_execution_bar_records_event_without_inventing_price_or_time(self):
+        strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)
+        repo = NoExecutionRepository(strategy)
+        runtime = DailyMaPaperRuntime(repository=repo, raw_provider=NoExecutionRaw())
+        result = runtime.evaluate_1518(datetime(2026, 8, 24, 15, 18))
+        self.assertTrue(result[0].no_execution_bar)
+        self.assertEqual((None, None), repo.no_execution)
+        self.assertFalse(runtime.evaluate_1518(datetime(2026, 8, 24, 15, 18))[0].entry_created)
 
 
 if __name__ == "__main__": unittest.main()

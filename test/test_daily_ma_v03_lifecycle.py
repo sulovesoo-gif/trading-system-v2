@@ -26,6 +26,28 @@ class DailyMaV03LifecycleTest(unittest.TestCase):
         self.assertAlmostEqual(10, normal.return_pct)
         self.assertAlmostEqual(30, delta.return_pct)
 
+    def test_day20_actual_then_restart_then_normal_preserves_actual(self):
+        # Durable-row projection: DAY20 closes actual position but leaves normal
+        # tracking open; after a process restart only normal fields may change.
+        row = {
+            "actual_exit_time": None, "actual_exit_price": None,
+            "normal_tracking_status": "OPEN", "normal_exit_time": None,
+            "normal_exit_price": None,
+        }
+        day20 = select_actual_exit(
+            day20_trigger_time=datetime(2026, 8, 24, 10, 0),
+            day20_execution_time=datetime(2026, 8, 24, 10, 1), day20_execution_price=80,
+            normal_execution_time=datetime(2026, 8, 24, 15, 19), normal_execution_price=110,
+        )
+        row["actual_exit_time"], row["actual_exit_price"] = day20.execution_time, day20.execution_price
+        self.assertEqual("OPEN", row["normal_tracking_status"])
+        restored = dict(row)  # represents loading the durable row after restart
+        restored["normal_exit_time"], restored["normal_exit_price"] = datetime(2026, 8, 24, 15, 19), 110
+        restored["normal_tracking_status"] = "CLOSED"
+        self.assertEqual(datetime(2026, 8, 24, 10, 1), restored["actual_exit_time"])
+        self.assertEqual(80, restored["actual_exit_price"])
+        self.assertEqual(110, restored["normal_exit_price"])
+
 
 if __name__ == "__main__":
     unittest.main()
