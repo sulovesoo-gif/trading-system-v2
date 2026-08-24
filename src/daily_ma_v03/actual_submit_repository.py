@@ -34,8 +34,8 @@ class PostgresDailyMaActualSubmitStore:
             cursor.execute("""SELECT b.broker_order_id,b.broker_order_number,r.execution_stock_code,r.side,
                                      COALESCE(t.ownership_id,'')
                               FROM live_broker_order b
-                              JOIN daily_strategy_live_broker_order_mapping m USING(broker_order_id)
-                              JOIN daily_strategy_live_order_request r USING(order_request_id)
+                              JOIN daily_strategy_live_broker_order_mapping m ON m.broker_order_id=b.broker_order_id
+                              JOIN daily_strategy_live_order_request r ON r.order_request_id=b.order_request_id
                               LEFT JOIN daily_strategy_live_order_intent i USING(intent_id)
                               LEFT JOIN daily_strategy_live_trade t ON t.live_trade_id=i.live_trade_id
                              WHERE b.status IN ('ACCEPTED','PARTIALLY_FILLED','UNKNOWN_BROKER_STATE')
