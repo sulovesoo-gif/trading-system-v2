@@ -27,7 +27,7 @@ class Raw:
 
 
 class Day20Repository(Repository):
-    def open_day20_trades(self): return [OpenDay20Trade(4, self.strategy)]
+    def open_day20_trades(self): return [OpenDay20Trade(4, datetime(2026, 8, 24, 9, 59), self.strategy)]
     def record_day20_exit(self, **kwargs): self.day20 = kwargs; return True
 
 
@@ -66,6 +66,13 @@ class DailyMaPaperRuntimeTest(unittest.TestCase):
         runtime = DailyMaPaperRuntime(repository=repo, raw_provider=Day20Raw())
         self.assertEqual(1, runtime.evaluate_day20(datetime(2026, 8, 24, 10, 0)))
         self.assertEqual(datetime(2026, 8, 24, 10, 1), repo.day20["execution_time"])
+
+    def test_day20_ignores_minutes_before_a_trade_entry(self):
+        strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)
+        repo = Day20Repository(strategy)
+        repo.open_day20_trades = lambda: [OpenDay20Trade(4, datetime(2026, 8, 24, 10, 1), strategy)]
+        runtime = DailyMaPaperRuntime(repository=repo, raw_provider=Day20Raw())
+        self.assertEqual(0, runtime.evaluate_day20(datetime(2026, 8, 24, 10, 0)))
 
     def test_strategy_filter_limits_a_write_fixture_to_one_strategy(self):
         strategy = DailyMaStrategy("S1", "005930", "0193W0", "LONG", 3, 5, 3, 5, None, True)

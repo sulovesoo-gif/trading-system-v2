@@ -204,7 +204,7 @@ class PostgresPaperRuntimeRepository:
         return True
 
     def open_day20_trades(self) -> Sequence[OpenDay20Trade]:
-        sql = """SELECT p.paper_trade_id,m.strategy_id,m.signal_code,m.execution_code,m.direction,
+        sql = """SELECT p.paper_trade_id,p.paper_entry_time,m.strategy_id,m.signal_code,m.execution_code,m.direction,
                          m.entry_fast_ma,m.entry_slow_ma,m.exit_fast_ma,m.exit_slow_ma,m.trend_ma,m.day20_enabled
                     FROM daily_strategy_paper_trade p
                     JOIN daily_strategy_master m ON m.strategy_id=p.strategy_id
@@ -216,9 +216,9 @@ class PostgresPaperRuntimeRepository:
             cursor.execute(sql)
             rows = cursor.fetchall()
         return tuple(OpenDay20Trade(
-            int(row[0]), DailyMaStrategy(str(row[1]), str(row[2]), str(row[3]), str(row[4]),
-                                         int(row[5]), int(row[6]), int(row[7]), int(row[8]),
-                                         int(row[9]) if row[9] is not None else None, bool(row[10])))
+            int(row[0]), row[1], DailyMaStrategy(str(row[2]), str(row[3]), str(row[4]), str(row[5]),
+                                                  int(row[6]), int(row[7]), int(row[8]), int(row[9]),
+                                                  int(row[10]) if row[10] is not None else None, bool(row[11])))
             for row in rows)
 
     def record_day20_exit(self, *, paper_trade_id: int, trigger_time: datetime,

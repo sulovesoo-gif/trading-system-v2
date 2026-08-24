@@ -32,6 +32,7 @@ class OpenNormalTrade:
 @dataclass(frozen=True)
 class OpenDay20Trade:
     paper_trade_id: int
+    paper_entry_time: datetime
     strategy: DailyMaStrategy
 
 
@@ -138,6 +139,8 @@ class DailyMaPaperRuntime:
             return 0
         closed = 0
         for trade in self.repository.open_day20_trades():
+            if at <= trade.paper_entry_time:
+                continue
             source = self.raw_provider.completed_source_bar(trade.strategy.signal_code, at)
             prior_close = self.raw_provider.previous_official_close(trade.strategy.signal_code, at)
             if source is None or prior_close is None:

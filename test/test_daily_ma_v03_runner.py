@@ -8,6 +8,8 @@ class DailyMaV03RunnerTest(unittest.TestCase):
         self.assertIn('write_enabled = args.write and os.getenv("DAILY_MA_V03_PAPER_WRITE", "N") == "Y"', content)
         self.assertIn('"order_post": 0', content)
         self.assertIn("--strategy-id", content)
+        self.assertIn("--day20-at", content)
+        self.assertIn("runtime.evaluate_day20", content)
         self.assertIn("--strategy-id is required for limited DB write", content)
         self.assertNotIn("KISOrderPostTransport", content)
         self.assertNotIn("KisBrokerAdapter", content)

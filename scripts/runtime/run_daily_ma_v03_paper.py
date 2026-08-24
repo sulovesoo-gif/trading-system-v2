@@ -31,11 +31,13 @@ def _parse_at(value: str | None) -> datetime:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--at", required=True, help="KST local 15:18 completed source bar timestamp")
+    timing = parser.add_mutually_exclusive_group(required=True)
+    timing.add_argument("--at", help="KST local 15:18 entry/normal evaluation timestamp")
+    timing.add_argument("--day20-at", help="KST completed source-minute timestamp for DAY20 evaluation")
     parser.add_argument("--write", action="store_true", help="guarded PAPER DB write; never a broker order")
     parser.add_argument("--strategy-id", help="required for a limited single-strategy PAPER write")
     args = parser.parse_args()
-    at = _parse_at(args.at)
+    at = _parse_at(args.at or args.day20_at)
     load_dotenv(ROOT / ".env")
     write_enabled = args.write and os.getenv("DAILY_MA_V03_PAPER_WRITE", "N") == "Y"
     if args.write and not write_enabled:
@@ -48,16 +50,23 @@ def main() -> int:
         repository = PostgresPaperRuntimeRepository(pool, write_enabled=write_enabled)
         runtime = DailyMaPaperRuntime(repository=repository, raw_provider=DailyMaRawProvider(pool),
                                       strategy_ids={args.strategy_id} if args.strategy_id else None)
-        result = runtime.evaluate_1518(at)
+        if args.day20_at:
+            applied = runtime.evaluate_day20(at)
+            result = ()
+        else:
+            applied = 0
+            result = runtime.evaluate_1518(at)
         print(json.dumps({
             "mode": "PAPER_WRITE" if write_enabled else "NO_WRITE",
             "at": at.isoformat(),
+            "evaluation_kind": "DAY20" if args.day20_at else "ENTRY_NORMAL_1518",
             "canonical_loaded": len(repository.canonical_strategies()),
             "entry_signals": len(result),
             "entry_strategy_ids": [item.strategy_id for item in result],
             "strategy_filter": args.strategy_id,
             "entry_created": sum(item.entry_created for item in result),
             "no_execution_bar": sum(item.no_execution_bar for item in result),
+            "day20_actual_exits_applied": applied,
             "broker_send_eligible": False,
             "order_post": 0,
         }, sort_keys=True))
