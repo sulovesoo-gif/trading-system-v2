@@ -12,6 +12,14 @@ class DailyMaV03LiveNoSendSchemaApplyTest(unittest.TestCase):
         self.assertIn('settings.name != "trading_system_v2_test"', live)
         self.assertNotIn("KISOrderPostTransport", broker + live)
 
+    def test_verifiers_are_read_only_and_do_not_reference_transport(self):
+        broker = Path("scripts/db/verify_live_broker_contract.py").read_text(encoding="utf-8")
+        live = Path("scripts/db/verify_daily_ma_v03_live_nosend_schema.py").read_text(encoding="utf-8")
+        self.assertIn("SELECT", broker + live)
+        self.assertNotIn("KISOrderPostTransport", broker + live)
+        self.assertNotIn("INSERT", broker + live)
+        self.assertNotIn("UPDATE", broker + live)
+
 
 if __name__ == "__main__":
     unittest.main()
