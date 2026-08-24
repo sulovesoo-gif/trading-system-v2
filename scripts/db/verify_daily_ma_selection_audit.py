@@ -17,8 +17,8 @@ def main():
                WHERE b.selection_batch_id='DAILY_MA_SEL_20260824_V1' GROUP BY b.status""")
   snapshot=q.fetchone()
   q.execute("""SELECT count(*),count(*) FILTER(WHERE s.strategy_id IS NULL),
-                     count(*) FILTER(WHERE actual_completed_trade_count>0 AND actual_compound_return_pct IS NULL),
-                     count(*) FILTER(WHERE actual_completed_trade_count=0 AND actual_compound_return_pct IS NOT NULL)
+                     count(*) FILTER(WHERE d.actual_completed_trade_count>0 AND d.actual_compound_return_pct IS NULL),
+                     count(*) FILTER(WHERE d.actual_completed_trade_count=0 AND d.actual_compound_return_pct IS NOT NULL)
                 FROM vw_daily_strategy_selection_dashboard d
                 LEFT JOIN daily_strategy_selection_snapshot s ON s.selection_batch_id='DAILY_MA_SEL_20260824_V1' AND s.strategy_id=d.strategy_id""")
   dashboard=q.fetchone()
