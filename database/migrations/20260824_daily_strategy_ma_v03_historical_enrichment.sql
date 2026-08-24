@@ -37,7 +37,11 @@ BEGIN
             OR p.day20_exit_price IS NOT NULL
             OR p.normal_tracking_status IS NOT NULL
             OR p.normal_exit_time IS NOT NULL
-            OR p.normal_exit_price IS NOT NULL);
+            OR p.normal_exit_price IS NOT NULL
+            OR p.normal_return_pct IS NOT NULL
+            OR p.normal_fixed_basis_pnl IS NOT NULL
+            OR p.day20_delta_return_pct IS NOT NULL
+            OR p.day20_delta_fixed_basis_pnl IS NOT NULL);
 
     IF prepopulated_rows <> 0 THEN
         RAISE EXCEPTION 'Historical enrichment refuses to overwrite % populated V0.3 rows', prepopulated_rows;
