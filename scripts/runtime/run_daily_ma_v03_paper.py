@@ -36,13 +36,19 @@ def main() -> int:
     timing.add_argument("--day20-at", help="KST completed source-minute timestamp for DAY20 evaluation")
     parser.add_argument("--write", action="store_true", help="guarded PAPER DB write; never a broker order")
     parser.add_argument("--strategy-id", help="required for a limited single-strategy PAPER write")
+    parser.add_argument("--full-batch", action="store_true",
+                        help="TEST-only canonical batch write; requires a second explicit environment guard")
     args = parser.parse_args()
     at = _parse_at(args.at or args.day20_at)
     load_dotenv(ROOT / ".env")
     write_enabled = args.write and os.getenv("DAILY_MA_V03_PAPER_WRITE", "N") == "Y"
     if args.write and not write_enabled:
         raise SystemExit("PAPER write blocked: DAILY_MA_V03_PAPER_WRITE=Y is required")
-    if args.write and not args.strategy_id:
+    if args.full_batch and not args.write:
+        raise SystemExit("--full-batch requires --write")
+    if args.full_batch and os.getenv("DAILY_MA_V03_PAPER_FULL_BATCH_WRITE", "N") != "YES":
+        raise SystemExit("full-batch PAPER write blocked: DAILY_MA_V03_PAPER_FULL_BATCH_WRITE=YES is required")
+    if args.write and not args.strategy_id and not args.full_batch:
         raise SystemExit("PAPER write blocked: --strategy-id is required for limited DB write")
     settings = DatabaseSettings.from_environment()
     pool = create_connection_pool(settings)
@@ -64,6 +70,7 @@ def main() -> int:
             "entry_signals": len(result),
             "entry_strategy_ids": [item.strategy_id for item in result],
             "strategy_filter": args.strategy_id,
+            "full_batch": args.full_batch,
             "entry_created": sum(item.entry_created for item in result),
             "no_execution_bar": sum(item.no_execution_bar for item in result),
             "day20_actual_exits_applied": applied,
