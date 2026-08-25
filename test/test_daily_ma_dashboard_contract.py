@@ -114,6 +114,7 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn("historical:'과거 기록'", page)
         self.assertIn("empty:'현재 없음'", page)
         self.assertIn('fieldLabel(k)', page)
+        self.assertIn('if(detailPayload)renderDetail()', page)
 
 
 if __name__ == '__main__':
