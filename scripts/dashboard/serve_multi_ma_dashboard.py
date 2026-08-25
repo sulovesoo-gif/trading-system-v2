@@ -41,6 +41,14 @@ def _json_default(value):
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
+def _daily_ma_as_of_date(query: dict[str, list[str]]) -> date:
+    today = datetime.now(KST).date()
+    value = date.fromisoformat((query.get("date") or [today.isoformat()])[0])
+    if value > today:
+        raise ValueError("dashboard date cannot be in the future")
+    return value
+
+
 def _research_stock_names(cursor) -> dict[str, str]:
     """Load STOCK labels once per read-only research response.
 
@@ -1006,8 +1014,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/daily-ma/api/dashboard":
             try:
-                universe = (parse_qs(parsed.query).get("universe") or ["ALL"])[0]
-                body = json.dumps(daily_ma_dashboard_payload(self.pool, universe=universe), ensure_ascii=False,
+                query = parse_qs(parsed.query)
+                universe = (query.get("universe") or ["LIVE"])[0]
+                as_of_date = _daily_ma_as_of_date(query)
+                body = json.dumps(daily_ma_dashboard_payload(self.pool, universe=universe, as_of_date=as_of_date), ensure_ascii=False,
                                   default=_json_default).encode("utf-8")
                 self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
             except Exception as error:
@@ -1017,8 +1027,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length",str(len(body))); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(body); return
         if parsed.path == "/daily-ma/api/detail":
             try:
-                strategy_id = (parse_qs(parsed.query).get("strategy_id") or [""])[0]
-                body = json.dumps(daily_ma_strategy_detail(self.pool, strategy_id), ensure_ascii=False,
+                query = parse_qs(parsed.query)
+                strategy_id = (query.get("strategy_id") or [""])[0]
+                as_of_date = _daily_ma_as_of_date(query)
+                body = json.dumps(daily_ma_strategy_detail(self.pool, strategy_id, as_of_date=as_of_date), ensure_ascii=False,
                                   default=_json_default).encode("utf-8")
                 self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8")
             except Exception as error:

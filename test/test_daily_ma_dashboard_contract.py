@@ -1,9 +1,10 @@
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from src.daily_ma_v03.evaluator import DailyMaStrategy
 from src.service.daily_ma_dashboard_service import minute_cross_events
+from scripts.dashboard.serve_multi_ma_dashboard import _daily_ma_as_of_date
 
 
 class DailyMaDashboardContractTest(unittest.TestCase):
@@ -115,6 +116,25 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn("empty:'현재 없음'", page)
         self.assertIn('fieldLabel(k)', page)
         self.assertIn('if(detailPayload)renderDetail()', page)
+
+    def test_dashboard_date_parameter_defaults_and_rejects_future_dates(self):
+        self.assertEqual(_daily_ma_as_of_date({'date': ['2026-08-24']}), date(2026, 8, 24))
+        self.assertEqual(_daily_ma_as_of_date({}), datetime.now().astimezone().date())
+        with self.assertRaises(ValueError):
+            _daily_ma_as_of_date({'date': ['2999-01-01']})
+
+    def test_dashboard_date_is_kst_scoped_and_past_disables_auto_refresh(self):
+        service = Path('src/service/daily_ma_dashboard_service.py').read_text(encoding='utf-8')
+        server = Path('scripts/dashboard/serve_multi_ma_dashboard.py').read_text(encoding='utf-8')
+        page = Path('reports/multi-ma/daily-ma.html').read_text(encoding='utf-8')
+        self.assertIn('as_of_date', service)
+        self.assertIn('_daily_ma_as_of_date', server)
+        self.assertIn('id="dashboardDate"', page)
+        self.assertIn('selectedDate=kstDateString()', page)
+        self.assertIn("+'&date='+encodeURIComponent", page)
+        self.assertIn('!isToday()', page)
+        self.assertIn('auto&&isToday()&&autoWindow()', page)
+        self.assertIn("pastDate:'과거 날짜 · 자동갱신 중지'", page)
 
 
 if __name__ == '__main__':
