@@ -49,9 +49,12 @@ class DailyMaDashboardContractTest(unittest.TestCase):
     def test_ui_is_null_safe_and_uses_read_only_30_second_refresh(self):
         page = Path('reports/multi-ma/daily-ma.html').read_text(encoding='utf-8')
         self.assertIn('Number.isFinite', page)
-        self.assertIn('next=Date.now()+30000', page)
+        self.assertIn('nextMinuteRefresh', page)
+        self.assertIn("t.hour>=8&&t.hour<20", page)
         self.assertIn('id="autoRefresh"', page)
         self.assertIn('id="refreshNow"', page)
+        self.assertIn('inFlight=false', page)
+        self.assertIn('lastError=', page)
         self.assertNotIn('NaN', page)
 
 
