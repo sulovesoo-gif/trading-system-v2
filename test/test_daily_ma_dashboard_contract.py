@@ -20,6 +20,16 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn('/daily-ma/api/dashboard', page)
         self.assertIn('/daily-ma/api/detail', page)
 
+    def test_detail_contract_exposes_actual_send_lifecycle_without_writes(self):
+        source = Path('src/service/daily_ma_dashboard_service.py').read_text(encoding='utf-8')
+        for name in (
+            'daily_strategy_live_order_intent', 'daily_strategy_live_order_request',
+            'live_broker_order', 'daily_strategy_live_fill_checkpoint',
+            'execution_logical_position', 'daily_strategy_live_broker_cost_allocation',
+            'daily_strategy_live_capital_settlement',
+        ):
+            self.assertIn(name, source)
+
     def test_runtime_server_exposes_read_only_daily_ma_routes(self):
         source = Path('scripts/dashboard/serve_multi_ma_dashboard.py').read_text(encoding='utf-8')
         self.assertIn('parsed.path == "/daily-ma/api/dashboard"', source)
