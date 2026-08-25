@@ -92,6 +92,15 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertNotIn("payload={rows:[]}", page)
         self.assertNotIn('NaN', page)
 
+    def test_ui_keeps_symbol_and_display_language_modes_independent(self):
+        page = Path('reports/multi-ma/daily-ma.html').read_text(encoding='utf-8')
+        self.assertIn('id="symbolMode"', page)
+        self.assertIn('id="languageMode"', page)
+        self.assertIn('dailyMaSymbolMode', page)
+        self.assertIn('dailyMaLanguageMode', page)
+        self.assertIn('Code / English', page)
+        self.assertIn('strategyLabel', page)
+
 
 if __name__ == '__main__':
     unittest.main()

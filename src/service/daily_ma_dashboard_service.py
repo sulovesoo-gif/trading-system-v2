@@ -211,8 +211,8 @@ def daily_proximity(pool, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any
     return result
 
 
-def minute_cross_events(values: Sequence[tuple[datetime, float]], *, strategy: DailyMaStrategy) -> list[tuple[datetime, str]]:
-    """Return only first-transition 1MIN crossover events for one strategy.
+def _minute_cross_telemetry(values: Sequence[tuple[datetime, float]], *, strategy: DailyMaStrategy) -> dict[str, Any]:
+    """Return first-transition events and latest read-only 1MIN telemetry.
 
     This is intentionally a pure read-only telemetry helper.  A signal is
     emitted once at its completed-bar transition; maintaining the condition on
@@ -224,19 +224,38 @@ def minute_cross_events(values: Sequence[tuple[datetime, float]], *, strategy: D
     max_period = max(periods)
     events: list[tuple[datetime, str]] = []
     seen: set[tuple[str, datetime, str]] = set()
+    latest_gap = {"entry": None, "exit": None}
     for index in range(max_period, len(values)):
         prior = [price for _at, price in values[:index]]
         try:
             ma = evaluate_ma(prior_closes=prior, today_1518_close=values[index][1], periods=periods)
         except ValueError:
             continue
+        latest_gap = {
+            "entry": (ma.values_now[strategy.entry_fast_ma] - ma.values_now[strategy.entry_slow_ma]) / ma.values_now[strategy.entry_slow_ma] * 100,
+            "exit": (ma.values_now[strategy.exit_fast_ma] - ma.values_now[strategy.exit_slow_ma]) / ma.values_now[strategy.exit_slow_ma] * 100,
+        }
         decision = evaluate_strategy(strategy=strategy, ma=ma)
         for event_type, occurred in (("ENTRY", decision.entry), ("EXIT", decision.normal_exit)):
             identity = (strategy.strategy_id, values[index][0], event_type)
             if occurred and identity not in seen:
                 seen.add(identity)
                 events.append((values[index][0], event_type))
-    return events
+    latest_event_time, latest_event_type = events[-1] if events else (None, None)
+    return {
+        "events": events,
+        "minute_entry_signal_count": sum(event_type == "ENTRY" for _at, event_type in events),
+        "minute_exit_signal_count": sum(event_type == "EXIT" for _at, event_type in events),
+        "latest_minute_signal_time": latest_event_time,
+        "latest_minute_signal_type": latest_event_type,
+        "minute_entry_gap_pct": latest_gap["entry"],
+        "minute_exit_gap_pct": latest_gap["exit"],
+    }
+
+
+def minute_cross_events(values: Sequence[tuple[datetime, float]], *, strategy: DailyMaStrategy) -> list[tuple[datetime, str]]:
+    """Public crossover-event projection used by telemetry contract tests."""
+    return _minute_cross_telemetry(values, strategy=strategy)["events"]
 
 
 def minute_telemetry(pool, rows: list[dict[str, Any]], *, recent_minutes: int = 30) -> dict[str, dict[str, Any]]:
@@ -255,37 +274,21 @@ def minute_telemetry(pool, rows: list[dict[str, Any]], *, recent_minutes: int = 
             values = [(row[0], float(row[1])) for row in cursor.fetchall()]
             if len(values) < 51:
                 continue
+            cached: dict[tuple[Any, ...], dict[str, Any]] = {}
             for strategy_row in strategies:
-                entry_count = exit_count = 0
-                latest_event_time = latest_event_type = None
-                latest_gap = {"entry": None, "exit": None}
                 strategy = DailyMaStrategy(str(strategy_row["strategy_id"]), signal_code, str(strategy_row["execution_code"]), str(strategy_row["direction"]), int(strategy_row["entry_fast_ma"]), int(strategy_row["entry_slow_ma"]), int(strategy_row["exit_fast_ma"]), int(strategy_row["exit_slow_ma"]), int(strategy_row["trend_ma"]) if strategy_row["trend_ma"] else None, False)
-                events = minute_cross_events(values, strategy=strategy)
-                for event_time, event_type in events:
-                    if event_type == "ENTRY":
-                        entry_count += 1
-                    else:
-                        exit_count += 1
-                    latest_event_time, latest_event_type = event_time, event_type
-                max_period = max(strategy.entry_fast_ma, strategy.entry_slow_ma, strategy.exit_fast_ma, strategy.exit_slow_ma, strategy.trend_ma or 1)
-                for index in range(max_period, len(values)):
-                    prior = [price for _at, price in values[:index]]
-                    now = values[index][1]
-                    try:
-                        ma = evaluate_ma(prior_closes=prior, today_1518_close=now, periods=(strategy.entry_fast_ma, strategy.entry_slow_ma, strategy.exit_fast_ma, strategy.exit_slow_ma, strategy.trend_ma or 1))
-                    except ValueError:
-                        continue
-                    latest_gap = {
-                        "entry": (ma.values_now[strategy.entry_fast_ma]-ma.values_now[strategy.entry_slow_ma]) / ma.values_now[strategy.entry_slow_ma]*100,
-                        "exit": (ma.values_now[strategy.exit_fast_ma]-ma.values_now[strategy.exit_slow_ma]) / ma.values_now[strategy.exit_slow_ma]*100,
-                    }
+                key = (strategy.direction, strategy.entry_fast_ma, strategy.entry_slow_ma,
+                       strategy.exit_fast_ma, strategy.exit_slow_ma, strategy.trend_ma)
+                telemetry = cached.get(key)
+                if telemetry is None:
+                    telemetry = _minute_cross_telemetry(values, strategy=strategy)
+                    cached[key] = telemetry
                 last_at = values[-1][0]
-                recent = latest_event_time is not None and (last_at-latest_event_time).total_seconds() <= recent_minutes * 60
+                recent = telemetry["latest_minute_signal_time"] is not None and (last_at-telemetry["latest_minute_signal_time"]).total_seconds() <= recent_minutes * 60
                 result[strategy.strategy_id] = {
-                    "minute_entry_signal_count": entry_count, "minute_exit_signal_count": exit_count,
-                    "latest_minute_signal_time": latest_event_time, "latest_minute_signal_type": latest_event_type,
-                    "latest_minute_direction": strategy.direction, "minute_entry_gap_pct": latest_gap["entry"],
-                    "minute_exit_gap_pct": latest_gap["exit"], "signal_within_recent_window": recent,
+                    **{name: value for name, value in telemetry.items() if name != "events"},
+                    "latest_minute_direction": strategy.direction,
+                    "signal_within_recent_window": recent,
                 }
     return result
 
