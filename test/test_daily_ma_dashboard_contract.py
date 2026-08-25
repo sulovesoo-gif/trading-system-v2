@@ -86,6 +86,8 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn('id="autoRefresh"', page)
         self.assertIn('id="refreshNow"', page)
         self.assertIn('inFlight=false', page)
+        self.assertIn('!inFlight&&Date.now()>=next', page)
+        self.assertIn("loading?t('loading')", page)
         self.assertIn('lastError=', page)
         self.assertIn("'}[c]));", page)
         self.assertIn('마지막 정상 데이터 유지', page)
@@ -100,6 +102,18 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn('dailyMaLanguageMode', page)
         self.assertIn('Code / English', page)
         self.assertIn('strategyLabel', page)
+
+    def test_ui_defaults_to_live_and_localizes_operator_facing_detail_terms(self):
+        page = Path('reports/multi-ma/daily-ma.html').read_text(encoding='utf-8')
+        self.assertIn("let universe='LIVE'", page)
+        self.assertIn('data-u="LIVE" class="active"', page)
+        self.assertIn("orders:'주문 흐름'", page)
+        self.assertIn("ownership:'귀속'", page)
+        self.assertIn("cost:'비용'", page)
+        self.assertIn("settlement:'정산'", page)
+        self.assertIn("historical:'과거 기록'", page)
+        self.assertIn("empty:'현재 없음'", page)
+        self.assertIn('fieldLabel(k)', page)
 
 
 if __name__ == '__main__':
