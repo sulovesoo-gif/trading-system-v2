@@ -36,6 +36,16 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn('parsed.path == "/daily-ma/api/detail"', source)
         self.assertIn('elif parsed.path == "/daily-ma"', source)
 
+    def test_ui_uses_official_symbol_names_and_single_column_detail_sections(self):
+        service = Path('src/service/daily_ma_dashboard_service.py').read_text(encoding='utf-8')
+        page = Path('reports/multi-ma/daily-ma.html').read_text(encoding='utf-8')
+        self.assertIn("group_cd='STOCK'", service)
+        self.assertIn('signal_name', service)
+        self.assertIn('execution_name', service)
+        self.assertIn('id="symbolMode"', page)
+        self.assertIn("dailyMaSymbolMode", page)
+        self.assertNotIn('detail-grid', page)
+
 
 if __name__ == '__main__':
     unittest.main()

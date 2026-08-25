@@ -140,7 +140,19 @@ def grid_rows(pool, *, universe: str = "ALL") -> list[dict[str, Any]]:
     """
     with pool.connection() as connection, connection.cursor() as cursor:
         cursor.execute(sql, values)
-        return _dicts(cursor, GRID_COLUMNS)
+        rows = _dicts(cursor, GRID_COLUMNS)
+        codes = sorted({str(row[code]) for row in rows for code in ("signal_code", "execution_code")})
+        if codes:
+            cursor.execute("""SELECT code, NULLIF(BTRIM(code_name),'')
+                              FROM common_code
+                             WHERE group_cd='STOCK' AND code=ANY(%s)""", (codes,))
+            stock_names = {str(code): str(name) for code, name in cursor.fetchall() if name is not None}
+        else:
+            stock_names = {}
+    for row in rows:
+        row["signal_name"] = stock_names.get(str(row["signal_code"]))
+        row["execution_name"] = stock_names.get(str(row["execution_code"]))
+    return rows
 
 
 def _latest_krx_minute(cursor, stock_code: str) -> tuple[datetime, float] | None:
