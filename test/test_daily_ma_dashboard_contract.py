@@ -46,7 +46,7 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn("dailyMaSymbolMode", page)
         self.assertNotIn('detail-grid', page)
 
-    def test_ui_is_null_safe_and_uses_read_only_30_second_refresh(self):
+    def test_ui_is_null_safe_and_uses_minute_aligned_fail_safe_refresh(self):
         page = Path('reports/multi-ma/daily-ma.html').read_text(encoding='utf-8')
         self.assertIn('Number.isFinite', page)
         self.assertIn('nextMinuteRefresh', page)
@@ -55,6 +55,9 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn('id="refreshNow"', page)
         self.assertIn('inFlight=false', page)
         self.assertIn('lastError=', page)
+        self.assertIn("'}[c]));", page)
+        self.assertIn('마지막 정상 데이터 유지', page)
+        self.assertNotIn("payload={rows:[]}", page)
         self.assertNotIn('NaN', page)
 
 
