@@ -46,6 +46,14 @@ class DailyMaDashboardContractTest(unittest.TestCase):
         self.assertIn("dailyMaSymbolMode", page)
         self.assertNotIn('detail-grid', page)
 
+    def test_ui_is_null_safe_and_uses_read_only_30_second_refresh(self):
+        page = Path('reports/multi-ma/daily-ma.html').read_text(encoding='utf-8')
+        self.assertIn('Number.isFinite', page)
+        self.assertIn('next=Date.now()+30000', page)
+        self.assertIn('id="autoRefresh"', page)
+        self.assertIn('id="refreshNow"', page)
+        self.assertNotIn('NaN', page)
+
 
 if __name__ == '__main__':
     unittest.main()
