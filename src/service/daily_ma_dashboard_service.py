@@ -182,6 +182,17 @@ def grid_rows(pool, *, universe: str = "ALL", as_of_date: date | None = None) ->
     return rows
 
 
+def universe_counts(pool) -> dict[str, int]:
+    """Lightweight header counts; do not rerun the full telemetry grid query."""
+    with pool.connection() as connection, connection.cursor() as cursor:
+        cursor.execute("""SELECT count(*)::int,
+                                 count(*) FILTER (WHERE decision_status='SELECTED')::int,
+                                 count(*) FILTER (WHERE operation_status='LIVE')::int
+                            FROM vw_daily_strategy_selection_dashboard""")
+        canonical, selected, live = cursor.fetchone()
+    return {"ALL": canonical, "SELECTED": selected, "LIVE": live}
+
+
 def _latest_krx_minute(cursor, stock_code: str, as_of_date: date) -> tuple[datetime, float] | None:
     cursor.execute("""SELECT bar_time, close_price FROM raw_stock_minute
                       WHERE stock_code=%s AND data_source='KIS' AND trading_venue='KRX'
@@ -337,11 +348,12 @@ def dashboard_payload(pool, *, universe: str = "ALL", as_of_date: date | None = 
             gap = min(abs(row["daily_proximity"]["entry_gap_pct"]), abs(row["daily_proximity"]["exit_gap_pct"]))
             if gap <= 0.15:
                 row["today_signal_status"] = "ENTRY_NEAR" if abs(row["daily_proximity"]["entry_gap_pct"]) <= abs(row["daily_proximity"]["exit_gap_pct"]) else "EXIT_NEAR"
+    counts = universe_counts(pool)
     summary = {
         "paper_tracking_strategies": 2400,
-        "canonical_rows": len(grid_rows(pool, universe="ALL", as_of_date=as_of_date)),
-        "selected_strategies": len(grid_rows(pool, universe="SELECTED", as_of_date=as_of_date)),
-        "live_strategies": len(grid_rows(pool, universe="LIVE", as_of_date=as_of_date)),
+        "canonical_rows": counts["ALL"],
+        "selected_strategies": counts["SELECTED"],
+        "live_strategies": counts["LIVE"],
         "three_strike_suspended": sum(row["live_risk_status"] == "THREE_STRIKE_SUSPENDED" for row in rows),
         "daily_entry_signals": sum(row["today_signal_status"] == "ENTRY_SIGNAL" for row in rows),
         "daily_exit_signals": sum(row["today_signal_status"] == "EXIT_SIGNAL" for row in rows),
