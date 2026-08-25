@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, time
-from typing import Any
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 from src.daily_ma_v03.evaluator import DailyMaStrategy, evaluate_ma, evaluate_strategy
@@ -211,6 +211,34 @@ def daily_proximity(pool, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any
     return result
 
 
+def minute_cross_events(values: Sequence[tuple[datetime, float]], *, strategy: DailyMaStrategy) -> list[tuple[datetime, str]]:
+    """Return only first-transition 1MIN crossover events for one strategy.
+
+    This is intentionally a pure read-only telemetry helper.  A signal is
+    emitted once at its completed-bar transition; maintaining the condition on
+    subsequent bars never creates another event.  Re-running the same raw-bar
+    sequence yields the same unique ``(strategy_id, bar_time, event_type)`` set.
+    """
+    periods = (strategy.entry_fast_ma, strategy.entry_slow_ma,
+               strategy.exit_fast_ma, strategy.exit_slow_ma, strategy.trend_ma or 1)
+    max_period = max(periods)
+    events: list[tuple[datetime, str]] = []
+    seen: set[tuple[str, datetime, str]] = set()
+    for index in range(max_period, len(values)):
+        prior = [price for _at, price in values[:index]]
+        try:
+            ma = evaluate_ma(prior_closes=prior, today_1518_close=values[index][1], periods=periods)
+        except ValueError:
+            continue
+        decision = evaluate_strategy(strategy=strategy, ma=ma)
+        for event_type, occurred in (("ENTRY", decision.entry), ("EXIT", decision.normal_exit)):
+            identity = (strategy.strategy_id, values[index][0], event_type)
+            if occurred and identity not in seen:
+                seen.add(identity)
+                events.append((values[index][0], event_type))
+    return events
+
+
 def minute_telemetry(pool, rows: list[dict[str, Any]], *, recent_minutes: int = 30) -> dict[str, dict[str, Any]]:
     """Observational 1MIN cross telemetry, never used by Daily MA runtime."""
     by_signal: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -228,27 +256,29 @@ def minute_telemetry(pool, rows: list[dict[str, Any]], *, recent_minutes: int = 
             if len(values) < 51:
                 continue
             for strategy_row in strategies:
-                max_period = max(int(strategy_row["entry_fast_ma"]), int(strategy_row["entry_slow_ma"]), int(strategy_row["exit_fast_ma"]), int(strategy_row["exit_slow_ma"]), int(strategy_row["trend_ma"] or 1))
                 entry_count = exit_count = 0
                 latest_event_time = latest_event_type = None
                 latest_gap = {"entry": None, "exit": None}
+                strategy = DailyMaStrategy(str(strategy_row["strategy_id"]), signal_code, str(strategy_row["execution_code"]), str(strategy_row["direction"]), int(strategy_row["entry_fast_ma"]), int(strategy_row["entry_slow_ma"]), int(strategy_row["exit_fast_ma"]), int(strategy_row["exit_slow_ma"]), int(strategy_row["trend_ma"]) if strategy_row["trend_ma"] else None, False)
+                events = minute_cross_events(values, strategy=strategy)
+                for event_time, event_type in events:
+                    if event_type == "ENTRY":
+                        entry_count += 1
+                    else:
+                        exit_count += 1
+                    latest_event_time, latest_event_type = event_time, event_type
+                max_period = max(strategy.entry_fast_ma, strategy.entry_slow_ma, strategy.exit_fast_ma, strategy.exit_slow_ma, strategy.trend_ma or 1)
                 for index in range(max_period, len(values)):
                     prior = [price for _at, price in values[:index]]
                     now = values[index][1]
                     try:
-                        ma = evaluate_ma(prior_closes=prior, today_1518_close=now, periods=(int(strategy_row["entry_fast_ma"]), int(strategy_row["entry_slow_ma"]), int(strategy_row["exit_fast_ma"]), int(strategy_row["exit_slow_ma"]), int(strategy_row["trend_ma"] or 1)))
+                        ma = evaluate_ma(prior_closes=prior, today_1518_close=now, periods=(strategy.entry_fast_ma, strategy.entry_slow_ma, strategy.exit_fast_ma, strategy.exit_slow_ma, strategy.trend_ma or 1))
                     except ValueError:
                         continue
-                    strategy = DailyMaStrategy(str(strategy_row["strategy_id"]), signal_code, str(strategy_row["execution_code"]), str(strategy_row["direction"]), int(strategy_row["entry_fast_ma"]), int(strategy_row["entry_slow_ma"]), int(strategy_row["exit_fast_ma"]), int(strategy_row["exit_slow_ma"]), int(strategy_row["trend_ma"]) if strategy_row["trend_ma"] else None, False)
-                    decision = evaluate_strategy(strategy=strategy, ma=ma)
                     latest_gap = {
                         "entry": (ma.values_now[strategy.entry_fast_ma]-ma.values_now[strategy.entry_slow_ma]) / ma.values_now[strategy.entry_slow_ma]*100,
                         "exit": (ma.values_now[strategy.exit_fast_ma]-ma.values_now[strategy.exit_slow_ma]) / ma.values_now[strategy.exit_slow_ma]*100,
                     }
-                    if decision.entry:
-                        entry_count += 1; latest_event_time = values[index][0]; latest_event_type = "ENTRY"
-                    if decision.normal_exit:
-                        exit_count += 1; latest_event_time = values[index][0]; latest_event_type = "EXIT"
                 last_at = values[-1][0]
                 recent = latest_event_time is not None and (last_at-latest_event_time).total_seconds() <= recent_minutes * 60
                 result[strategy.strategy_id] = {

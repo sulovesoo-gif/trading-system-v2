@@ -1,8 +1,40 @@
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+
+from src.daily_ma_v03.evaluator import DailyMaStrategy
+from src.service.daily_ma_dashboard_service import minute_cross_events
 
 
 class DailyMaDashboardContractTest(unittest.TestCase):
+    @staticmethod
+    def _minute_values(prices):
+        base = datetime(2026, 8, 25, 9, 0)
+        return [(base + timedelta(minutes=index), price) for index, price in enumerate(prices)]
+
+    @staticmethod
+    def _minute_strategy():
+        return DailyMaStrategy("DS_TEST", "000660", "000660", "LONG", 3, 5, 3, 5, None, False)
+
+    def test_1min_telemetry_counts_only_crossover_transitions(self):
+        strategy = self._minute_strategy()
+        cases = (
+            ([10] * 8 + [20] * 8, 1, 0),       # below -> above -> hold
+            ([20] * 8 + [10] * 8, 0, 1),       # above -> below -> hold
+            ([10] * 8 + [20] * 8 + [10] * 8 + [20] * 8, 2, 1),
+        )
+        for prices, expected_entries, expected_exits in cases:
+            events = minute_cross_events(self._minute_values(prices), strategy=strategy)
+            self.assertEqual(sum(kind == "ENTRY" for _at, kind in events), expected_entries)
+            self.assertEqual(sum(kind == "EXIT" for _at, kind in events), expected_exits)
+            self.assertEqual(len(events), len(set(events)))
+
+    def test_1min_telemetry_is_repeat_and_restart_deterministic(self):
+        values = self._minute_values([10] * 8 + [20] * 8 + [10] * 8)
+        first = minute_cross_events(values, strategy=self._minute_strategy())
+        second = minute_cross_events(values, strategy=self._minute_strategy())
+        self.assertEqual(first, second)
+
     def test_dashboard_is_read_only_consumer_of_runtime_state(self):
         source = Path('src/service/daily_ma_dashboard_service.py').read_text(encoding='utf-8')
         self.assertIn('vw_daily_strategy_selection_dashboard', source)
