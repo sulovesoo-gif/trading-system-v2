@@ -32,6 +32,9 @@ GRID_COLUMNS = (
     "live_risk_status", "consecutive_loss_count", "open_live_trade_count",
     "open_paper_trade_count", "today_order_count", "today_fill_count", "cash_skip_today",
     "unknown_count", "reconciliation_blocked", "today_signal_status",
+    "daily_signal_confirmed_at", "today_intent_count", "today_request_count",
+    "today_submit_count", "today_requested_quantity", "today_filled_quantity",
+    "today_remaining_quantity", "today_order_lifecycle", "today_cash_skip_reason",
 )
 
 
@@ -59,17 +62,25 @@ def grid_rows(pool, *, universe: str = "ALL") -> list[dict[str, Any]]:
     ), paper_open AS (
       SELECT strategy_id, count(*)::int AS n
         FROM daily_strategy_paper_trade WHERE trade_status='OPEN' GROUP BY strategy_id
+    ), fill_by_order AS (
+      SELECT broker_order_id, count(*)::int AS fills, sum(fill_quantity)::int AS filled_quantity
+        FROM live_broker_fill GROUP BY broker_order_id
     ), orders_today AS (
-      SELECT i.strategy_id, count(*)::int AS orders,
-             count(f.fill_id)::int AS fills
+      SELECT i.strategy_id, count(DISTINCT i.intent_id)::int AS intents,
+             count(DISTINCT r.order_request_id)::int AS requests,
+             count(DISTINCT b.broker_order_id)::int AS submitted,
+             COALESCE(sum(f.fills),0)::int AS fills,
+             COALESCE(sum(r.quantity),0)::int AS requested_quantity,
+             COALESCE(sum(f.filled_quantity),0)::int AS filled_quantity,
+             max(COALESCE(b.status,r.request_status,i.lifecycle_status)) AS lifecycle
         FROM daily_strategy_live_order_intent i
         LEFT JOIN daily_strategy_live_order_request r USING(intent_id)
         LEFT JOIN live_broker_order b USING(order_request_id)
-        LEFT JOIN live_broker_fill f ON f.broker_order_id=b.broker_order_id
+        LEFT JOIN fill_by_order f ON f.broker_order_id=b.broker_order_id
        WHERE i.created_at::date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul')::date
        GROUP BY i.strategy_id
     ), skips AS (
-      SELECT strategy_id, count(*)::int AS n
+      SELECT strategy_id, count(*)::int AS n, max(skip_reason) AS reason
         FROM daily_strategy_live_entry_skip
        WHERE skipped_at::date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul')::date
        GROUP BY strategy_id
@@ -84,7 +95,8 @@ def grid_rows(pool, *, universe: str = "ALL") -> list[dict[str, Any]]:
     ), daily_events AS (
       SELECT strategy_id,
              bool_or(event_kind='ENTRY' AND outcome='CREATED') AS entry_signal,
-             bool_or(event_kind='NORMAL_EXIT' AND outcome='CREATED') AS exit_signal
+             bool_or(event_kind='NORMAL_EXIT' AND outcome='CREATED') AS exit_signal,
+             max(source_bar_time) AS confirmed_at
         FROM daily_strategy_paper_event
        WHERE source_bar_time::date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul')::date
        GROUP BY strategy_id
@@ -93,17 +105,26 @@ def grid_rows(pool, *, universe: str = "ALL") -> list[dict[str, Any]]:
              COALESCE(r.live_risk_status, 'ENABLED') AS live_risk_status,
              COALESCE(r.consecutive_loss_streak, 0) AS consecutive_loss_count,
              COALESCE(lo.n,0) AS open_live_trade_count, COALESCE(po.n,0) AS open_paper_trade_count,
-             COALESCE(ot.orders,0) AS today_order_count, COALESCE(ot.fills,0) AS today_fill_count,
+             COALESCE(ot.submitted,0) AS today_order_count, COALESCE(ot.fills,0) AS today_fill_count,
+             COALESCE(ot.intents,0) AS today_intent_count, COALESCE(ot.requests,0) AS today_request_count,
+             COALESCE(ot.submitted,0) AS today_submit_count,
+             COALESCE(ot.requested_quantity,0) AS today_requested_quantity,
+             COALESCE(ot.filled_quantity,0) AS today_filled_quantity,
+             GREATEST(COALESCE(ot.requested_quantity,0)-COALESCE(ot.filled_quantity,0),0) AS today_remaining_quantity,
+             ot.lifecycle AS today_order_lifecycle, sk.reason AS today_cash_skip_reason,
              COALESCE(sk.n,0) AS cash_skip_today, COALESCE(u.n,0) AS unknown_count,
              COALESCE(lr.status <> 'PASS', FALSE) AS reconciliation_blocked,
              CASE
                WHEN COALESCE(u.n,0)>0 THEN 'UNKNOWN'
+               WHEN COALESCE(ot.filled_quantity,0)>0 AND COALESCE(ot.requested_quantity,0)>COALESCE(ot.filled_quantity,0) THEN 'PARTIALLY_FILLED'
                WHEN COALESCE(lo.n,0)>0 THEN 'OPEN'
-               WHEN COALESCE(ot.orders,0)>0 THEN 'ORDER_PENDING'
+               WHEN COALESCE(ot.intents,0)>0 AND EXISTS (SELECT 1 FROM daily_strategy_live_order_intent xi WHERE xi.strategy_id=d.strategy_id AND xi.intent_type='EXIT' AND xi.created_at::date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul')::date) THEN 'EXIT_PENDING'
+               WHEN COALESCE(ot.intents,0)>0 THEN 'ORDER_PENDING'
+               WHEN COALESCE(sk.n,0)>0 OR (d.operation_status='LIVE' AND COALESCE(r.live_risk_status,'ENABLED')<>'ENABLED') OR COALESCE(lr.status <> 'PASS', FALSE) THEN 'ENTRY_BLOCKED'
                WHEN de.exit_signal THEN 'EXIT_SIGNAL'
                WHEN de.entry_signal THEN 'ENTRY_SIGNAL'
                ELSE 'NO_SIGNAL'
-             END AS today_signal_status
+             END AS today_signal_status, de.confirmed_at AS daily_signal_confirmed_at
         FROM vw_daily_strategy_selection_dashboard d
         LEFT JOIN capital c USING(strategy_id)
         LEFT JOIN daily_strategy_live_risk_state r USING(strategy_id)
@@ -293,5 +314,39 @@ def strategy_detail(pool, strategy_id: str) -> dict[str, Any]:
                          FROM daily_strategy_paper_event
                         WHERE strategy_id=%s ORDER BY source_bar_time DESC,paper_event_id DESC LIMIT 100""", (strategy_id,))
         signal_log = _dicts(cursor, ("timestamp","timeframe","signal_type","direction","entry_gap_pct","exit_gap_pct","trend_pass","signal_phase","outcome"))
-    return {"strategy_id": strategy_id, "paper_actual": paper, "live": live,
-            "historical": historical, "signal_log": signal_log}
+        cursor.execute("""SELECT i.intent_id,i.intent_type,i.exit_reason,i.source_event_time,i.requested_quantity,
+                              i.lifecycle_status AS intent_status,r.order_request_id,r.request_key,r.side,r.quantity,
+                              r.request_status,b.broker_order_number,b.status AS broker_status,
+                              COALESCE(f.filled_quantity,0) AS filled_quantity,
+                              GREATEST(COALESCE(r.quantity,0)-COALESCE(f.filled_quantity,0),0) AS remaining_quantity,
+                              cp.cumulative_filled_qty,cp.cumulative_filled_amount,cp.checkpoint_status
+                         FROM daily_strategy_live_order_intent i
+                         LEFT JOIN daily_strategy_live_order_request r USING(intent_id)
+                         LEFT JOIN live_broker_order b USING(order_request_id)
+                         LEFT JOIN (SELECT broker_order_id,sum(fill_quantity)::int AS filled_quantity FROM live_broker_fill GROUP BY broker_order_id) f USING(broker_order_id)
+                         LEFT JOIN daily_strategy_live_fill_checkpoint cp USING(broker_order_id)
+                        WHERE i.strategy_id=%s ORDER BY i.created_at DESC""", (strategy_id,))
+        orders = _dicts(cursor, ("intent_id","intent_type","exit_reason","source_event_time","requested_quantity","intent_status","order_request_id","request_key","side","request_quantity","request_status","broker_order_number","broker_status","filled_quantity","remaining_quantity","cumulative_filled_qty","cumulative_filled_amount","checkpoint_status"))
+        cursor.execute("""SELECT p.ownership_id,p.stock_code,p.quantity,p.average_cost,p.realized_pnl,p.last_fill_at,p.updated_at
+                         FROM execution_logical_position p
+                         JOIN daily_strategy_live_trade l ON l.ownership_id=p.ownership_id
+                        WHERE l.strategy_id=%s AND p.ownership_type='LIVE' ORDER BY p.updated_at DESC""", (strategy_id,))
+        ownership = _dicts(cursor, ("ownership_id","stock_code","quantity","average_cost","realized_pnl","last_fill_at","updated_at"))
+        cursor.execute("""SELECT a.live_trade_id,a.allocation_side,a.fill_notional,a.allocated_buy_fee,a.allocated_sell_fee,
+                              a.allocated_sell_tax,a.allocated_other_cost,a.rounding_residual_amount,s.trade_date,
+                              s.execution_stock_code,s.finalization_status,s.finalized_at
+                         FROM daily_strategy_live_broker_cost_allocation a
+                         JOIN daily_strategy_live_trade l USING(live_trade_id)
+                         JOIN daily_strategy_live_broker_cost_snapshot s USING(broker_cost_snapshot_id)
+                        WHERE l.strategy_id=%s ORDER BY s.trade_date DESC,a.live_trade_id,a.allocation_side""", (strategy_id,))
+        costs = _dicts(cursor, ("live_trade_id","allocation_side","fill_notional","allocated_buy_fee","allocated_sell_fee","allocated_sell_tax","allocated_other_cost","rounding_residual_amount","trade_date","execution_stock_code","finalization_status","finalized_at"))
+        cursor.execute("""SELECT s.live_trade_id,s.capital_epoch_no,s.entry_filled_amount,s.exit_filled_amount,s.gross_realized_pnl,
+                              s.buy_fee,s.sell_fee,s.sell_tax,s.other_cost_amount,s.net_realized_pnl,s.settled_at
+                         FROM daily_strategy_live_capital_settlement s WHERE s.strategy_id=%s ORDER BY s.settled_at DESC""", (strategy_id,))
+        settlements = _dicts(cursor, ("live_trade_id","capital_epoch_no","entry_filled_amount","exit_filled_amount","gross_realized_pnl","buy_fee","sell_fee","sell_tax","other_cost_amount","net_realized_pnl","settled_at"))
+    current = next((row for row in grid_rows(pool, universe="ALL") if row["strategy_id"] == strategy_id), None)
+    telemetry = {"daily_proximity": daily_proximity(pool, [current]).get(strategy_id) if current else None,
+                 "minute_telemetry": minute_telemetry(pool, [current]).get(strategy_id) if current else None}
+    return {"strategy_id": strategy_id, "current": current, "paper_actual": paper, "live": live,
+            "historical": historical, "signal_log": signal_log, "orders": orders, "ownership": ownership,
+            "costs": costs, "settlements": settlements, **telemetry}
