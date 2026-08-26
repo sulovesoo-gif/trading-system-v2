@@ -20,14 +20,28 @@ class Axis(str, Enum):
     KRX_RESET = "KRX_RESET"
     INTEGRATED_CONTINUOUS = "INTEGRATED_CONTINUOUS"
     INTEGRATED_RESET = "INTEGRATED_RESET"
+    KRX_CONTINUOUS_AFTERNOON = "KRX_CONTINUOUS_AFTERNOON"
+    KRX_RESET_AFTERNOON = "KRX_RESET_AFTERNOON"
+    INTEGRATED_CONTINUOUS_AFTERNOON = "INTEGRATED_CONTINUOUS_AFTERNOON"
+    INTEGRATED_RESET_AFTERNOON = "INTEGRATED_RESET_AFTERNOON"
+
+    @property
+    def is_afternoon(self) -> bool:
+        return self.value.endswith("_AFTERNOON")
+
+    @property
+    def base_value(self) -> str:
+        return self.value.removesuffix("_AFTERNOON")
 
     @property
     def market_source(self) -> MarketSource:
-        return MarketSource.INTEGRATED if self.value.startswith("INTEGRATED") else MarketSource.KRX
+        return MarketSource.INTEGRATED if self.base_value.startswith("INTEGRATED") else MarketSource.KRX
 
     @property
     def continuity(self) -> ContinuityMode:
-        return ContinuityMode.CONTINUOUS if self.value.endswith("CONTINUOUS") else ContinuityMode.RESET
+        return (ContinuityMode.CONTINUOUS
+                if self.base_value.endswith("CONTINUOUS")
+                else ContinuityMode.RESET)
 
     @property
     def session(self) -> tuple[time, time]:
@@ -38,9 +52,10 @@ class Axis(str, Enum):
     @property
     def entry_source_session(self) -> tuple[time, time]:
         """KRX-executable source-bar window for a new ENTRY event."""
+        start = time(14, 0) if self.is_afternoon else time(9, 0)
         if self.continuity is ContinuityMode.RESET:
-            return time(9, 0), time(14, 59)
-        return time(9, 0), time(15, 18)
+            return start, time(14, 59)
+        return start, time(15, 18)
 
     def allows_entry_source_time(self, value: time) -> bool:
         start, end = self.entry_source_session
@@ -74,6 +89,7 @@ class MinuteMaPath:
     exit_fast_ma: int
     exit_slow_ma: int
     trend_ma: int | None
+    source_daily_strategy_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in {"LONG", "SHORT"}:

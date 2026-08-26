@@ -34,5 +34,16 @@ class MinuteMaContractTest(unittest.TestCase):
         self.assertIn('KRX_CONTINUOUS',page)
         self.assertIn('INTEGRATED_RESET',page)
 
+    def test_afternoon_schema_is_additive_and_send_stays_locked(self):
+        sql=(ROOT/"database/migrations/20260826_minute_ma_afternoon_additive.sql").read_text(encoding="utf-8")
+        for axis in (
+            "KRX_CONTINUOUS_AFTERNOON", "KRX_RESET_AFTERNOON",
+            "INTEGRATED_CONTINUOUS_AFTERNOON", "INTEGRATED_RESET_AFTERNOON",
+        ):
+            self.assertIn(axis,sql)
+        self.assertIn("path_count <> 19200",sql)
+        self.assertIn("send_enabled",sql)
+        self.assertNotIn("DELETE FROM",sql.upper())
+
 
 if __name__=="__main__": unittest.main()

@@ -18,7 +18,8 @@ class PostgresMinuteMaRepository:
         where = "AND p.data_axis=%s" if axis else ""
         params = (axis.value,) if axis else ()
         sql = f"""SELECT p.minute_path_id,p.path_key,p.data_axis,s.signal_code,s.execution_code,
-                         s.direction,s.entry_fast_ma,s.entry_slow_ma,s.exit_fast_ma,s.exit_slow_ma,s.trend_ma
+                         s.direction,s.entry_fast_ma,s.entry_slow_ma,s.exit_fast_ma,s.exit_slow_ma,
+                         s.trend_ma,s.source_daily_strategy_id
                     FROM minute_ma_path p JOIN minute_ma_strategy_master s USING(minute_strategy_id)
                    WHERE p.is_enabled='Y' AND s.is_enabled='Y' {where}
                    ORDER BY p.minute_path_id"""
@@ -28,6 +29,7 @@ class PostgresMinuteMaRepository:
         return tuple(MinuteMaPath(
             int(r[0]),str(r[1]),Axis(str(r[2])),str(r[3]),str(r[4]),str(r[5]),
             int(r[6]),int(r[7]),int(r[8]),int(r[9]),int(r[10]) if r[10] is not None else None,
+            str(r[11]),
         ) for r in rows)
 
     def source_bars(self, *, stock_code: str, axis: Axis, trading_date: date) -> tuple[MinuteBar, ...]:

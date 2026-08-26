@@ -1,4 +1,4 @@
-# Minute MA V0.1 four-axis runbook
+# Minute MA V0.1 base + AFTERNOON runbook
 
 This layer is additive. It does not alter Research 802, Forward, Daily MA, RAW,
 or the shared broker ledgers. `MINUTE_MA_LIVE_SEND` is created disabled.
@@ -17,6 +17,13 @@ Apply `database/migrations/20260826_minute_ma_v01_additive.sql` to TEST first,
 then execute `database/migrations/20260826_minute_ma_v01_verify.sql`. Expected
 seed counts are 2,400 semantic strategies, 2,400 paths per axis, 9,600 current
 PAPER operations, and 9,600 paper-capital rows. Send profile must be `N`.
+
+Apply `database/migrations/20260826_minute_ma_afternoon_additive.sql` only
+after the base migration. It adds four path variants without duplicating the
+2,400 semantic strategies. The resulting registry is eight axes and 19,200
+paths/current operations/paper-capital rows. AFTERNOON keeps the base axis MA
+history and changes only ENTRY source-time eligibility: CONTINUOUS 14:00–15:18,
+RESET 14:00–14:59. Actual SEND remains locked.
 
 ## PAPER
 

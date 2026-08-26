@@ -33,5 +33,19 @@ class MinuteMaEngineTest(unittest.TestCase):
         reset=MinuteMaSignalEngine().evaluate(path=path(Axis.KRX_RESET),bars=source)
         self.assertEqual(reset,())
 
+    def test_afternoon_variant_keeps_pre_1400_ma_history(self):
+        source=bars([5,4,3,2,1,2,3,4],datetime(2026,8,26,13,54))
+        afternoon=path(Axis.KRX_CONTINUOUS_AFTERNOON)
+        prepared=MinuteMaSignalEngine().prepare(path=afternoon,bars=source)
+        self.assertTrue(any(point.bar_time.time().isoformat() < "14:00:00" for point in prepared))
+        self.assertEqual(
+            [event.source_bar_time for event in MinuteMaSignalEngine().evaluate(
+                path=afternoon,bars=source
+            )],
+            [event.source_bar_time for event in MinuteMaSignalEngine().evaluate(
+                path=path(Axis.KRX_CONTINUOUS),bars=source
+            )],
+        )
+
 
 if __name__=="__main__": unittest.main()

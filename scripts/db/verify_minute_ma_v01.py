@@ -38,14 +38,14 @@ def main() -> int:
                             FROM minute_ma_strategy_master GROUP BY 1,2,3 ORDER BY 1,2""")
         result["semantics_by_instrument"]=[{"signal_code":str(s),"direction":str(d),
           "execution_code":str(e),"count":int(c)} for s,d,e,c in cursor.fetchall()]
-      expected={"minute_strategy_count":2400,"minute_path_count":9600,"current_operation_count":9600,
-                "paper_capital_count":9600,"dashboard_count":9600,"research_802_count":802,
+      expected={"minute_strategy_count":2400,"minute_path_count":19200,"current_operation_count":19200,
+                "paper_capital_count":19200,"dashboard_count":19200,"research_802_count":802,
                 "send_enabled":"N","capital_invariant_errors":0,"duplicate_events":0,
                 "duplicate_trades":0,"orphan_paths":0,"orphan_links":0}
       errors={key:{"expected":value,"actual":result.get(key)} for key,value in expected.items()
               if result.get(key)!=value}
-      if set(result["paths_by_axis"].values())!={2400} or len(result["paths_by_axis"])!=4:
-          errors["paths_by_axis"]={"expected":"4 x 2400","actual":result["paths_by_axis"]}
+      if set(result["paths_by_axis"].values())!={2400} or len(result["paths_by_axis"])!=8:
+          errors["paths_by_axis"]={"expected":"8 x 2400","actual":result["paths_by_axis"]}
       if len(result["semantics_by_instrument"])!=4 or any(row["count"]!=600 for row in result["semantics_by_instrument"]):
           errors["semantics_by_instrument"]={"expected":"4 x 600","actual":result["semantics_by_instrument"]}
       result["status"]="PASS" if not errors else "FAIL";result["errors"]=errors
