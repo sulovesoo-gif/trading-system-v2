@@ -62,7 +62,7 @@ def load_historical_csv(path: Path) -> dict[str,HistoricalMetric]:
             _decimal(row,"win_rate_pct","win_rate","승률","승률_pct"),
             _decimal(row,"avg_net_return_pct","평균순수익률_pct"),
             _decimal(row,"median_net_return_pct","중앙순수익률_pct"),
-            _decimal(row,"compound_profit","누적복리수익금","복리수익금"),
+            _decimal(row,"compound_profit","누적복리손익","누적복리수익금","복리수익금"),
             _decimal(row,"final_compound_capital","최종복리자본"),
             _integer(row,"max_concurrent_open","최대동시open"),
             _decimal(row,"avg_hold_minutes","평균보유시간","평균보유분"),
@@ -85,4 +85,3 @@ def build_selection_rows(files: Mapping[Axis,Path]) -> dict[Axis,dict[str,Histor
     if identities[1:] != identities[:-1]:
         raise ValueError("the three historical artifacts do not contain the same 2400 semantics")
     return loaded
-
