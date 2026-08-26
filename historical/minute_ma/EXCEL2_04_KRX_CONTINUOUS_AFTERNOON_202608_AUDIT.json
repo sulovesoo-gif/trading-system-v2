@@ -1,0 +1,276 @@
+{
+  "historical_rows": 2400,
+  "unique_strategy_ids": 2400,
+  "selected": 19,
+  "not_selected": 2381,
+  "compound_return_ge_10_candidates": 19,
+  "threshold": "compound_return_pct >= 10.0",
+  "selected_distribution": {
+    "instrument_direction": {
+      "SK하이닉스|LONG": 8,
+      "SK하이닉스|SHORT": 9,
+      "삼성전자|SHORT": 2
+    },
+    "entry_ma": {
+      "20/30": 4,
+      "3/10": 2,
+      "3/20": 3,
+      "3/30": 3,
+      "5/10": 2,
+      "5/20": 2,
+      "5/30": 3
+    },
+    "exit_ma": {
+      "10/20": 2,
+      "10/30": 6,
+      "3/10": 2,
+      "3/20": 2,
+      "5/10": 7
+    },
+    "trend_ma": {
+      "10": 2,
+      "20": 3,
+      "30": 6,
+      "5": 1,
+      "50": 6,
+      "NONE": 1
+    }
+  },
+  "top_candidates": [
+    {
+      "strategy_id": "DS004054",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "5/20",
+      "exit_ma": "10/30",
+      "trend_ma": "20",
+      "trade_count": 83,
+      "win_rate_pct": "42.17",
+      "compound_return_pct": "24.3963"
+    },
+    {
+      "strategy_id": "DS004007",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "3/20",
+      "exit_ma": "10/30",
+      "trend_ma": "30",
+      "trade_count": 106,
+      "win_rate_pct": "39.62",
+      "compound_return_pct": "20.0853"
+    },
+    {
+      "strategy_id": "DS001020",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "3/10",
+      "exit_ma": "5/10",
+      "trend_ma": "50",
+      "trade_count": 113,
+      "win_rate_pct": "42.48",
+      "compound_return_pct": "19.7814"
+    },
+    {
+      "strategy_id": "DS002711",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "3/30",
+      "exit_ma": "10/20",
+      "trend_ma": "30",
+      "trade_count": 79,
+      "win_rate_pct": "40.51",
+      "compound_return_pct": "17.3226"
+    },
+    {
+      "strategy_id": "DS004151",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "3/30",
+      "exit_ma": "10/30",
+      "trend_ma": "30",
+      "trade_count": 79,
+      "win_rate_pct": "40.51",
+      "compound_return_pct": "16.7085"
+    },
+    {
+      "strategy_id": "DS004198",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "5/30",
+      "exit_ma": "10/30",
+      "trend_ma": "20",
+      "trade_count": 81,
+      "win_rate_pct": "45.68",
+      "compound_return_pct": "16.2341"
+    },
+    {
+      "strategy_id": "DS001404",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "20/30",
+      "exit_ma": "5/10",
+      "trend_ma": "50",
+      "trade_count": 42,
+      "win_rate_pct": "50.00",
+      "compound_return_pct": "15.4959"
+    },
+    {
+      "strategy_id": "DS001883",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "20/30",
+      "exit_ma": "3/20",
+      "trend_ma": "30",
+      "trade_count": 43,
+      "win_rate_pct": "41.86",
+      "compound_return_pct": "14.5782"
+    },
+    {
+      "strategy_id": "DS000540",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "3/10",
+      "exit_ma": "3/10",
+      "trend_ma": "50",
+      "trade_count": 113,
+      "win_rate_pct": "36.28",
+      "compound_return_pct": "14.1452"
+    },
+    {
+      "strategy_id": "DS001068",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "5/10",
+      "exit_ma": "5/10",
+      "trend_ma": "50",
+      "trade_count": 103,
+      "win_rate_pct": "42.72",
+      "compound_return_pct": "12.9045"
+    },
+    {
+      "strategy_id": "DS000588",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "5/10",
+      "exit_ma": "3/10",
+      "trend_ma": "50",
+      "trade_count": 103,
+      "win_rate_pct": "38.83",
+      "compound_return_pct": "12.5300"
+    },
+    {
+      "strategy_id": "DS004006",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "3/20",
+      "exit_ma": "10/30",
+      "trend_ma": "20",
+      "trade_count": 106,
+      "win_rate_pct": "39.62",
+      "compound_return_pct": "12.4212"
+    },
+    {
+      "strategy_id": "DS002639",
+      "instrument": "삼성전자",
+      "execution_code": "0193L0",
+      "direction": "SHORT",
+      "entry_ma": "5/20",
+      "exit_ma": "10/20",
+      "trend_ma": "30",
+      "trade_count": 71,
+      "win_rate_pct": "38.03",
+      "compound_return_pct": "11.8625"
+    },
+    {
+      "strategy_id": "DS001881",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "20/30",
+      "exit_ma": "3/20",
+      "trend_ma": "10",
+      "trade_count": 59,
+      "win_rate_pct": "37.29",
+      "compound_return_pct": "11.7154"
+    },
+    {
+      "strategy_id": "DS001316",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "5/30",
+      "exit_ma": "5/10",
+      "trend_ma": "5",
+      "trade_count": 114,
+      "win_rate_pct": "40.35",
+      "compound_return_pct": "11.5076"
+    },
+    {
+      "strategy_id": "DS004032",
+      "instrument": "삼성전자",
+      "execution_code": "0193L0",
+      "direction": "SHORT",
+      "entry_ma": "3/20",
+      "exit_ma": "10/30",
+      "trend_ma": "50",
+      "trade_count": 92,
+      "win_rate_pct": "36.96",
+      "compound_return_pct": "11.2315"
+    },
+    {
+      "strategy_id": "DS001315",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "5/30",
+      "exit_ma": "5/10",
+      "trend_ma": "NONE",
+      "trade_count": 115,
+      "win_rate_pct": "40.00",
+      "compound_return_pct": "11.1208"
+    },
+    {
+      "strategy_id": "DS001401",
+      "instrument": "SK하이닉스",
+      "execution_code": "0193T0",
+      "direction": "LONG",
+      "entry_ma": "20/30",
+      "exit_ma": "5/10",
+      "trend_ma": "10",
+      "trade_count": 59,
+      "win_rate_pct": "44.07",
+      "compound_return_pct": "10.9703"
+    },
+    {
+      "strategy_id": "DS001271",
+      "instrument": "SK하이닉스",
+      "execution_code": "0197X0",
+      "direction": "SHORT",
+      "entry_ma": "3/30",
+      "exit_ma": "5/10",
+      "trend_ma": "30",
+      "trade_count": 79,
+      "win_rate_pct": "37.97",
+      "compound_return_pct": "10.2062"
+    }
+  ],
+  "validation": {
+    "duplicate_strategy_ids": [],
+    "missing_strategy_ids": [],
+    "extra_strategy_ids": [],
+    "invariant_errors": [],
+    "status": "PASS"
+  }
+}

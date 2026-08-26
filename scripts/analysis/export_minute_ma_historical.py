@@ -15,8 +15,6 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
 
-from dotenv import load_dotenv
-
 from src.minute_ma.contracts import Axis,MinuteBar
 from src.minute_ma.engine import MinuteMaSignalEngine
 from src.minute_ma.historical import HISTORICAL_COLUMNS,MinuteMaHistoricalReplay,result_row
@@ -89,6 +87,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--evaluation-to",type=date.fromisoformat,required=True)
     result.add_argument("--output",type=Path,required=True)
     result.add_argument("--offline-dir",type=Path)
+    result.add_argument("--label-source",type=Path,
+                        help="Existing official CSV used only for strategy display labels")
     return result
 
 
@@ -97,6 +97,7 @@ def main() -> int:
     if args.evaluation_to<args.evaluation_from:
         raise SystemExit("evaluation-to must be on or after evaluation-from")
     axis=Axis(args.axis)
+    labels=_strategy_labels(args.label_source) if args.label_source else {}
     pool=None
     try:
         if args.offline_dir:
@@ -104,6 +105,7 @@ def main() -> int:
             sources=_offline_bars(args.offline_dir/"source.csv")
             executions=_offline_bars(args.offline_dir/"execution.csv")
         else:
+            from dotenv import load_dotenv
             load_dotenv(ROOT/".env")
             pool=create_connection_pool(DatabaseSettings.from_environment())
             repository=PostgresMinuteMaRepository(pool,write_enabled=False)
@@ -133,7 +135,9 @@ def main() -> int:
                     execution_bars=executions[path.execution_code],
                     evaluation_from=args.evaluation_from,evaluation_to=args.evaluation_to,
                 )
-                rows.append(result_row(result))
+                row=result_row(result)
+                row["신호종목"]=labels.get(result.source_daily_strategy_id,row["신호종목"])
+                rows.append(row)
         rows.sort(key=lambda row:(-row["누적복리수익률_pct"],row["전략id"]))
         args.output.parent.mkdir(parents=True,exist_ok=True)
         with args.output.open("w",encoding="utf-8-sig",newline="") as handle:
@@ -180,6 +184,15 @@ def _offline_bars(path: Path):
     return {stock_code:(
         {bar.bar_time:bar for bar in bars} if path.name=="execution.csv" else tuple(bars)
     ) for stock_code,bars in grouped.items()}
+
+
+def _strategy_labels(path: Path) -> dict[str,str]:
+    with path.open("r",encoding="utf-8-sig",newline="") as handle:
+        rows=list(csv.DictReader(handle))
+    labels={row["전략id"]:row["신호종목"] for row in rows}
+    if len(labels)!=2400:
+        raise RuntimeError(f"label source must contain 2,400 unique strategies; got {len(labels)}")
+    return labels
 
 
 if __name__=="__main__":raise SystemExit(main())
