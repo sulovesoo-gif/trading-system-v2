@@ -1,0 +1,12 @@
+[Unit]
+Description=Run four-axis minute MA after completed-minute RAW settles
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08..19:*:03 Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 20:00:03 Asia/Seoul
+AccuracySec=1s
+Persistent=false
+Unit=trading-minute-ma-paper.service
+
+[Install]
+WantedBy=timers.target
