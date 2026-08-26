@@ -51,6 +51,10 @@ class MinuteMaPaperRuntime:
                 events.sort(key=lambda e:(e.source_bar_time,0 if e.signal_type is SignalType.EXIT else 1))
                 for event in events:
                     event_count += 1
+                    if (event.signal_type is SignalType.ENTRY
+                            and not path.axis.allows_entry_source_time(event.source_bar_time.time())):
+                        non_executable += 1
+                        continue
                     proxy_time = event.source_bar_time+timedelta(minutes=1)
                     if event.signal_type is SignalType.ENTRY and not time(9,0) <= proxy_time.time() <= time(15,19):
                         self.repository.record_non_executable(event,status="OUTSIDE_KRX_EXECUTION_WINDOW")

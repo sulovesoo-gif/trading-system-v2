@@ -35,6 +35,17 @@ class Axis(str, Enum):
             return time(9, 0), time(15, 30)
         return time(8, 0), time(19, 59)
 
+    @property
+    def entry_source_session(self) -> tuple[time, time]:
+        """KRX-executable source-bar window for a new ENTRY event."""
+        if self.continuity is ContinuityMode.RESET:
+            return time(9, 0), time(14, 59)
+        return time(9, 0), time(15, 18)
+
+    def allows_entry_source_time(self, value: time) -> bool:
+        start, end = self.entry_source_session
+        return start <= value <= end
+
 
 @dataclass(frozen=True)
 class MinuteBar:
@@ -73,4 +84,3 @@ class MinuteMaPath:
             raise ValueError("invalid exit MA pair")
         if self.trend_ma is not None and self.trend_ma <= 0:
             raise ValueError("trend MA must be positive")
-
