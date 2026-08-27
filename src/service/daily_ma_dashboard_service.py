@@ -250,6 +250,35 @@ def daily_proximity(pool, rows: list[dict[str, Any]], *, as_of_date: date | None
     return result
 
 
+def proximity_signal_status(*, direction: str, entry_gap_pct: float,
+                            exit_gap_pct: float, threshold_pct: float = 0.15) -> str | None:
+    """Classify a provisional NEAR state only on the pre-crossover side.
+
+    A small absolute gap by itself is insufficient: after a crossover the same
+    condition can remain close to zero for many observations.  Labelling that
+    held condition as a new, approaching signal is misleading.  Final Daily MA
+    events remain authoritative and are handled outside this helper.
+    """
+    direction = direction.upper()
+    if direction == "LONG":
+        entry_near = -threshold_pct <= entry_gap_pct <= 0
+        exit_near = 0 <= exit_gap_pct <= threshold_pct
+    elif direction == "SHORT":
+        entry_near = 0 <= entry_gap_pct <= threshold_pct
+        exit_near = -threshold_pct <= exit_gap_pct <= 0
+    else:
+        return None
+
+    candidates: list[tuple[float, str]] = []
+    if entry_near:
+        candidates.append((abs(entry_gap_pct), "ENTRY_NEAR"))
+    if exit_near:
+        candidates.append((abs(exit_gap_pct), "EXIT_NEAR"))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
+
+
 def _minute_cross_telemetry(values: Sequence[tuple[datetime, float]], *, strategy: DailyMaStrategy) -> dict[str, Any]:
     """Return first-transition events and latest read-only 1MIN telemetry.
 
@@ -345,9 +374,13 @@ def dashboard_payload(pool, *, universe: str = "ALL", as_of_date: date | None = 
         # Runtime events are authoritative after 15:18.  Before then only the
         # separate proximity object may influence the visual NEAR indication.
         if row["today_signal_status"] == "NO_SIGNAL" and row["daily_proximity"]:
-            gap = min(abs(row["daily_proximity"]["entry_gap_pct"]), abs(row["daily_proximity"]["exit_gap_pct"]))
-            if gap <= 0.15:
-                row["today_signal_status"] = "ENTRY_NEAR" if abs(row["daily_proximity"]["entry_gap_pct"]) <= abs(row["daily_proximity"]["exit_gap_pct"]) else "EXIT_NEAR"
+            near_status = proximity_signal_status(
+                direction=str(row["direction"]),
+                entry_gap_pct=float(row["daily_proximity"]["entry_gap_pct"]),
+                exit_gap_pct=float(row["daily_proximity"]["exit_gap_pct"]),
+            )
+            if near_status is not None:
+                row["today_signal_status"] = near_status
     counts = universe_counts(pool)
     summary = {
         "paper_tracking_strategies": 2400,
