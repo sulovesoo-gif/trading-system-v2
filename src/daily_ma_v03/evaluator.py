@@ -12,6 +12,8 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Iterable, Sequence
 
+from src.ma_crossover import GapTransition, classify_gap_transition
+
 
 @dataclass(frozen=True)
 class DailyMaStrategy:
@@ -34,10 +36,16 @@ class MaEvaluation:
     prior_close_hash: str
 
     def crossed_up(self, fast: int, slow: int) -> bool:
-        return self.values_previous[fast] <= self.values_previous[slow] and self.values_now[fast] > self.values_now[slow]
+        return classify_gap_transition(
+            previous_gap=self.values_previous[fast] - self.values_previous[slow],
+            current_gap=self.values_now[fast] - self.values_now[slow],
+        ) is GapTransition.UP_CROSS
 
     def crossed_down(self, fast: int, slow: int) -> bool:
-        return self.values_previous[fast] >= self.values_previous[slow] and self.values_now[fast] < self.values_now[slow]
+        return classify_gap_transition(
+            previous_gap=self.values_previous[fast] - self.values_previous[slow],
+            current_gap=self.values_now[fast] - self.values_now[slow],
+        ) is GapTransition.DOWN_CROSS
 
 
 @dataclass(frozen=True)

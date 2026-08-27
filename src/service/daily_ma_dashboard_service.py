@@ -13,6 +13,7 @@ from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 from src.daily_ma_v03.evaluator import DailyMaStrategy, evaluate_ma, evaluate_strategy
+from src.ma_crossover import GapTransition, classify_gap_transition
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -239,10 +240,25 @@ def daily_proximity(pool, rows: list[dict[str, Any]], *, as_of_date: date | None
                     day20_enabled=False,
                 )
                 decision = evaluate_strategy(strategy=strategy, ma=ma)
+                previous_entry_gap = (ma.values_previous[strategy.entry_fast_ma] - ma.values_previous[strategy.entry_slow_ma]) / ma.values_previous[strategy.entry_slow_ma] * 100
                 entry_gap = (ma.values_now[strategy.entry_fast_ma] - ma.values_now[strategy.entry_slow_ma]) / ma.values_now[strategy.entry_slow_ma] * 100
+                previous_exit_gap = (ma.values_previous[strategy.exit_fast_ma] - ma.values_previous[strategy.exit_slow_ma]) / ma.values_previous[strategy.exit_slow_ma] * 100
                 exit_gap = (ma.values_now[strategy.exit_fast_ma] - ma.values_now[strategy.exit_slow_ma]) / ma.values_now[strategy.exit_slow_ma] * 100
+                provisional_status, entry_transition, exit_transition = proximity_signal_status(
+                    direction=strategy.direction,
+                    previous_entry_gap_pct=previous_entry_gap,
+                    current_entry_gap_pct=entry_gap,
+                    previous_exit_gap_pct=previous_exit_gap,
+                    current_exit_gap_pct=exit_gap,
+                )
                 result[strategy.strategy_id] = {
-                    "entry_gap_pct": entry_gap, "exit_gap_pct": exit_gap,
+                    "previous_entry_gap_pct": previous_entry_gap,
+                    "entry_gap_pct": entry_gap,
+                    "previous_exit_gap_pct": previous_exit_gap,
+                    "exit_gap_pct": exit_gap,
+                    "entry_transition": entry_transition.value,
+                    "exit_transition": exit_transition.value,
+                    "provisional_status": provisional_status,
                     "trend_filter_pass": decision.trend_passed,
                     "provisional_direction": strategy.direction, "calculated_at": calculated_at,
                     "is_final_1518": calculated_at.time() == time(15, 18),
@@ -250,33 +266,48 @@ def daily_proximity(pool, rows: list[dict[str, Any]], *, as_of_date: date | None
     return result
 
 
-def proximity_signal_status(*, direction: str, entry_gap_pct: float,
-                            exit_gap_pct: float, threshold_pct: float = 0.15) -> str | None:
-    """Classify a provisional NEAR state only on the pre-crossover side.
-
-    A small absolute gap by itself is insufficient: after a crossover the same
-    condition can remain close to zero for many observations.  Labelling that
-    held condition as a new, approaching signal is misleading.  Final Daily MA
-    events remain authoritative and are handled outside this helper.
-    """
+def proximity_signal_status(*, direction: str,
+                            previous_entry_gap_pct: float, current_entry_gap_pct: float,
+                            previous_exit_gap_pct: float, current_exit_gap_pct: float,
+                            threshold_pct: float = 0.15,
+                            ) -> tuple[str | None, GapTransition, GapTransition]:
+    """Map directional gap transitions to provisional strategy observations."""
     direction = direction.upper()
+    entry_transition = classify_gap_transition(
+        previous_gap=previous_entry_gap_pct,
+        current_gap=current_entry_gap_pct,
+        near_threshold=threshold_pct,
+    )
+    exit_transition = classify_gap_transition(
+        previous_gap=previous_exit_gap_pct,
+        current_gap=current_exit_gap_pct,
+        near_threshold=threshold_pct,
+    )
     if direction == "LONG":
-        entry_near = -threshold_pct <= entry_gap_pct <= 0
-        exit_near = 0 <= exit_gap_pct <= threshold_pct
+        entry_cross, entry_near = GapTransition.UP_CROSS, GapTransition.UP_NEAR
+        exit_cross, exit_near = GapTransition.DOWN_CROSS, GapTransition.DOWN_NEAR
     elif direction == "SHORT":
-        entry_near = 0 <= entry_gap_pct <= threshold_pct
-        exit_near = -threshold_pct <= exit_gap_pct <= 0
+        entry_cross, entry_near = GapTransition.DOWN_CROSS, GapTransition.DOWN_NEAR
+        exit_cross, exit_near = GapTransition.UP_CROSS, GapTransition.UP_NEAR
     else:
-        return None
+        return None, entry_transition, exit_transition
 
-    candidates: list[tuple[float, str]] = []
-    if entry_near:
-        candidates.append((abs(entry_gap_pct), "ENTRY_NEAR"))
-    if exit_near:
-        candidates.append((abs(exit_gap_pct), "EXIT_NEAR"))
-    if not candidates:
-        return None
-    return min(candidates, key=lambda item: item[0])[1]
+    entry_cross_seen = entry_transition is entry_cross
+    exit_cross_seen = exit_transition is exit_cross
+    if entry_cross_seen and exit_cross_seen:
+        return "ENTRY_EXIT_CROSS_OBSERVED", entry_transition, exit_transition
+    if entry_cross_seen:
+        return "ENTRY_CROSS_OBSERVED", entry_transition, exit_transition
+    if exit_cross_seen:
+        return "EXIT_CROSS_OBSERVED", entry_transition, exit_transition
+
+    near_candidates: list[tuple[float, str]] = []
+    if entry_transition is entry_near:
+        near_candidates.append((abs(current_entry_gap_pct), "ENTRY_NEAR"))
+    if exit_transition is exit_near:
+        near_candidates.append((abs(current_exit_gap_pct), "EXIT_NEAR"))
+    status = min(near_candidates, key=lambda item: item[0])[1] if near_candidates else None
+    return status, entry_transition, exit_transition
 
 
 def _minute_cross_telemetry(values: Sequence[tuple[datetime, float]], *, strategy: DailyMaStrategy) -> dict[str, Any]:
@@ -372,15 +403,11 @@ def dashboard_payload(pool, *, universe: str = "ALL", as_of_date: date | None = 
         row["daily_proximity"] = proximity.get(row["strategy_id"])
         row["minute_telemetry"] = minute.get(row["strategy_id"])
         # Runtime events are authoritative after 15:18.  Before then only the
-        # separate proximity object may influence the visual NEAR indication.
+        # separate observation object may influence provisional visual status.
         if row["today_signal_status"] == "NO_SIGNAL" and row["daily_proximity"]:
-            near_status = proximity_signal_status(
-                direction=str(row["direction"]),
-                entry_gap_pct=float(row["daily_proximity"]["entry_gap_pct"]),
-                exit_gap_pct=float(row["daily_proximity"]["exit_gap_pct"]),
-            )
-            if near_status is not None:
-                row["today_signal_status"] = near_status
+            provisional_status = row["daily_proximity"]["provisional_status"]
+            if provisional_status is not None:
+                row["today_signal_status"] = provisional_status
     counts = universe_counts(pool)
     summary = {
         "paper_tracking_strategies": 2400,
