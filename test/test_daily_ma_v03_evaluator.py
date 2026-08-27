@@ -1,6 +1,6 @@
 import unittest
 
-from src.daily_ma_v03.evaluator import DailyMaStrategy, day20_triggered, evaluate_ma, evaluate_strategy
+from src.daily_ma_v03.evaluator import DailyMaStrategy, MaEvaluation, day20_triggered, evaluate_ma, evaluate_strategy
 
 
 class DailyMaV03EvaluatorTest(unittest.TestCase):
@@ -19,6 +19,24 @@ class DailyMaV03EvaluatorTest(unittest.TestCase):
         decision = evaluate_strategy(strategy=strategy, ma=evaluation)
         self.assertTrue(decision.entry)
         self.assertFalse(decision.normal_exit)
+
+    def test_up_cross_is_long_entry_and_short_exit(self):
+        evaluation = MaEvaluation({3: 11, 5: 10}, {3: 9, 5: 10}, 'fixture')
+        long = DailyMaStrategy('L', '000660', '0193W0', 'LONG', 3, 5, 3, 5, None, False)
+        short = DailyMaStrategy('S', '000660', '0197X0', 'SHORT', 3, 5, 3, 5, None, False)
+        self.assertEqual((True, False), (evaluate_strategy(strategy=long, ma=evaluation).entry,
+                                        evaluate_strategy(strategy=long, ma=evaluation).normal_exit))
+        self.assertEqual((False, True), (evaluate_strategy(strategy=short, ma=evaluation).entry,
+                                        evaluate_strategy(strategy=short, ma=evaluation).normal_exit))
+
+    def test_down_cross_is_short_entry_and_long_exit(self):
+        evaluation = MaEvaluation({3: 9, 5: 10}, {3: 11, 5: 10}, 'fixture')
+        long = DailyMaStrategy('L', '000660', '0193W0', 'LONG', 3, 5, 3, 5, None, False)
+        short = DailyMaStrategy('S', '000660', '0197X0', 'SHORT', 3, 5, 3, 5, None, False)
+        self.assertEqual((False, True), (evaluate_strategy(strategy=long, ma=evaluation).entry,
+                                        evaluate_strategy(strategy=long, ma=evaluation).normal_exit))
+        self.assertEqual((True, False), (evaluate_strategy(strategy=short, ma=evaluation).entry,
+                                        evaluate_strategy(strategy=short, ma=evaluation).normal_exit))
 
     def test_day20_contract(self):
         self.assertTrue(day20_triggered(direction="LONG", source_close=80, previous_official_close=100))
