@@ -2,7 +2,7 @@ from datetime import datetime,timedelta
 import unittest
 
 from src.minute_ma.contracts import Axis,MinuteBar,MinuteMaPath
-from src.minute_ma.engine import MinuteMaSignalEngine,SignalType
+from src.minute_ma.engine import MinuteMaSignalEngine,PreparedMaPoint,SignalType
 
 
 def path(axis=Axis.KRX_CONTINUOUS,direction="LONG",trend=None):
@@ -14,6 +14,22 @@ def bars(values,start=datetime(2026,8,26,9,0)):
 
 
 class MinuteMaEngineTest(unittest.TestCase):
+    def test_up_cross_is_long_entry_and_short_exit_for_all_axes(self):
+        point=PreparedMaPoint(datetime(2026,8,26,10,0),{3:11,5:10},{3:9,5:10})
+        for axis in Axis:
+            long_events=MinuteMaSignalEngine().evaluate_prepared(path=path(axis,'LONG'),points=(point,))
+            short_events=MinuteMaSignalEngine().evaluate_prepared(path=path(axis,'SHORT'),points=(point,))
+            self.assertEqual([SignalType.ENTRY],[event.signal_type for event in long_events],axis)
+            self.assertEqual([SignalType.EXIT],[event.signal_type for event in short_events],axis)
+
+    def test_down_cross_is_short_entry_and_long_exit_for_all_axes(self):
+        point=PreparedMaPoint(datetime(2026,8,26,10,0),{3:9,5:10},{3:11,5:10})
+        for axis in Axis:
+            long_events=MinuteMaSignalEngine().evaluate_prepared(path=path(axis,'LONG'),points=(point,))
+            short_events=MinuteMaSignalEngine().evaluate_prepared(path=path(axis,'SHORT'),points=(point,))
+            self.assertEqual([SignalType.EXIT],[event.signal_type for event in long_events],axis)
+            self.assertEqual([SignalType.ENTRY],[event.signal_type for event in short_events],axis)
+
     def test_held_condition_emits_one_transition_only(self):
         events=MinuteMaSignalEngine().evaluate(path=path(),bars=bars([5,4,3,2,1,2,3,4,5,6]))
         self.assertEqual([e.signal_type for e in events].count(SignalType.ENTRY),1)

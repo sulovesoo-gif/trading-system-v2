@@ -403,7 +403,7 @@ def dashboard_payload(pool, *, universe: str = "ALL", as_of_date: date | None = 
         row["daily_proximity"] = proximity.get(row["strategy_id"])
         row["minute_telemetry"] = minute.get(row["strategy_id"])
         # Runtime events are authoritative after 15:18.  Before then only the
-        # separate proximity object may influence the visual NEAR indication.
+        # separate observation object may influence provisional visual status.
         if row["today_signal_status"] == "NO_SIGNAL" and row["daily_proximity"]:
             provisional_status = row["daily_proximity"]["provisional_status"]
             if provisional_status is not None:

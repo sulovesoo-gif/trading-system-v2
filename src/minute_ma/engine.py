@@ -7,6 +7,8 @@ from enum import Enum
 from hashlib import sha256
 from typing import Iterable
 
+from src.ma_crossover import GapTransition, classify_gap_transition
+
 from .contracts import ContinuityMode, MinuteBar, MinuteMaPath
 
 
@@ -102,17 +104,23 @@ class MinuteMaSignalEngine:
                 continue
 
             direction = path.direction
-            entry_up = prior_values[path.entry_fast_ma] <= prior_values[path.entry_slow_ma] and current[path.entry_fast_ma] > current[path.entry_slow_ma]
-            entry_down = prior_values[path.entry_fast_ma] >= prior_values[path.entry_slow_ma] and current[path.entry_fast_ma] < current[path.entry_slow_ma]
-            exit_up = prior_values[path.exit_fast_ma] <= prior_values[path.exit_slow_ma] and current[path.exit_fast_ma] > current[path.exit_slow_ma]
-            exit_down = prior_values[path.exit_fast_ma] >= prior_values[path.exit_slow_ma] and current[path.exit_fast_ma] < current[path.exit_slow_ma]
+            entry_transition = classify_gap_transition(
+                previous_gap=prior_values[path.entry_fast_ma] - prior_values[path.entry_slow_ma],
+                current_gap=current[path.entry_fast_ma] - current[path.entry_slow_ma],
+            )
+            exit_transition = classify_gap_transition(
+                previous_gap=prior_values[path.exit_fast_ma] - prior_values[path.exit_slow_ma],
+                current_gap=current[path.exit_fast_ma] - current[path.exit_slow_ma],
+            )
             trend_passed = True
             if path.trend_ma is not None:
                 trend_passed = (current[path.trend_ma] > prior_values[path.trend_ma]
                                 if direction == "LONG"
                                 else current[path.trend_ma] < prior_values[path.trend_ma])
-            entry = (entry_up if direction == "LONG" else entry_down) and trend_passed
-            exit_ = exit_down if direction == "LONG" else exit_up
+            entry_cross = GapTransition.UP_CROSS if direction == "LONG" else GapTransition.DOWN_CROSS
+            exit_cross = GapTransition.DOWN_CROSS if direction == "LONG" else GapTransition.UP_CROSS
+            entry = entry_transition is entry_cross and trend_passed
+            exit_ = exit_transition is exit_cross
             confirmed_at = point.bar_time + timedelta(minutes=1, seconds=1)
             for kind, emitted in ((SignalType.ENTRY, entry), (SignalType.EXIT, exit_)):
                 if emitted:
