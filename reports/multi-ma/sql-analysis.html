@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>모바일 SQL 분석 실행기</title>
+<style>
+:root{color-scheme:light;--ink:#182230;--muted:#65758b;--line:#dbe3ec;--blue:#1264d1;--bg:#f4f7fb;--bad:#bd1e2c;--good:#14804a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Noto Sans KR",sans-serif}.wrap{max-width:860px;margin:auto;padding:16px}.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 2px 10px #17324d0d}h1{font-size:23px;margin:2px 0 4px}h2{font-size:17px;margin:0 0 12px}.muted{color:var(--muted);font-size:13px}.grid{display:grid;gap:10px}.two{grid-template-columns:1fr 1fr}label{font-weight:700;display:block;margin-bottom:5px}input,textarea,button{font:inherit}input[type=text],input[type=password],textarea{width:100%;border:1px solid #b9c6d5;border-radius:10px;padding:11px;background:#fff}textarea{min-height:220px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical}input[type=file]{width:100%;padding:10px;border:1px dashed #8aa0ba;border-radius:10px;background:#f8fbff}button{border:0;border-radius:10px;padding:12px 15px;font-weight:800;cursor:pointer}.primary{background:var(--blue);color:#fff}.secondary{background:#e9eff7;color:#203249}.danger{background:#fff0f1;color:var(--bad);border:1px solid #f2c2c7}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{flex:1;min-width:130px}.status{font-weight:800;font-size:18px}.QUEUED,.RUNNING{color:#9b5b00}.SUCCEEDED{color:var(--good)}.FAILED{color:var(--bad)}.bar{height:7px;background:#e7edf4;border-radius:10px;overflow:hidden;margin:10px 0}.bar i{display:block;width:35%;height:100%;background:var(--blue);animation:move 1.1s infinite alternate}.hidden{display:none!important}@keyframes move{to{transform:translateX(185%)}}.history{display:grid;gap:8px}.history article{border:1px solid var(--line);border-radius:10px;padding:10px}.history strong{display:block}.error{white-space:pre-wrap;background:#fff4f4;border:1px solid #f0b8bd;border-radius:10px;padding:12px;color:#8e1520;max-height:300px;overflow:auto}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.pill{padding:4px 8px;border-radius:999px;background:#eef3f9;font-size:12px}button:disabled{opacity:.55;cursor:not-allowed}@media(max-width:600px){.wrap{padding:10px}.card{padding:13px;border-radius:13px}.two{grid-template-columns:1fr}textarea{min-height:180px}}
+</style>
+</head>
+<body><main class="wrap">
+<section class="card"><div class="top"><div><h1>SQL 분석 실행기</h1><p class="muted">TEST 분석 DB · 영구 데이터 읽기 전용 · TEMP 세션 최대 1시간</p></div><span id="sessionPill" class="pill">연결 확인 중</span></div>
+<div id="authBox"><label for="token">분석 접근키</label><div class="actions"><input id="token" type="password" autocomplete="current-password" placeholder="접근키 입력"><button id="saveToken" class="secondary">확인</button></div></div></section>
+
+<section class="card"><h2>SQL 제출</h2><div class="grid">
+<div><label for="title">분석 제목 (선택)</label><input id="title" type="text" maxlength="300" placeholder="예: Minute MA 2×2 검증"></div>
+<div><label for="file">.sql 파일 업로드</label><input id="file" type="file" accept=".sql,text/plain"><p id="fileNote" class="muted">파일을 선택하면 아래 붙여넣기보다 우선합니다.</p></div>
+<div><label for="sql">또는 SQL 붙여넣기</label><textarea id="sql" spellcheck="false" placeholder="SELECT ...;"></textarea></div>
+<div class="actions"><button id="run" class="primary">분석 실행</button><button id="refresh" class="secondary">상태 새로고침</button><button id="endSession" class="danger">TEMP 세션 종료</button></div>
+</div></section>
+
+<section class="card"><h2>현재 실행</h2><div id="idle" class="muted">실행 중인 분석이 없습니다.</div><div id="job" class="hidden">
+<div id="jobStatus" class="status"></div><div id="progress" class="bar hidden"><i></i></div><div id="jobMeta" class="muted"></div>
+<div id="error" class="error hidden"></div><div class="actions" style="margin-top:10px"><button id="download" class="primary hidden">Excel 다운로드</button><button id="copyError" class="secondary hidden">오류 복사</button></div>
+</div></section>
+
+<section class="card"><h2>최근 실행</h2><div id="history" class="history"><span class="muted">조회 중...</span></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let currentId=localStorage.getItem('sqlAnalysisCurrent')||'',pollTimer=null,inFlight=false,currentItem=null;
+const token=()=>sessionStorage.getItem('sqlAnalysisToken')||$('token').value.trim();
+const headers=()=>({'X-Analysis-Key':token(),'Content-Type':'application/json'});
+const fmt=v=>v?new Date(v).toLocaleString('ko-KR'):'-';
+async function api(path,options={}){let r=await fetch(path,{cache:'no-store',...options,headers:{...headers(),...(options.headers||{})}}),text=await r.text(),body;try{body=JSON.parse(text)}catch{throw new Error(`HTTP ${r.status}: ${text.slice(0,300)}`)}if(!r.ok)throw Object.assign(new Error(body.error||`HTTP ${r.status}`),{body,status:r.status});return body}
+function renderItem(x){currentItem=x;$('idle').classList.add('hidden');$('job').classList.remove('hidden');$('jobStatus').textContent=x.status;$('jobStatus').className='status '+x.status;$('progress').classList.toggle('hidden',!['QUEUED','RUNNING'].includes(x.status));$('jobMeta').textContent=`${x.research_title||x.original_filename||'제목 없음'} · ${x.duration_ms==null?'실행 중':(x.duration_ms/1000).toFixed(1)+'초'} · 결과 ${x.result_set_count||0}개 / ${x.total_result_rows||0}행`;
+let err=[x.error_sqlstate&&`SQLSTATE: ${x.error_sqlstate}`,x.error_message,x.error_statement_position&&`statement position: ${x.error_statement_position}`,x.error_context].filter(Boolean).join('\n');$('error').textContent=err;$('error').classList.toggle('hidden',!err);$('copyError').classList.toggle('hidden',!err);$('download').classList.toggle('hidden',x.status!=='SUCCEEDED');}
+function renderHistory(rows){$('history').innerHTML=rows.length?rows.map(x=>`<article data-id="${x.execution_id}"><strong>${escapeHtml(x.research_title||x.original_filename||'제목 없음')}</strong><span class="${x.status}">${x.status}</span> · ${fmt(x.queued_at)} · ${x.duration_ms==null?'-':(x.duration_ms/1000).toFixed(1)+'초'} · ${x.result_set_count||0}개 / ${x.total_result_rows||0}행</article>`).join(''):'<span class="muted">실행 이력이 없습니다.</span>';document.querySelectorAll('.history article').forEach(e=>e.onclick=()=>{currentId=e.dataset.id;localStorage.setItem('sqlAnalysisCurrent',currentId);refresh()})}
+function escapeHtml(v){let d=document.createElement('div');d.textContent=v;return d.innerHTML}
+async function refresh(){if(inFlight||!token())return;inFlight=true;try{let s=await api('/sql-analysis/api/status');$('authBox').classList.add('hidden');$('sessionPill').textContent=s.session_connected?'TEMP 세션 연결됨':'TEMP 세션 대기';renderHistory(s.recent||[]);if(currentId){let x=await api('/sql-analysis/api/execution?execution_id='+encodeURIComponent(currentId));renderItem(x);if(['QUEUED','RUNNING'].includes(x.status)){clearTimeout(pollTimer);pollTimer=setTimeout(refresh,1500)}}}catch(e){$('authBox').classList.remove('hidden');$('sessionPill').textContent=e.status===401?'접근키 필요':'연결 오류';if(e.status!==401)alert(e.message)}finally{inFlight=false}}
+$('saveToken').onclick=()=>{sessionStorage.setItem('sqlAnalysisToken',$('token').value.trim());refresh()};
+$('run').onclick=async()=>{if(inFlight)return;let file=$('file').files[0],sql=file?await file.text():$('sql').value,source=file?'UPLOAD':'PASTE';if(!sql.trim())return alert('SQL 파일을 선택하거나 SQL을 붙여넣어 주세요.');let requestKey=crypto.randomUUID();$('run').disabled=true;try{let x=await api('/sql-analysis/api/run',{method:'POST',body:JSON.stringify({sql,title:$('title').value,source_type:source,filename:file?.name||null,request_key:requestKey})});currentId=x.execution_id;localStorage.setItem('sqlAnalysisCurrent',currentId);renderItem(x);setTimeout(refresh,400)}catch(e){alert(e.message)}finally{$('run').disabled=false}};
+$('refresh').onclick=refresh;
+$('endSession').onclick=async()=>{if(!confirm('TEMP 테이블과 세션을 종료할까요?'))return;try{let x=await api('/sql-analysis/api/session/end',{method:'POST',body:'{}'});alert(x.pending?'현재 작업 종료 후 세션이 닫힙니다.':'TEMP 세션이 종료되었습니다.');refresh()}catch(e){alert(e.message)}};
+$('download').onclick=async()=>{try{let r=await fetch('/sql-analysis/api/download/'+encodeURIComponent(currentId),{headers:{'X-Analysis-Key':token()}});if(!r.ok)throw new Error(await r.text());let blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement('a'),cd=r.headers.get('Content-Disposition')||'',m=cd.match(/filename\*=UTF-8''(.+)$/);a.href=url;a.download=m?decodeURIComponent(m[1]):'SQL_ANALYSIS.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(e){alert(e.message)}};
+$('copyError').onclick=()=>{let x=currentItem||{},text=['SQL_ANALYSIS_FAILED',`title: ${x.research_title||x.original_filename||'-'}`,`execution_id: ${x.execution_id||'-'}`,`started_at: ${x.started_at||'-'}`,`duration_ms: ${x.duration_ms??'-'}`,`sqlstate: ${x.error_sqlstate||'-'}`,`error: ${x.error_message||'-'}`,`failed_statement_position: ${x.error_statement_position||'-'}`,`sql_context: ${x.error_context||'-'}`].join('\n');navigator.clipboard.writeText(text)};
+$('file').onchange=()=>{$('fileNote').textContent=$('file').files[0]?`${$('file').files[0].name} 우선 실행`:'파일을 선택하면 아래 붙여넣기보다 우선합니다.'};
+refresh();
+</script></body></html>

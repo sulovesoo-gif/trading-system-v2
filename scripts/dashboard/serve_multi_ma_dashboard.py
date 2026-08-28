@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import os
 import sys
 import threading
 import time
+import uuid
 from datetime import date, datetime, time as clock_time, timedelta
 from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +37,7 @@ from src.service.daily_ma_dashboard_service import dashboard_payload as daily_ma
 from src.service.daily_ma_dashboard_service import strategy_detail as daily_ma_strategy_detail
 from src.service.minute_ma_dashboard_service import dashboard_payload as minute_ma_dashboard_payload
 from src.service.minute_ma_dashboard_service import path_detail as minute_ma_path_detail
+from src.service.sql_analysis_runner_service import SqlAnalysisRunner, SqlAnalysisSettings
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -994,6 +997,26 @@ def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     pool = None
+    sql_runner = None
+
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _analysis_authorized(self) -> bool:
+        if self.sql_runner is None:
+            self._send_json({"status": "DISABLED", "error": "SQL analysis runner is not configured"}, 503)
+            return False
+        supplied = self.headers.get("X-Analysis-Key", "")
+        if not supplied or not hmac.compare_digest(supplied, self.sql_runner.auth_token):
+            self._send_json({"status": "UNAUTHORIZED", "error": "analysis key required"}, 401)
+            return False
+        return True
 
     def end_headers(self):
         # The dashboard shell changes independently from the JSON payload.
@@ -1014,6 +1037,33 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/sql-analysis/api/"):
+            if not self._analysis_authorized():
+                return
+            try:
+                query = parse_qs(parsed.query)
+                if parsed.path == "/sql-analysis/api/status":
+                    payload = self.sql_runner.status()
+                    payload["recent"] = self.sql_runner.recent(8)
+                    return self._send_json(payload)
+                if parsed.path == "/sql-analysis/api/execution":
+                    return self._send_json(self.sql_runner.get_execution((query.get("execution_id") or [""])[0]))
+                if parsed.path.startswith("/sql-analysis/api/download/"):
+                    execution_id = parsed.path.rsplit("/", 1)[-1]
+                    path, filename = self.sql_runner.artifact(execution_id)
+                    body = path.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{filename}")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers(); self.wfile.write(body); return
+                return self._send_json({"error": "not found"}, 404)
+            except KeyError as error:
+                return self._send_json({"status": "NOT_FOUND", "error": str(error)}, 404)
+            except Exception as error:
+                logging.exception("SQL analysis GET failed")
+                return self._send_json({"status": "ERROR", "error": f"{type(error).__name__}: {error}"}, 500)
         if parsed.path == "/minute-ma/api/dashboard":
             try:
                 query=parse_qs(parsed.query)
@@ -1138,6 +1188,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.path = "/daily-ma.html"
         elif parsed.path == "/minute-ma":
             self.path = "/minute-ma.html"
+        elif parsed.path == "/sql-analysis":
+            self.path = "/sql-analysis.html"
         elif parsed.path == "/research/daily":
             self.path = "/research-daily.html"
         elif parsed.path == "/research/video-strategy":
@@ -1145,7 +1197,31 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
-        if urlparse(self.path).path != "/admin/backfill":
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/sql-analysis/api/"):
+            if not self._analysis_authorized():
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > self.sql_runner.settings.max_sql_bytes + 128 * 1024:
+                    return self._send_json({"status": "ERROR", "error": "request body size is invalid"}, 413)
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if parsed.path == "/sql-analysis/api/run":
+                    item = self.sql_runner.submit(sql=str(payload.get("sql") or ""),
+                        title=(str(payload.get("title") or "").strip() or None),
+                        source_type=str(payload.get("source_type") or "PASTE"),
+                        filename=(str(payload.get("filename") or "").strip() or None),
+                        request_key=str(payload.get("request_key") or uuid.uuid4()))
+                    return self._send_json(item, 202)
+                if parsed.path == "/sql-analysis/api/session/end":
+                    return self._send_json(self.sql_runner.end_session())
+                return self._send_json({"error": "not found"}, 404)
+            except (ValueError, RuntimeError, json.JSONDecodeError) as error:
+                return self._send_json({"status": "ERROR", "error": str(error)}, 409)
+            except Exception as error:
+                logging.exception("SQL analysis POST failed")
+                return self._send_json({"status": "ERROR", "error": f"{type(error).__name__}: {error}"}, 500)
+        if parsed.path != "/admin/backfill":
             return self._read_only()
         length = int(self.headers.get("Content-Length", "0"))
         values = parse_qs(self.rfile.read(length).decode("utf-8"))
@@ -1188,15 +1264,24 @@ def main() -> int:
     reports = ROOT / "reports" / "multi-ma"
     output = reports / "data" / "latest.json"
     pool = create_connection_pool(DatabaseSettings.from_environment())
+    sql_runner = None
+    try:
+        sql_runner = SqlAnalysisRunner(pool, SqlAnalysisSettings.from_environment(ROOT))
+    except Exception as error:
+        logging.warning("SQL analysis runner disabled: %s", error)
     stop = threading.Event()
     thread = threading.Thread(target=exporter, args=(pool, output, stop), daemon=True)
     thread.start()
     try:
         DashboardHandler.pool = pool
+        DashboardHandler.sql_runner = sql_runner
         handler = lambda *a, **k: DashboardHandler(*a, directory=str(reports), **k)
         ThreadingHTTPServer((args.bind, args.port), handler).serve_forever()
     finally:
-        stop.set(); pool.close()
+        stop.set()
+        if sql_runner is not None:
+            sql_runner.close()
+        pool.close()
     return 0
 
 if __name__ == "__main__":
