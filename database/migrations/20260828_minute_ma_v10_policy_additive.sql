@@ -369,23 +369,12 @@ WITH closed0 AS (
        COALESCE(m.current_streak_count,0) current_streak_count,
        pc.current_capital paper_compound_capital,COALESCE(lp.live_closed_count,0) live_closed_count,
        lp.live_net_realized_pnl,c.proposed_initial_capital,c.candidate_class,c.approval_status,
-       sel.decision_status v1_selection_status,sel.recommended_amount,sel.approved_amount,
-       po.operation_status v1_operation_status,po.allocated_amount v1_allocated_amount,
-       po.capital_epoch_no v1_capital_epoch_no,
-       cc.strategy_compound_capital v1_strategy_compound_capital,
-       cc.cumulative_net_realized_pnl v1_cumulative_net_realized_pnl,
        pr.prior_rank_no,COALESCE(pr.top20_consecutive_days,0) top20_consecutive_days
   FROM minute_ma_policy_path pp JOIN minute_ma_operation_policy op USING(policy_code)
   JOIN minute_ma_path p USING(minute_path_id) JOIN minute_ma_strategy_master s USING(minute_strategy_id)
   LEFT JOIN metrics m USING(minute_policy_path_id) LEFT JOIN open_trade o USING(minute_policy_path_id)
   LEFT JOIN minute_ma_policy_paper_capital pc USING(minute_policy_path_id)
   LEFT JOIN minute_ma_v1_candidate_plan c USING(source_daily_strategy_id)
-  LEFT JOIN vw_minute_ma_v1_current_selection sel USING(minute_policy_path_id)
-  LEFT JOIN minute_ma_policy_operation po
-    ON po.minute_policy_path_id=pp.minute_policy_path_id AND po.effective_to IS NULL
-  LEFT JOIN minute_ma_policy_compound_capital cc
-    ON cc.minute_policy_path_id=po.minute_policy_path_id
-   AND cc.capital_epoch_no=po.capital_epoch_no
   LEFT JOIN prior_rank pr ON pr.minute_policy_path_id=pp.minute_policy_path_id
   LEFT JOIN live_perf lp ON lp.minute_policy_path_id=pp.minute_policy_path_id
  WHERE pp.is_enabled='Y'
@@ -395,8 +384,20 @@ WITH closed0 AS (
  FROM base
 )
 SELECT ranked.*,
- CASE WHEN current_rank IS NOT NULL AND current_rank<=20 THEN top20_consecutive_days+1 ELSE 0 END current_top20_consecutive_days
-FROM ranked;
+ CASE WHEN current_rank IS NOT NULL AND current_rank<=20 THEN top20_consecutive_days+1 ELSE 0 END current_top20_consecutive_days,
+ sel.decision_status v1_selection_status,sel.recommended_amount,sel.approved_amount,
+ po.operation_status v1_operation_status,po.allocated_amount v1_allocated_amount,
+ po.capital_epoch_no v1_capital_epoch_no,
+ cc.strategy_compound_capital v1_strategy_compound_capital,
+ cc.cumulative_net_realized_pnl v1_cumulative_net_realized_pnl
+FROM ranked
+LEFT JOIN vw_minute_ma_v1_current_selection sel
+  ON sel.minute_policy_path_id=ranked.minute_policy_path_id
+LEFT JOIN minute_ma_policy_operation po
+  ON po.minute_policy_path_id=ranked.minute_policy_path_id AND po.effective_to IS NULL
+LEFT JOIN minute_ma_policy_compound_capital cc
+  ON cc.minute_policy_path_id=po.minute_policy_path_id
+ AND cc.capital_epoch_no=po.capital_epoch_no;
 
 DO $$ DECLARE n bigint; legacy bigint; capital numeric; BEGIN
   SELECT count(*) INTO n FROM minute_ma_policy_path WHERE is_enabled='Y';
