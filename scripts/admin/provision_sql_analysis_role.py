@@ -33,9 +33,11 @@ def main() -> int:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role,))
             if cur.fetchone() is None:
-                cur.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS").format(sql.Identifier(role)), (password,))
+                cur.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS").format(
+                    sql.Identifier(role), sql.Literal(password)))
             else:
-                cur.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS").format(sql.Identifier(role)), (password,))
+                cur.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS").format(
+                    sql.Identifier(role), sql.Literal(password)))
             cur.execute(sql.SQL("GRANT CONNECT, TEMPORARY ON DATABASE {} TO {}").format(
                 sql.Identifier(settings.name), sql.Identifier(role)))
             cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
@@ -51,8 +53,8 @@ def main() -> int:
                 "temp_file_limit": os.getenv("SQL_ANALYSIS_TEMP_FILE_LIMIT", "2GB"),
             }
             for name, value in defaults.items():
-                cur.execute(sql.SQL("ALTER ROLE {} IN DATABASE {} SET {} TO %s").format(
-                    sql.Identifier(role), sql.Identifier(settings.name), sql.Identifier(name)), (value,))
+                cur.execute(sql.SQL("ALTER ROLE {} IN DATABASE {} SET {} TO {}").format(
+                    sql.Identifier(role), sql.Identifier(settings.name), sql.Identifier(name), sql.Literal(value)))
             cur.execute("""SELECT r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolinherit,r.rolreplication,r.rolbypassrls,
                                   EXISTS(SELECT 1 FROM pg_auth_members m WHERE m.member=r.oid)
                              FROM pg_roles r WHERE r.rolname=%s""", (role,))
