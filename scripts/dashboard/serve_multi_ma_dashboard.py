@@ -1023,7 +1023,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # Never let a browser retain a malformed or stale index.html after a
         # deployment; JSON polling already carries its own cache-busting key.
         request_path = getattr(self, "path", "").split("?", 1)[0]
-        if request_path in ("/", "/index.html"):
+        if request_path in ("/", "/index.html", "/sql-analysis", "/sql-analysis.html"):
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         super().end_headers()
 
