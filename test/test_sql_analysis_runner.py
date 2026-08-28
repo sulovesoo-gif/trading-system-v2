@@ -47,6 +47,9 @@ class SqlAnalysisContractTest(unittest.TestCase):
         self.assertIn("REVOKE CREATE ON SCHEMA public", provision)
         self.assertIn("TEMP 세션 종료", page)
         self.assertIn("Excel 다운로드", page)
+        self.assertIn("sqlAnalysisUserCurrentV2", page)
+        self.assertNotIn("crypto.randomUUID", page)
+        self.assertIn("submitInFlight", page)
 
 
 def _sheet_names(package: zipfile.ZipFile) -> list[str]:
