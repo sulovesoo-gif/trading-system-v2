@@ -1,5 +1,5 @@
 [Unit]
-Description=Run four-axis minute MA after completed-minute RAW settles
+Description=Run eight-axis minute MA PAPER after completed-minute RAW settles
 
 [Timer]
 OnCalendar=Mon..Fri *-*-* 08..19:*:03 Asia/Seoul

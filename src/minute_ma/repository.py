@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Iterable
 
 from .contracts import Axis, MinuteBar, MinuteMaPath
 from .engine import SignalEvent, SignalType
+from .v1_policy import policy_for_direction, stop_event_key
+from .v1_live_runtime import V1LiveOpenTrade
+
+
+@dataclass(frozen=True)
+class V1OpenTrade:
+    minute_policy_paper_trade_id: int
+    entry_execution_time: datetime
+    underlying_entry_reference_price: Decimal
 
 
 class PostgresMinuteMaRepository:
@@ -31,6 +41,109 @@ class PostgresMinuteMaRepository:
             int(r[6]),int(r[7]),int(r[8]),int(r[9]),int(r[10]) if r[10] is not None else None,
             str(r[11]),
         ) for r in rows)
+
+    def live_paths(self, axis: Axis) -> tuple[MinuteMaPath, ...]:
+        sql="""SELECT p.minute_path_id,p.path_key,p.data_axis,s.signal_code,s.execution_code,
+          s.direction,s.entry_fast_ma,s.entry_slow_ma,s.exit_fast_ma,s.exit_slow_ma,s.trend_ma,
+          s.source_daily_strategy_id FROM minute_ma_path p JOIN minute_ma_strategy_master s USING(minute_strategy_id)
+          JOIN minute_ma_operation o USING(minute_path_id) WHERE p.is_enabled='Y' AND s.is_enabled='Y'
+          AND p.data_axis=%s AND o.effective_to IS NULL AND o.operation_status='LIVE' ORDER BY p.minute_path_id"""
+        with self.pool.connection() as connection,connection.cursor() as cursor:
+            cursor.execute(sql,(axis.value,));rows=cursor.fetchall()
+        return tuple(MinuteMaPath(int(r[0]),str(r[1]),Axis(str(r[2])),str(r[3]),str(r[4]),str(r[5]),
+          int(r[6]),int(r[7]),int(r[8]),int(r[9]),int(r[10]) if r[10] is not None else None,str(r[11])) for r in rows)
+
+    def v1_policy_paths(self, *, live_only: bool = False) -> tuple[MinuteMaPath, ...]:
+        sql = """SELECT p.minute_path_id,pp.policy_path_key,p.data_axis,s.signal_code,s.execution_code,
+                 s.direction,s.entry_fast_ma,s.entry_slow_ma,s.exit_fast_ma,s.exit_slow_ma,s.trend_ma,
+                 s.source_daily_strategy_id,pp.minute_policy_path_id
+            FROM minute_ma_policy_path pp
+            JOIN minute_ma_path p USING(minute_path_id)
+            JOIN minute_ma_strategy_master s USING(minute_strategy_id)
+            LEFT JOIN minute_ma_policy_operation po
+              ON po.minute_policy_path_id=pp.minute_policy_path_id AND po.effective_to IS NULL
+           WHERE pp.is_enabled='Y' AND p.is_enabled='Y' AND s.is_enabled='Y'
+             AND (%s=FALSE OR po.operation_status='LIVE')
+           ORDER BY pp.minute_policy_path_id"""
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(sql,(live_only,)); rows = cursor.fetchall()
+        return tuple(MinuteMaPath(
+            int(r[0]), str(r[1]), Axis(str(r[2])), str(r[3]), str(r[4]), str(r[5]),
+            int(r[6]), int(r[7]), int(r[8]), int(r[9]),
+            int(r[10]) if r[10] is not None else None, str(r[11]), int(r[12]),
+            policy_for_direction(str(r[5])),
+        ) for r in rows)
+
+    def v1_runtime_cursor(self, *, signal_code: str) -> datetime | None:
+        if not self.write_enabled:
+            return None
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT last_source_bar_time FROM minute_ma_policy_runtime_cursor
+               WHERE runtime_name='MINUTE_MA_V1_PAPER' AND policy_version='V1.0' AND signal_code=%s""",
+                           (signal_code,)); row = cursor.fetchone()
+        return None if row is None else row[0]
+
+    def advance_v1_cursor(self, *, signal_code: str, last_source_bar_time: datetime) -> None:
+        if not self.write_enabled:
+            return
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_runtime_cursor(
+                 runtime_name,policy_version,signal_code,last_source_bar_time)
+               VALUES('MINUTE_MA_V1_PAPER','V1.0',%s,%s)
+               ON CONFLICT(runtime_name,policy_version,signal_code) DO UPDATE
+               SET last_source_bar_time=GREATEST(minute_ma_policy_runtime_cursor.last_source_bar_time,
+                                                  EXCLUDED.last_source_bar_time),
+                   updated_at=CURRENT_TIMESTAMP""", (signal_code,last_source_bar_time))
+            connection.commit()
+
+    def snapshot_v1_telemetry(self, *, snapshot_date: date) -> int:
+        """Persist one immutable daily rank snapshot; it never changes Operation."""
+        if not self.write_enabled:return 0
+        sql="""INSERT INTO minute_ma_v1_daily_telemetry_snapshot(
+          snapshot_date,minute_policy_path_id,recent_5_compound_pct,rank_no,top20_consecutive_days)
+        SELECT %s,d.minute_policy_path_id,d.recent_5_compound_pct,d.current_rank,
+          CASE WHEN d.current_rank<=20 THEN COALESCE(p.top20_consecutive_days,0)+1 ELSE 0 END
+        FROM vw_minute_ma_v1_policy_dashboard d
+        LEFT JOIN LATERAL(
+          SELECT x.top20_consecutive_days FROM minute_ma_v1_daily_telemetry_snapshot x
+          WHERE x.minute_policy_path_id=d.minute_policy_path_id AND x.snapshot_date<%s
+          ORDER BY x.snapshot_date DESC LIMIT 1
+        ) p ON TRUE
+        ON CONFLICT(snapshot_date,minute_policy_path_id) DO NOTHING"""
+        with self.pool.connection() as connection,connection.cursor() as cursor:
+            cursor.execute(sql,(snapshot_date,snapshot_date));inserted=cursor.rowcount;connection.commit()
+        return inserted
+
+    def v1_live_runtime_cursor(self, *, signal_code: str) -> datetime | None:
+        if not self.write_enabled:return None
+        with self.pool.connection() as connection,connection.cursor() as cursor:
+            cursor.execute("""SELECT last_source_bar_time FROM minute_ma_policy_runtime_cursor
+              WHERE runtime_name='MINUTE_MA_V1_LIVE_NOSEND' AND policy_version='V1.0' AND signal_code=%s""",
+              (signal_code,));row=cursor.fetchone()
+        return None if row is None else row[0]
+
+    def advance_v1_live_cursor(self, *, signal_code: str, last_source_bar_time: datetime) -> None:
+        if not self.write_enabled:return
+        with self.pool.connection() as connection,connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_runtime_cursor(
+              runtime_name,policy_version,signal_code,last_source_bar_time)
+              VALUES('MINUTE_MA_V1_LIVE_NOSEND','V1.0',%s,%s)
+              ON CONFLICT(runtime_name,policy_version,signal_code) DO UPDATE SET
+              last_source_bar_time=GREATEST(minute_ma_policy_runtime_cursor.last_source_bar_time,
+                                             EXCLUDED.last_source_bar_time),updated_at=CURRENT_TIMESTAMP""",
+              (signal_code,last_source_bar_time));connection.commit()
+
+    def live_runtime_cursor(self,*,axis:Axis,signal_code:str):
+        with self.pool.connection() as c,c.cursor() as q:
+            q.execute("SELECT last_source_bar_time FROM minute_ma_runtime_cursor WHERE runtime_name='MINUTE_MA_LIVE_V01' AND data_axis=%s AND signal_code=%s",(axis.value,signal_code));row=q.fetchone()
+        return None if row is None else row[0]
+
+    def advance_live_cursor(self,*,axis:Axis,signal_code:str,last_source_bar_time:datetime):
+        with self.pool.connection() as c,c.cursor() as q:
+            q.execute("""INSERT INTO minute_ma_runtime_cursor(runtime_name,data_axis,signal_code,last_source_bar_time)
+              VALUES('MINUTE_MA_LIVE_V01',%s,%s,%s) ON CONFLICT(runtime_name,data_axis,signal_code) DO UPDATE
+              SET last_source_bar_time=GREATEST(minute_ma_runtime_cursor.last_source_bar_time,EXCLUDED.last_source_bar_time),updated_at=CURRENT_TIMESTAMP""",
+              (axis.value,signal_code,last_source_bar_time));c.commit()
 
     def source_bars(self, *, stock_code: str, axis: Axis, trading_date: date) -> tuple[MinuteBar, ...]:
         start, end = axis.session
@@ -84,6 +197,20 @@ class PostgresMinuteMaRepository:
             cached={r[0]:MinuteBar(r[0],float(r[1]),float(r[2]),float(r[3]),float(r[4]),int(r[5] or 0)) for r in rows}
             self._execution_cache[key]=cached
         return cached.get(at)
+
+    def underlying_bar(self, *, stock_code: str, at: datetime) -> MinuteBar | None:
+        """Actual KRX underlying bar used by the frozen STOP validation contract."""
+        if not time(9,0) <= at.time() <= time(15,30):
+            return None
+        sql = """SELECT bar_time,open_price,high_price,low_price,close_price,volume
+                   FROM raw_stock_minute
+                  WHERE stock_code=%s AND data_source='KIS' AND trading_venue='KRX'
+                    AND collect_cycle='1MIN' AND bar_time=%s
+                  ORDER BY collected_at DESC NULLS LAST LIMIT 1"""
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(sql,(stock_code,at)); row=cursor.fetchone()
+        return None if row is None else MinuteBar(
+            row[0],float(row[1]),float(row[2]),float(row[3]),float(row[4]),int(row[5] or 0))
 
     def execution_watermark(self,*,stock_code:str,trading_date:date) -> datetime | None:
         probe=datetime.combine(trading_date,time(9,0))
@@ -234,3 +361,147 @@ class PostgresMinuteMaRepository:
                                       proxy_bar=bar,reason="EOD_1519")
             connection.commit()
         return closed
+
+    def v1_open_trade(self, *, path: MinuteMaPath, event: SignalEvent,
+                      execution_bar: MinuteBar,
+                      underlying_entry_reference_price: Decimal) -> int:
+        if not self.write_enabled:
+            return 0
+        policy = path.operation_policy
+        threshold = policy.threshold(underlying_entry_reference_price)
+        import json
+        snapshot=json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values,
+                             "trend_passed":event.trend_passed,"policy":policy.policy_code},sort_keys=True)
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_paper_event(
+              minute_policy_path_id,signal_event_key,event_type,source_bar_time,confirmed_at,
+              proxy_bar_time,proxy_price,underlying_price,source_snapshot)
+              VALUES(%s,%s,'ENTRY',%s,%s,%s,%s,%s,%s::jsonb)
+              ON CONFLICT(minute_policy_path_id,signal_event_key,event_type) DO NOTHING RETURNING 1""",
+              (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
+               execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
+               underlying_entry_reference_price,snapshot))
+            if cursor.fetchone() is None:
+                connection.rollback(); return 0
+            cursor.execute("SELECT current_capital FROM minute_ma_policy_paper_capital WHERE minute_policy_path_id=%s FOR UPDATE",
+                           (path.minute_policy_path_id,)); capital=cursor.fetchone()[0]
+            cursor.execute("""INSERT INTO minute_ma_policy_paper_trade(
+              minute_policy_path_id,entry_event_key,trade_status,entry_signal_time,entry_execution_time,
+              entry_price,underlying_entry_reference_price,stop_threshold_price,stop_policy,basis_capital)
+              VALUES(%s,%s,'OPEN',%s,%s,%s,%s,%s,%s,%s)
+              ON CONFLICT(minute_policy_path_id,entry_event_key) DO NOTHING RETURNING 1""",
+              (path.minute_policy_path_id,event.signal_event_key,event.confirmed_at,execution_bar.bar_time,
+               Decimal(str(execution_bar.open_price)),underlying_entry_reference_price,threshold,
+               "UNDERLYING_1PCT" if policy.direction=="SHORT" else "UNDERLYING_5PCT",capital))
+            created=1 if cursor.fetchone() is not None else 0
+            connection.commit(); return created
+
+    def v1_open_trades(self, *, path: MinuteMaPath) -> tuple[V1OpenTrade,...]:
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT minute_policy_paper_trade_id,entry_execution_time,
+                    underlying_entry_reference_price
+               FROM minute_ma_policy_paper_trade
+              WHERE minute_policy_path_id=%s AND trade_status='OPEN'
+              ORDER BY entry_execution_time,minute_policy_paper_trade_id""",
+              (path.minute_policy_path_id,)); rows=cursor.fetchall()
+        return tuple(V1OpenTrade(int(r[0]),r[1],Decimal(r[2])) for r in rows)
+
+    def v1_live_open_trades(self, *, path: MinuteMaPath) -> tuple[V1LiveOpenTrade,...]:
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT t.minute_live_trade_id,t.minute_policy_path_id,t.ownership_id,
+                 t.underlying_entry_reference_price,COALESCE(min(a.broker_event_time),t.created_at)
+              FROM minute_ma_live_trade t LEFT JOIN minute_ma_live_checkpoint_allocation a
+                ON a.minute_live_trade_id=t.minute_live_trade_id AND a.side='BUY'
+             WHERE t.minute_policy_path_id=%s AND t.trade_status='OPEN'
+               AND t.underlying_entry_reference_price IS NOT NULL
+             GROUP BY t.minute_live_trade_id,t.minute_policy_path_id,t.ownership_id,
+                      t.underlying_entry_reference_price,t.created_at
+             ORDER BY t.minute_live_trade_id""",(path.minute_policy_path_id,));rows=cursor.fetchall()
+        return tuple(V1LiveOpenTrade(int(r[0]),int(r[1]),str(r[2]),Decimal(r[3]),r[4]) for r in rows)
+
+    def v1_close_normal(self, *, path: MinuteMaPath, event: SignalEvent,
+                        execution_bar: MinuteBar) -> int:
+        if not self.write_enabled:
+            return 0
+        import json
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_paper_event(
+              minute_policy_path_id,signal_event_key,event_type,source_bar_time,confirmed_at,
+              proxy_bar_time,proxy_price,source_snapshot)
+              VALUES(%s,%s,'NORMAL_EXIT',%s,%s,%s,%s,%s::jsonb)
+              ON CONFLICT(minute_policy_path_id,signal_event_key,event_type) DO NOTHING RETURNING 1""",
+              (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
+               execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
+               json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values},sort_keys=True)))
+            if cursor.fetchone() is None:
+                connection.rollback(); return 0
+            cursor.execute("""SELECT minute_policy_paper_trade_id FROM minute_ma_policy_paper_trade
+               WHERE minute_policy_path_id=%s AND trade_status='OPEN' AND entry_execution_time<=%s
+               ORDER BY entry_execution_time,minute_policy_paper_trade_id FOR UPDATE""",
+               (path.minute_policy_path_id,execution_bar.bar_time)); ids=[int(r[0]) for r in cursor.fetchall()]
+            for trade_id in ids:
+                self._settle_v1(cursor=cursor,trade_id=trade_id,signal_time=event.confirmed_at,
+                                execution_bar=execution_bar,reason="NORMAL_EXIT")
+            connection.commit(); return len(ids)
+
+    def v1_close_stop(self, *, path: MinuteMaPath, trade: V1OpenTrade,
+                      trigger_bar_time: datetime, trigger_underlying_close: Decimal,
+                      execution_bar: MinuteBar) -> int:
+        if not self.write_enabled:
+            return 0
+        key=stop_event_key(policy_path_id=int(path.minute_policy_path_id),
+                           trade_id=trade.minute_policy_paper_trade_id,
+                           trigger_bar_time=trigger_bar_time)
+        confirmed=trigger_bar_time+timedelta(minutes=1,seconds=1)
+        import json
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_paper_event(
+              minute_policy_path_id,signal_event_key,event_type,source_bar_time,confirmed_at,
+              proxy_bar_time,proxy_price,underlying_price,source_snapshot)
+              VALUES(%s,%s,'STOP_EXIT',%s,%s,%s,%s,%s,%s::jsonb)
+              ON CONFLICT(minute_policy_path_id,signal_event_key,event_type) DO NOTHING RETURNING 1""",
+              (path.minute_policy_path_id,key,trigger_bar_time,confirmed,execution_bar.bar_time,
+               Decimal(str(execution_bar.open_price)),trigger_underlying_close,
+               json.dumps({"target_trade_id":trade.minute_policy_paper_trade_id,
+                           "anchor":str(trade.underlying_entry_reference_price)},sort_keys=True)))
+            if cursor.fetchone() is None:
+                connection.rollback(); return 0
+            cursor.execute("""SELECT 1 FROM minute_ma_policy_paper_trade
+              WHERE minute_policy_paper_trade_id=%s AND trade_status='OPEN' FOR UPDATE""",
+              (trade.minute_policy_paper_trade_id,))
+            if cursor.fetchone() is None:
+                connection.rollback(); return 0
+            self._settle_v1(cursor=cursor,trade_id=trade.minute_policy_paper_trade_id,
+                            signal_time=confirmed,execution_bar=execution_bar,reason="STOP_EXIT",
+                            stop_trigger_time=trigger_bar_time,
+                            stop_trigger_underlying_close=trigger_underlying_close)
+            connection.commit(); return 1
+
+    @staticmethod
+    def _settle_v1(*, cursor, trade_id: int, signal_time: datetime,
+                   execution_bar: MinuteBar, reason: str,
+                   stop_trigger_time: datetime | None = None,
+                   stop_trigger_underlying_close: Decimal | None = None) -> None:
+        cursor.execute("""SELECT minute_policy_path_id,entry_price,basis_capital
+          FROM minute_ma_policy_paper_trade WHERE minute_policy_paper_trade_id=%s""",(trade_id,))
+        path_id,entry_price,basis=cursor.fetchone()
+        price=Decimal(str(execution_bar.open_price))
+        gross=(price/Decimal(entry_price)-Decimal("1"))*Decimal("100")
+        net=gross-Decimal("0.20");pnl=Decimal(basis)*net/Decimal("100")
+        cursor.execute("""UPDATE minute_ma_policy_paper_trade SET trade_status='CLOSED',
+          exit_signal_time=%s,exit_execution_time=%s,exit_price=%s,exit_reason=%s,
+          stop_trigger_time=%s,stop_trigger_underlying_close=%s,gross_return_pct=%s,
+          net_return_pct=%s,realized_pnl=%s,updated_at=CURRENT_TIMESTAMP
+          WHERE minute_policy_paper_trade_id=%s AND trade_status='OPEN'""",
+          (signal_time,execution_bar.bar_time,price,reason,stop_trigger_time,
+           stop_trigger_underlying_close,gross,net,pnl,trade_id))
+        cursor.execute("""INSERT INTO minute_ma_policy_paper_settlement(
+          minute_policy_paper_trade_id,minute_policy_path_id,realized_pnl,capital_after)
+          SELECT %s,%s,%s,current_capital+%s FROM minute_ma_policy_paper_capital
+          WHERE minute_policy_path_id=%s ON CONFLICT DO NOTHING RETURNING 1""",
+          (trade_id,path_id,pnl,pnl,path_id))
+        if cursor.fetchone() is not None:
+            cursor.execute("""UPDATE minute_ma_policy_paper_capital
+              SET current_capital=current_capital+%s,cumulative_realized_pnl=cumulative_realized_pnl+%s,
+                  version=version+1,updated_at=CURRENT_TIMESTAMP WHERE minute_policy_path_id=%s""",
+              (pnl,pnl,path_id))

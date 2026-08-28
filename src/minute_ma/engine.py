@@ -35,6 +35,7 @@ class PreparedMaPoint:
     bar_time: datetime
     current: dict[int,float]
     previous: dict[int,float] | None
+    source_close: float = 0.0
 
 
 class _RollingMa:
@@ -89,7 +90,7 @@ class MinuteMaSignalEngine:
             current = rolling.push(bar.close_price)
             if current is None:
                 continue
-            points.append(PreparedMaPoint(bar.bar_time,current,prior_values))
+            points.append(PreparedMaPoint(bar.bar_time,current,prior_values,bar.close_price))
             prior_values=current
         return tuple(points)
 

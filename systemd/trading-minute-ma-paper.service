@@ -1,5 +1,5 @@
 [Unit]
-Description=Trading V2 four-axis minute MA PAPER and LIVE NO_SEND runtime
+Description=Trading V2 eight-axis minute MA PAPER runtime
 After=network-online.target trading-forward-raw-collector.service trading-execution-reconciliation.service
 
 [Service]
@@ -9,6 +9,4 @@ WorkingDirectory=/home/ubuntu/projects/trading-system-v2
 EnvironmentFile=/home/ubuntu/projects/trading-system-v2/.env
 Environment=MINUTE_MA_PAPER_WRITE=Y
 ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/runtime/run_minute_ma_paper.py --date-current --write
-ExecStartPost=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/runtime/run_minute_ma_live_nosend.py
 NoNewPrivileges=true
-

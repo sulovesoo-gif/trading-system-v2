@@ -1,0 +1,12 @@
+[Unit]
+Description=Trading V2 Minute MA V1 LIVE runtime (NO_SEND by default)
+After=network-online.target trading-execution-reconciliation.service trading-forward-raw-collector.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/trading-system-v2
+EnvironmentFile=/home/ubuntu/projects/trading-system-v2/.env
+Environment=MINUTE_MA_ACTUAL_SEND=N
+ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/runtime/run_minute_ma_actual.py
+NoNewPrivileges=true

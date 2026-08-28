@@ -90,6 +90,8 @@ class MinuteMaPath:
     exit_slow_ma: int
     trend_ma: int | None
     source_daily_strategy_id: str | None = None
+    minute_policy_path_id: int | None = None
+    operation_policy: object | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in {"LONG", "SHORT"}:
