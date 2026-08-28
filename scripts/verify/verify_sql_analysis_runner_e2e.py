@@ -84,6 +84,7 @@ def main() -> int:
     parser.add_argument("fixture", type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:8090")
     parser.add_argument("--timeout-seconds", type=int, default=3600)
+    parser.add_argument("--existing-execution-id")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
     token = os.getenv("SQL_ANALYSIS_AUTH_TOKEN", "")
@@ -114,11 +115,19 @@ def main() -> int:
         evidence["async_idempotency"] = {"status": async_done["status"], "same_execution": True,
                                          "overlap_http_status": overlap.status_code}
 
-        fixture_sql = args.fixture.read_text(encoding="utf-8-sig")
-        started = time.monotonic()
-        fixture = run_sql(args.base_url, headers, fixture_sql, "Minute MA 2x2 acceptance",
-                          args.timeout_seconds, "UPLOAD", args.fixture.name)
-        evidence["fixture_duration_seconds"] = round(time.monotonic() - started, 3)
+        if args.existing_execution_id:
+            fixture_response = requests.get(f"{args.base_url}/sql-analysis/api/execution",
+                                            params={"execution_id": args.existing_execution_id},
+                                            headers=headers, timeout=30)
+            fixture_response.raise_for_status()
+            fixture = fixture_response.json()
+            evidence["fixture_duration_seconds"] = round((fixture.get("duration_ms") or 0) / 1000, 3)
+        else:
+            fixture_sql = args.fixture.read_text(encoding="utf-8-sig")
+            started = time.monotonic()
+            fixture = run_sql(args.base_url, headers, fixture_sql, "Minute MA 2x2 acceptance",
+                              args.timeout_seconds, "UPLOAD", args.fixture.name)
+            evidence["fixture_duration_seconds"] = round(time.monotonic() - started, 3)
         evidence["fixture"] = {key: fixture.get(key) for key in (
             "execution_id", "status", "duration_ms", "result_set_count", "total_result_rows",
             "error_sqlstate", "error_message")}
