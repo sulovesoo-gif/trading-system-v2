@@ -45,7 +45,6 @@ def main() -> int:
             cur.execute(sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}").format(sql.Identifier(role)))
             cur.execute(sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {}").format(sql.Identifier(role)))
             defaults = {
-                "default_transaction_read_only": "on",
                 "statement_timeout": os.getenv("SQL_ANALYSIS_STATEMENT_TIMEOUT", "45min"),
                 "lock_timeout": os.getenv("SQL_ANALYSIS_LOCK_TIMEOUT", "5s"),
                 "idle_in_transaction_session_timeout": os.getenv("SQL_ANALYSIS_IDLE_TX_TIMEOUT", "5min"),
@@ -55,6 +54,11 @@ def main() -> int:
             for name, value in defaults.items():
                 cur.execute(sql.SQL("ALTER ROLE {} IN DATABASE {} SET {} TO {}").format(
                     sql.Identifier(role), sql.Identifier(settings.name), sql.Identifier(name), sql.Literal(value)))
+            # PostgreSQL read-only transactions reject even TEMP DDL in scripts
+            # such as `DROP TABLE IF EXISTS tmp_x`.  Permanent protection is
+            # enforced by ownership/schema/table privileges instead.
+            cur.execute(sql.SQL("ALTER ROLE {} IN DATABASE {} RESET default_transaction_read_only").format(
+                sql.Identifier(role), sql.Identifier(settings.name)))
             cur.execute("""SELECT r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolinherit,r.rolreplication,r.rolbypassrls,
                                   EXISTS(SELECT 1 FROM pg_auth_members m WHERE m.member=r.oid)
                              FROM pg_roles r WHERE r.rolname=%s""", (role,))

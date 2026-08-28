@@ -43,7 +43,8 @@ class SqlAnalysisContractTest(unittest.TestCase):
         self.assertIn("/sql-analysis/api/run", server)
         self.assertNotIn("MINUTE_MA_ACTUAL_SEND", server)
         self.assertIn("NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT", provision)
-        self.assertIn("default_transaction_read_only", provision)
+        self.assertIn("RESET default_transaction_read_only", provision)
+        self.assertIn("REVOKE CREATE ON SCHEMA public", provision)
         self.assertIn("TEMP 세션 종료", page)
         self.assertIn("Excel 다운로드", page)
 
