@@ -1,0 +1,11 @@
+[Unit]
+Description=Minute MA V1.0 PAPER schedule (not enabled by migration)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09..15:*:05 Asia/Seoul
+AccuracySec=1s
+Persistent=false
+Unit=trading-minute-ma-v1-paper.service
+
+[Install]
+WantedBy=timers.target

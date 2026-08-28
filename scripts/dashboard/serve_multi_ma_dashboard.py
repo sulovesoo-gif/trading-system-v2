@@ -33,6 +33,8 @@ from src.service.research_video_dashboard_service import replay_payload as video
 from src.service.research_video_dashboard_service import runs_payload as video_runs_payload
 from src.service.daily_ma_dashboard_service import dashboard_payload as daily_ma_dashboard_payload
 from src.service.daily_ma_dashboard_service import strategy_detail as daily_ma_strategy_detail
+from src.service.minute_ma_dashboard_service import dashboard_payload as minute_ma_dashboard_payload
+from src.service.minute_ma_dashboard_service import path_detail as minute_ma_path_detail
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -1012,6 +1014,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/minute-ma/api/dashboard":
+            try:
+                query=parse_qs(parsed.query)
+                payload=minute_ma_dashboard_payload(self.pool,axis=(query.get("axis") or [None])[0],
+                                                     operation=(query.get("operation") or [None])[0])
+                body=json.dumps(payload,ensure_ascii=False,default=_json_default).encode("utf-8")
+                self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8")
+            except Exception as error:
+                logging.exception("minute MA dashboard query failed")
+                body=json.dumps({"status":"ERROR","error":f"{type(error).__name__}: {error}"},ensure_ascii=False).encode("utf-8")
+                self.send_response(500);self.send_header("Content-Type","application/json; charset=utf-8")
+            self.send_header("Content-Length",str(len(body)));self.send_header("Cache-Control","no-store");self.end_headers();self.wfile.write(body);return
+        if parsed.path == "/minute-ma/api/detail":
+            try:
+                path_id=int((parse_qs(parsed.query).get("minute_path_id") or ["0"])[0])
+                body=json.dumps(minute_ma_path_detail(self.pool,path_id),ensure_ascii=False,default=_json_default).encode("utf-8")
+                self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8")
+            except Exception as error:
+                logging.exception("minute MA detail query failed")
+                body=json.dumps({"status":"ERROR","error":f"{type(error).__name__}: {error}"},ensure_ascii=False).encode("utf-8")
+                self.send_response(500);self.send_header("Content-Type","application/json; charset=utf-8")
+            self.send_header("Content-Length",str(len(body)));self.send_header("Cache-Control","no-store");self.end_headers();self.wfile.write(body);return
         if parsed.path == "/daily-ma/api/dashboard":
             try:
                 query = parse_qs(parsed.query)
@@ -1112,6 +1136,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.path = "/research-performance.html"
         elif parsed.path == "/daily-ma":
             self.path = "/daily-ma.html"
+        elif parsed.path == "/minute-ma":
+            self.path = "/minute-ma.html"
         elif parsed.path == "/research/daily":
             self.path = "/research-daily.html"
         elif parsed.path == "/research/video-strategy":
