@@ -386,7 +386,8 @@ WITH closed0 AS (
   LEFT JOIN minute_ma_policy_compound_capital cc
     ON cc.minute_policy_path_id=po.minute_policy_path_id
    AND cc.capital_epoch_no=po.capital_epoch_no
-  LEFT JOIN prior_rank pr USING(minute_policy_path_id) LEFT JOIN live_perf lp USING(minute_policy_path_id)
+  LEFT JOIN prior_rank pr ON pr.minute_policy_path_id=pp.minute_policy_path_id
+  LEFT JOIN live_perf lp ON lp.minute_policy_path_id=pp.minute_policy_path_id
  WHERE pp.is_enabled='Y'
 ), ranked AS (
  SELECT base.*,CASE WHEN recent_5_compound_pct IS NULL THEN NULL ELSE
