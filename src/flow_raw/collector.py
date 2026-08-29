@@ -95,6 +95,20 @@ class FlowRawCollector:
                             "header": {"approval_key": approval, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
                             "body": {"input": subscription},
                         }))
+                        acknowledgement = await asyncio.wait_for(socket.recv(), timeout=3.0)
+                        if isinstance(acknowledgement, bytes):
+                            acknowledgement = acknowledgement.decode("utf-8")
+                        if not acknowledgement.startswith("{"):
+                            raise FlowCollectorError(
+                                f"KIS subscription acknowledgement is not JSON for {subscription['tr_id']}"
+                            )
+                        ack_payload = json.loads(acknowledgement)
+                        safe_ack = self._safe_ack(ack_payload)
+                        LOGGER.info("FLOW subscription response=%s", safe_ack)
+                        if str(safe_ack.get("rt_cd")) != "0":
+                            raise FlowCollectorError(
+                                f"KIS subscription rejected tr_id={subscription['tr_id']} msg={safe_ack.get('msg1')}"
+                            )
                         # KIS official websocket samples pace registration requests at
                         # 0.5 seconds.  Faster bursts are closed by the gateway without
                         # a close frame, so keep margin above the documented sample.
