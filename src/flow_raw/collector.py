@@ -95,7 +95,10 @@ class FlowRawCollector:
                             "header": {"approval_key": approval, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
                             "body": {"input": subscription},
                         }))
-                        await asyncio.sleep(0.15)
+                        # KIS official websocket samples pace registration requests at
+                        # 0.5 seconds.  Faster bursts are closed by the gateway without
+                        # a close frame, so keep margin above the documented sample.
+                        await asyncio.sleep(0.6)
                     LOGGER.info("FLOW websocket connected connection_id=%s subscriptions=%d", connection_id, len(self.subscriptions))
                     backoff = 1
                     first_data = True
