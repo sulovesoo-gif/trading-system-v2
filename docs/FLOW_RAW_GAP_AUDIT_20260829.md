@@ -27,6 +27,10 @@ Source field order is locked to the official Korea Investment & Securities
 | connection/sequence/reconnect/gap/duplicate evidence | Absent from every existing RAW object | `flow_ws_connection` plus metadata on every L0 row |
 | 5-second and 1-minute research aggregates | Absent | Rebuildable `flow_bar`; never used as L0 substitute |
 
+L0 ingestion and L1 rebuilding are operationally isolated. `trading-flow-raw-collector.service`
+does no aggregation work. `trading-flow-bar-aggregator.timer` starts the separate oneshot
+`trading-flow-bar-aggregator.service`; aggregation failure cannot stop the websocket receive loop.
+
 ## Quality contract
 
 - `receive_sequence` is monotonic inside one `connection_id`.

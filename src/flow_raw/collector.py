@@ -103,7 +103,6 @@ class FlowRawCollector:
                         try:
                             frame = await asyncio.wait_for(socket.recv(), timeout=1.0)
                         except asyncio.TimeoutError:
-                            await asyncio.to_thread(self.repository.refresh_l1, now=self.now())
                             continue
                         received_at = self.now()
                         if isinstance(frame, bytes):
@@ -142,7 +141,6 @@ class FlowRawCollector:
                                 event_time_regression_flag=regression, duplicate_flag=duplicate,
                             )
                             first_data = False
-                        await asyncio.to_thread(self.repository.refresh_l1, now=received_at)
             except asyncio.CancelledError:
                 self.repository.close_connection(connection_id, disconnected_at=self.now(), status="DISCONNECTED",
                                                  reason="graceful shutdown", last_sequence=self._sequence)

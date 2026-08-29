@@ -1,0 +1,14 @@
+[Unit]
+Description=Trading V2 FLOW L1 5-second/1-minute aggregator
+After=network-online.target trading-system-v2-timescaledb-test.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/trading-system-v2
+EnvironmentFile=/home/ubuntu/projects/trading-system-v2/.env
+Environment=PYTHONPATH=/home/ubuntu/projects/trading-system-v2
+ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/runtime/run_flow_bar_aggregator.py
+TimeoutStartSec=20
+NoNewPrivileges=true
+PrivateTmp=true

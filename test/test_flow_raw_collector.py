@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from src.flow_raw.collector import FlowRawCollector
 from src.flow_raw.contracts import (
@@ -61,6 +62,10 @@ class FlowContractTest(unittest.TestCase):
         self.assertEqual({item["tr_key"] for item in collector.subscriptions}, {"005930", "000660"})
         self.assertEqual({item["tr_id"] for item in collector.subscriptions}, {TR_EXECUTION, TR_PROGRAM, TR_ORDERBOOK})
         self.assertEqual(len(collector.subscriptions), 6)
+
+    def test_l0_collector_has_no_l1_rebuild_call(self):
+        source = Path("src/flow_raw/collector.py").read_text(encoding="utf-8")
+        self.assertNotIn("refresh_l1", source)
 
 
 if __name__ == "__main__":
