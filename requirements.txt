@@ -5,3 +5,4 @@ python-dotenv==1.2.2
 # Ubuntu ARM64·Python 3.10·TimescaleDB 통합 테스트에서 설치와 동작을 확인한 버전이다.
 psycopg[binary]==3.3.4
 psycopg_pool==3.3.1
+websockets==15.0.1
