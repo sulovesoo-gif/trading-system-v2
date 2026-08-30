@@ -34,6 +34,17 @@ class MinuteMaContractTest(unittest.TestCase):
         self.assertIn('KRX_CONTINUOUS',page)
         self.assertIn('INTEGRATED_RESET',page)
 
+    def test_dashboard_defaults_to_paginated_v1_live_and_defers_legacy(self):
+        service=(ROOT/"src/service/minute_ma_dashboard_service.py").read_text(encoding="utf-8")
+        page=(ROOT/"reports/multi-ma/minute-ma.html").read_text(encoding="utf-8")
+        server=(ROOT/"scripts/dashboard/serve_multi_ma_dashboard.py").read_text(encoding="utf-8")
+        self.assertIn('scope="V1_LIVE"',service)
+        self.assertIn("LIMIT %s OFFSET %s",service)
+        self.assertIn('"scope") or ["V1_LIVE"]',server)
+        self.assertIn("state={scope:'V1_LIVE'",page)
+        self.assertIn("!state.legacyLoaded",page)
+        self.assertNotIn("d.v1_rows.map",page)
+
     def test_afternoon_schema_is_additive_and_send_stays_locked(self):
         sql=(ROOT/"database/migrations/20260826_minute_ma_afternoon_additive.sql").read_text(encoding="utf-8")
         for axis in (

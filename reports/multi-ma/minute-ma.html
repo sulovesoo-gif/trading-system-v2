@@ -2,56 +2,60 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>분봉 MA 운영 Dashboard</title>
+  <title>Minute MA 운영 Dashboard</title>
   <style>
-    body{font:13px system-ui;margin:0;background:#f5f7fb;color:#172033}
-    .top{position:sticky;top:0;background:#fff;padding:12px 16px;border-bottom:1px solid #dce2ec;z-index:3}
-    .controls,.cards{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.card{background:#eef3ff;border-radius:8px;padding:8px 11px}
-    .danger{background:#fee4e2;color:#b42318}.good{background:#dcfae6;color:#067647}.wrap{padding:12px 16px}
-    .table{overflow:auto;background:#fff;border-radius:8px;max-height:68vh}table{border-collapse:collapse;min-width:2450px;width:100%}
-    th,td{padding:6px 8px;border-bottom:1px solid #e5e9f0;white-space:nowrap;text-align:right}
-    th{position:sticky;top:0;background:#1f3155;color:#fff}td:first-child,th:first-child{text-align:left}
-    .robust{color:#08783e;font-weight:700}.muted{color:#687386}.error{color:#b42318}.live{font-weight:700;color:#b54708}
-    .link{cursor:pointer;color:#175cd3}dialog{width:min(1500px,95vw);max-height:90vh;border:0;border-radius:10px;padding:0}
-    dialog header{position:sticky;top:0;background:#fff;padding:12px;border-bottom:1px solid #ddd}dialog section{padding:12px}
-    .detail-table{overflow:auto}.detail-table table{min-width:1300px}h3{margin:12px 0 8px}.section-empty{color:#667085;padding:12px;background:#f9fafb}
+    body{font:13px system-ui;margin:0;background:#f5f7fb;color:#172033}.top{position:sticky;top:0;background:#fff;padding:10px 12px;border-bottom:1px solid #dce2ec;z-index:3}
+    h2{margin:2px 0 8px;font-size:18px}.controls,.cards,.pager{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.card{background:#eef3ff;border-radius:8px;padding:7px 9px}
+    button,select,input{min-height:34px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;padding:4px 8px}.active{background:#175cd3;color:#fff}.danger{background:#fee4e2;color:#b42318}.good{background:#dcfae6;color:#067647}
+    .wrap{padding:10px 12px}.table{overflow:auto;background:#fff;border-radius:8px;max-height:67vh}table{border-collapse:collapse;min-width:1600px;width:100%}
+    th,td{padding:6px 8px;border-bottom:1px solid #e5e9f0;white-space:nowrap;text-align:right}th{position:sticky;top:0;background:#1f3155;color:#fff}td:first-child,th:first-child{text-align:left}
+    .muted{color:#687386}.error{color:#b42318}.live{font-weight:700;color:#b54708}.link{cursor:pointer;color:#175cd3}.hidden{display:none!important}
+    .pager{justify-content:center;margin:10px}.collapsed{padding:14px;background:#fff;border-radius:8px}.loading{opacity:.6;pointer-events:none}
+    dialog{width:min(1500px,95vw);max-height:90vh;border:0;border-radius:10px;padding:0}dialog header{position:sticky;top:0;background:#fff;padding:12px;border-bottom:1px solid #ddd}
+    dialog section{padding:12px}.detail-table{overflow:auto}.detail-table table{min-width:1300px}.section-empty{color:#667085;padding:12px;background:#f9fafb}
+    @media(max-width:700px){.top{position:relative}h2{font-size:16px}.wrap{padding:8px}.table{max-height:none}table{min-width:1500px}}
   </style>
 </head>
 <body>
   <div class="top">
-    <h2>분봉 MA 병렬전략 8축 + V1.0 운영정책</h2>
-    <p><a href="/sql-analysis">SQL 분석 실행기</a></p>
+    <h2>Minute MA 운영 Dashboard</h2>
     <div class="controls">
-      <select id="axis"><option value="">8축 전체</option><option>KRX_CONTINUOUS</option><option>KRX_RESET</option><option>INTEGRATED_CONTINUOUS</option><option>INTEGRATED_RESET</option><option>KRX_CONTINUOUS_AFTERNOON</option><option>KRX_RESET_AFTERNOON</option><option>INTEGRATED_CONTINUOUS_AFTERNOON</option><option>INTEGRATED_RESET_AFTERNOON</option></select>
-      <select id="operation"><option value="">PAPER/LIVE 전체</option><option>LIVE</option><option>PAPER</option></select>
+      <button class="scope active" data-scope="V1_LIVE">V1 LIVE 20</button>
+      <button class="scope" data-scope="V1_ALL">V1 전체 2,400</button>
+      <button class="scope" data-scope="LEGACY">연구 8축</button>
+      <select id="direction"><option value="">LONG/SHORT</option><option>LONG</option><option>SHORT</option></select>
+      <input id="search" size="13" placeholder="전략/종목 검색">
+      <select id="pageSize"><option>20</option><option>50</option></select>
       <button id="refresh">새로고침</button><span id="state" class="muted"></span>
     </div>
-    <div id="ops" class="cards"></div><div id="cards" class="cards"></div>
+    <div id="legacyFilters" class="controls hidden">
+      <select id="axis"><option value="">8축 전체</option><option>KRX_CONTINUOUS</option><option>KRX_RESET</option><option>INTEGRATED_CONTINUOUS</option><option>INTEGRATED_RESET</option><option>KRX_CONTINUOUS_AFTERNOON</option><option>KRX_RESET_AFTERNOON</option><option>INTEGRATED_CONTINUOUS_AFTERNOON</option><option>INTEGRATED_RESET_AFTERNOON</option></select>
+      <select id="operation"><option value="">PAPER/LIVE 전체</option><option>LIVE</option><option>PAPER</option></select>
+    </div>
+    <div id="ops" class="cards"></div><div id="v1cards" class="cards"></div>
   </div>
   <div class="wrap">
-    <h3>V1.0 운영정책 관찰</h3><div id="v1cards" class="cards"></div>
-    <div class="table"><table><thead><tr><th>policy path</th><th>전략</th><th>방향</th><th>PAPER ENTRY</th><th>LIVE ENTRY</th><th>HOLD</th><th>STOP</th><th>Anchor</th><th>Threshold</th><th>현재 adverse %</th><th>STOP 빈도</th><th>Overnight OPEN</th><th>최근 3/5/10 복리</th><th>직전 5</th><th>가속도</th><th>현재/전일 Rank</th><th>TOP20 연속일</th><th>연승/연패</th><th>PAPER/LIVE 완료</th><th>Selection</th><th>Operation</th><th>승인금액</th><th>복리자본</th></tr></thead><tbody id="v1rows"></tbody></table></div>
-    <h3>Strategy / Path</h3>
-    <div class="table"><table><thead><tr><th>path</th><th>축</th><th>strategy</th><th>신호</th><th>실행</th><th>방향</th><th>진입 MA</th><th>청산 MA</th><th>Trend</th><th>Selection</th><th>ROBUST</th><th>운영</th><th>승인금액</th><th>LIVE 자본</th><th>누적실현</th><th>PAPER 거래</th><th>승률</th><th>평균</th><th>중앙</th><th>PAPER 복리</th><th>Historical 복리</th><th>OPEN PAPER</th><th>OPEN LIVE</th><th>최근 ENTRY</th><th>최근 EXIT</th><th>마지막 평가</th></tr></thead><tbody id="rows"></tbody></table></div>
-    <h3>최근 LIVE 주문/체결</h3>
-    <div class="table"><table><thead><tr><th>신호시각</th><th>ENTRY/EXIT</th><th>path</th><th>축</th><th>전략</th><th>신호/실행</th><th>수량</th><th>기준금액</th><th>Request</th><th>Broker 주문번호</th><th>Broker 상태</th><th>체결수량</th><th>잔량</th><th>거래</th><th>Capital</th></tr></thead><tbody id="events"></tbody></table></div>
+    <section id="v1Section"><h3>V1 운영 상태</h3>
+      <div class="table"><table><thead><tr><th>policy path</th><th>전략</th><th>방향</th><th>Selection</th><th>Operation</th><th>PAPER ENTRY</th><th>LIVE ENTRY</th><th>HOLD</th><th>STOP</th><th>Anchor</th><th>Threshold</th><th>adverse %</th><th>OPEN</th><th>Overnight</th><th>최근 3/5/10 복리</th><th>Rank</th><th>승인금액</th><th>복리자본</th></tr></thead><tbody id="v1rows"></tbody></table></div>
+    </section>
+    <section id="legacySection" class="hidden"><h3>연구 Strategy / Path</h3>
+      <div id="legacyGate" class="collapsed">19,200개 연구 path는 요청 시 서버 페이지 단위로만 조회합니다. <button id="loadLegacy">펼치기</button></div>
+      <div id="legacyGrid" class="hidden table"><table><thead><tr><th>path</th><th>축</th><th>strategy</th><th>신호</th><th>실행</th><th>방향</th><th>진입 MA</th><th>청산 MA</th><th>Trend</th><th>Selection</th><th>운영</th><th>LIVE 자본</th><th>PAPER 거래</th><th>승률</th><th>PAPER 복리</th><th>Historical 복리</th><th>OPEN PAPER</th><th>OPEN LIVE</th></tr></thead><tbody id="legacyRows"></tbody></table></div>
+    </section>
+    <div class="pager"><button id="prev">이전</button><span id="pageInfo"></span><button id="next">다음</button></div>
   </div>
-  <dialog id="detail"><header><button onclick="detail.close()">닫기</button> <b id="detailTitle"></b></header><section id="detailBody"></section></dialog>
+  <dialog id="detail"><header><button id="closeDetail">닫기</button> <b id="detailTitle"></b></header><section id="detailBody"></section></dialog>
   <script>
-    const $=id=>document.getElementById(id),fmt=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:4}),dt=v=>v?new Date(v).toLocaleString():'—';
-    function table(title,rows){if(!rows?.length)return `<h3>${title}</h3><div class="section-empty">현재 없음</div>`;const keys=Object.keys(rows[0]);return `<h3>${title}</h3><div class="detail-table"><table><thead><tr>${keys.map(k=>`<th>${k}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${keys.map(k=>`<td>${r[k]??'—'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
-    async function showDetail(id){const r=await fetch('/minute-ma/api/detail?minute_path_id='+id,{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error);$('detailTitle').textContent=d.path.path_key;$('detailBody').innerHTML=table('PAPER 거래',d.paper_trades)+table('LIVE 실제거래',d.live_trades)+table('주문 흐름',d.orders)+table('Broker 비용',d.broker_costs)+table('Capital 정산',d.settlements);$('detail').showModal()}
-    async function load(){const state=$('state');state.textContent='조회 중';try{
-      const q=new URLSearchParams();if($('axis').value)q.set('axis',$('axis').value);if($('operation').value)q.set('operation',$('operation').value);
-      const r=await fetch('/minute-ma/api/dashboard?'+q,{cache:'no-store'}),d=await r.json();if(!r.ok||d.status!=='OK')throw Error(d.error||'조회 실패');
-      const o=d.operational;$('ops').innerHTML=[['총 path',o.total_paths],['PAPER',o.paper_paths],['LIVE',o.live_paths],['OPEN PAPER',o.open_paper],['OPEN LIVE',o.open_live],['오늘 PAPER E/X',`${o.today_paper_entry}/${o.today_paper_exit}`],['오늘 LIVE E/X',`${o.today_live_entry}/${o.today_live_exit}`],['주문/체결수량',`${o.today_orders}/${o.today_filled_qty}`],['SKIP',o.today_skips],['Actual SEND',o.send_enabled]].map(x=>`<span class="card ${x[0]=='Actual SEND'?(x[1]=='Y'?'danger':'good'):''}"><b>${x[0]}</b> ${x[1]}</span>`).join('');
-      $('cards').innerHTML=d.summary.map(x=>`<span class="card"><b>${x.data_axis}</b> ${x.path_count.toLocaleString()} · SELECTED ${x.selected_count} · PENDING ${x.pending_count} · LIVE ${x.live_count}</span>`).join('');
-      const v=d.v1_summary;$('v1cards').innerHTML=[['policy path',v.policy_paths],['SELECTED',v.selected_paths],['LIVE',v.live_paths],['Capital Epoch',v.capital_epochs],['복리자본',fmt(v.strategy_compound_capital)],['OPEN',v.open_trades],['Overnight',v.overnight_open],['STOP',v.stop_exits]].map(x=>`<span class="card"><b>${x[0]}</b> ${x[1]}</span>`).join('');
-      $('v1rows').innerHTML=d.v1_rows.map(x=>`<tr><td>${x.policy_path_key}</td><td>${x.source_daily_strategy_id}</td><td>${x.direction}</td><td>${x.paper_entry_start}~${x.paper_entry_end}</td><td>${x.live_entry_start}~${x.live_entry_end}</td><td>${x.holding_policy}</td><td>${x.stop_policy}</td><td>${fmt(x.stop_anchor_min)}~${fmt(x.stop_anchor_max)}</td><td>${fmt(x.stop_threshold_min)}~${fmt(x.stop_threshold_max)}</td><td>${fmt(x.current_adverse_pct)}</td><td>${fmt(x.stop_frequency_pct)}</td><td>${x.overnight_open_count}</td><td>${fmt(x.recent_3_compound_pct)}/${fmt(x.recent_5_compound_pct)}/${fmt(x.recent_10_compound_pct)}</td><td>${fmt(x.prior_5_compound_pct)}</td><td>${fmt(x.compound_acceleration_pct)}</td><td>${x.current_rank}/${x.prior_rank_no??'—'}</td><td>${x.top20_consecutive_days}</td><td>${x.current_streak_type??'—'} ${x.current_streak_count}</td><td>${x.closed_trade_count}/${x.live_closed_count}</td><td>${x.v1_selection_status??'—'}</td><td class="${x.v1_operation_status==='LIVE'?'live':''}">${x.v1_operation_status??'—'}</td><td>${fmt(x.approved_amount)}</td><td>${fmt(x.v1_strategy_compound_capital)}</td></tr>`).join('');
-      $('rows').innerHTML=d.rows.map(x=>`<tr><td class="link" onclick="showDetail(${x.minute_path_id})">${x.path_key}</td><td>${x.data_axis}</td><td>${x.source_daily_strategy_id}</td><td>${x.signal_code}</td><td>${x.execution_code}</td><td>${x.direction}</td><td>${x.entry_fast_ma}/${x.entry_slow_ma}</td><td>${x.exit_fast_ma}/${x.exit_slow_ma}</td><td>${x.trend_ma??'NONE'}</td><td>${x.selection_status}</td><td class="${x.robustness_yn==='Y'?'robust':''}">${x.robustness_yn}</td><td class="${x.operation_status==='LIVE'?'live':''}">${x.operation_status}</td><td>${fmt(x.allocated_amount)}</td><td>${fmt(x.strategy_compound_capital)}</td><td>${fmt(x.live_net_realized_pnl)}</td><td>${x.paper_trade_count}</td><td>${fmt(x.win_rate_pct)}</td><td>${fmt(x.avg_net_return_pct)}</td><td>${fmt(x.median_net_return_pct)}</td><td>${fmt(x.compound_return_pct)}</td><td>${fmt(x.historical_compound_return_pct)}</td><td>${x.open_paper_count}</td><td>${x.open_live_count}</td><td>${dt(x.latest_entry)}</td><td>${dt(x.latest_exit)}</td><td>${dt(x.last_evaluated_at)}</td></tr>`).join('');
-      $('events').innerHTML=d.recent_live_events.map(x=>`<tr><td>${dt(x.source_bar_time)}</td><td>${x.event_type}</td><td>${x.path_key}</td><td>${x.data_axis}</td><td>${x.source_daily_strategy_id}</td><td>${x.signal_code}/${x.execution_code}</td><td>${x.requested_quantity??'—'}</td><td>${fmt(x.requested_notional)}</td><td>${x.request_status??'—'}</td><td>${x.broker_order_number??'—'}</td><td>${x.broker_status??'—'}</td><td>${x.filled_quantity}</td><td>${x.remaining_quantity??'—'}</td><td>${x.trade_status??'—'}</td><td>${x.capital_applied_yn??'—'}</td></tr>`).join('');
-      state.textContent=`${d.row_count.toLocaleString()}개 · ${new Date().toLocaleTimeString()}`;
-    }catch(e){state.textContent=e.message;state.className='error'}}
-    $('refresh').onclick=load;$('axis').onchange=load;$('operation').onchange=load;load();
+    const $=id=>document.getElementById(id),fmt=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:4});
+    const state={scope:'V1_LIVE',page:1,totalPages:1,legacyLoaded:false,inflight:false,seq:0};
+    function esc(v){return String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+    function detailTable(title,rows){if(!rows?.length)return '<h3>'+title+'</h3><div class="section-empty">현재 없음</div>';const keys=Object.keys(rows[0]);return '<h3>'+title+'</h3><div class="detail-table"><table><thead><tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(r[k])+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>'}
+    async function showDetail(id){const r=await fetch('/minute-ma/api/detail?minute_path_id='+id,{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error);$('detailTitle').textContent=d.path.path_key;$('detailBody').innerHTML=detailTable('PAPER 거래',d.paper_trades)+detailTable('LIVE 실제거래',d.live_trades)+detailTable('주문 흐름',d.orders)+detailTable('Broker 비용',d.broker_costs)+detailTable('Capital 정산',d.settlements);$('detail').showModal()}
+    function renderCommon(d){const o=d.operational;$('ops').innerHTML=[['legacy path',o.total_paths],['OPEN PAPER',o.open_paper],['OPEN LIVE',o.open_live],['오늘 LIVE E/X',o.today_live_entry+'/'+o.today_live_exit],['주문/체결',o.today_orders+'/'+o.today_filled_qty],['Actual SEND',o.send_enabled]].map(x=>'<span class="card '+(x[0]=='Actual SEND'?(x[1]=='Y'?'danger':'good'):'')+'"><b>'+x[0]+'</b> '+x[1]+'</span>').join('');const v=d.v1_summary;$('v1cards').innerHTML=[['V1 policy',v.policy_paths],['Selection',v.selected_paths],['LIVE',v.live_paths],['Capital',fmt(v.strategy_compound_capital)],['OPEN',v.open_trades],['Overnight',v.overnight_open],['STOP',v.stop_exits]].map(x=>'<span class="card"><b>'+x[0]+'</b> '+x[1]+'</span>').join('')}
+    function renderV1(rows){$('v1rows').innerHTML=rows.map(x=>'<tr><td>'+esc(x.policy_path_key)+'</td><td>'+esc(x.source_daily_strategy_id)+'</td><td>'+esc(x.direction)+'</td><td>'+esc(x.v1_selection_status)+'</td><td class="'+(x.v1_operation_status==='LIVE'?'live':'')+'">'+esc(x.v1_operation_status)+'</td><td>'+esc(x.paper_entry_start)+'~'+esc(x.paper_entry_end)+'</td><td>'+esc(x.live_entry_start)+'~'+esc(x.live_entry_end)+'</td><td>'+esc(x.holding_policy)+'</td><td>'+esc(x.stop_policy)+'</td><td>'+fmt(x.stop_anchor_min)+'~'+fmt(x.stop_anchor_max)+'</td><td>'+fmt(x.stop_threshold_min)+'~'+fmt(x.stop_threshold_max)+'</td><td>'+fmt(x.current_adverse_pct)+'</td><td>'+x.total_open_count+'</td><td>'+x.overnight_open_count+'</td><td>'+fmt(x.recent_3_compound_pct)+'/'+fmt(x.recent_5_compound_pct)+'/'+fmt(x.recent_10_compound_pct)+'</td><td>'+esc(x.current_rank)+'</td><td>'+fmt(x.approved_amount)+'</td><td>'+fmt(x.v1_strategy_compound_capital)+'</td></tr>').join('')}
+    function renderLegacy(rows){$('legacyRows').innerHTML=rows.map(x=>'<tr><td class="link" data-detail="'+x.minute_path_id+'">'+esc(x.path_key)+'</td><td>'+esc(x.data_axis)+'</td><td>'+esc(x.source_daily_strategy_id)+'</td><td>'+esc(x.signal_code)+'</td><td>'+esc(x.execution_code)+'</td><td>'+esc(x.direction)+'</td><td>'+x.entry_fast_ma+'/'+x.entry_slow_ma+'</td><td>'+x.exit_fast_ma+'/'+x.exit_slow_ma+'</td><td>'+esc(x.trend_ma??'NONE')+'</td><td>'+esc(x.selection_status)+'</td><td>'+esc(x.operation_status)+'</td><td>'+fmt(x.strategy_compound_capital)+'</td><td>'+x.paper_trade_count+'</td><td>'+fmt(x.win_rate_pct)+'</td><td>'+fmt(x.compound_return_pct)+'</td><td>'+fmt(x.historical_compound_return_pct)+'</td><td>'+x.open_paper_count+'</td><td>'+x.open_live_count+'</td></tr>').join('');document.querySelectorAll('[data-detail]').forEach(el=>el.onclick=()=>showDetail(el.dataset.detail))}
+    async function load(){if(state.inflight||(state.scope==='LEGACY'&&!state.legacyLoaded))return;state.inflight=true;const seq=++state.seq,el=$('state');document.body.classList.add('loading');el.textContent='조회 중';try{const q=new URLSearchParams({scope:state.scope,page:state.page,page_size:$('pageSize').value});if($('direction').value)q.set('direction',$('direction').value);if($('search').value.trim())q.set('search',$('search').value.trim());if(state.scope==='LEGACY'){if($('axis').value)q.set('axis',$('axis').value);if($('operation').value)q.set('operation',$('operation').value)}const r=await fetch('/minute-ma/api/dashboard?'+q,{cache:'no-store'}),d=await r.json();if(seq!==state.seq)return;if(!r.ok||d.status!=='OK')throw Error(d.error||'조회 실패');renderCommon(d);state.totalPages=d.total_pages;if(state.scope==='LEGACY')renderLegacy(d.rows);else renderV1(d.rows);$('pageInfo').textContent=d.page+' / '+d.total_pages+' · 전체 '+d.total_count.toLocaleString()+'개 · 현재 '+d.row_count+'개';$('prev').disabled=d.page<=1;$('next').disabled=d.page>=d.total_pages;el.textContent='완료 '+new Date().toLocaleTimeString()}catch(e){el.textContent=e.message;el.className='error'}finally{if(seq===state.seq){state.inflight=false;document.body.classList.remove('loading')}}}
+    function setScope(scope){state.scope=scope;state.page=1;document.querySelectorAll('.scope').forEach(b=>b.classList.toggle('active',b.dataset.scope===scope));$('v1Section').classList.toggle('hidden',scope==='LEGACY');$('legacySection').classList.toggle('hidden',scope!=='LEGACY');$('legacyFilters').classList.toggle('hidden',scope!=='LEGACY');if(scope!=='LEGACY'||state.legacyLoaded)load()}
+    document.querySelectorAll('.scope').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));$('loadLegacy').onclick=()=>{state.legacyLoaded=true;$('legacyGate').classList.add('hidden');$('legacyGrid').classList.remove('hidden');load()};$('refresh').onclick=()=>load();$('direction').onchange=()=>{state.page=1;load()};$('pageSize').onchange=()=>{state.page=1;load()};$('axis').onchange=()=>{state.page=1;load()};$('operation').onchange=()=>{state.page=1;load()};$('search').onchange=()=>{state.page=1;load()};$('prev').onclick=()=>{if(state.page>1){state.page--;load()}};$('next').onclick=()=>{if(state.page<state.totalPages){state.page++;load()}};$('closeDetail').onclick=()=>$('detail').close();load();
   </script>
 </body></html>

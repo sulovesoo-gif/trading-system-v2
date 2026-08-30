@@ -1067,8 +1067,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/minute-ma/api/dashboard":
             try:
                 query=parse_qs(parsed.query)
-                payload=minute_ma_dashboard_payload(self.pool,axis=(query.get("axis") or [None])[0],
-                                                     operation=(query.get("operation") or [None])[0])
+                payload=minute_ma_dashboard_payload(
+                    self.pool, scope=(query.get("scope") or ["V1_LIVE"])[0],
+                    axis=(query.get("axis") or [None])[0], operation=(query.get("operation") or [None])[0],
+                    page=(query.get("page") or [1])[0], page_size=(query.get("page_size") or [20])[0],
+                    sort=(query.get("sort") or [None])[0], search=(query.get("search") or [None])[0],
+                    direction=(query.get("direction") or [None])[0])
                 body=json.dumps(payload,ensure_ascii=False,default=_json_default).encode("utf-8")
                 self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8")
             except Exception as error:
