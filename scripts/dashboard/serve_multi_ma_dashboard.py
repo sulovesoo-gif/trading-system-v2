@@ -1072,7 +1072,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     axis=(query.get("axis") or [None])[0], operation=(query.get("operation") or [None])[0],
                     page=(query.get("page") or [1])[0], page_size=(query.get("page_size") or [20])[0],
                     sort=(query.get("sort") or [None])[0], search=(query.get("search") or [None])[0],
-                    direction=(query.get("direction") or [None])[0])
+                    direction=(query.get("direction") or [None])[0],
+                    as_of_date=(query.get("date") or [datetime.now(KST).date().isoformat()])[0],
+                    period=(query.get("period") or ["ALL"])[0],
+                    performance_source=(query.get("performance_source") or ["COMBINED"])[0])
                 body=json.dumps(payload,ensure_ascii=False,default=_json_default).encode("utf-8")
                 self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8")
             except Exception as error:
