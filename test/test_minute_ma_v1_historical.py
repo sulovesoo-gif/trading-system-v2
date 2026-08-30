@@ -97,3 +97,5 @@ class V1HistoricalTest(unittest.TestCase):
         runner=(root/"scripts/research/run_minute_ma_v1_historical_replay.py").read_text(encoding="utf-8")
         self.assertIn("'KRX_1MIN_COMPLETED_V1_POLICY',%s,'RUNNING'",runner)
         self.assertNotIn("minute_ma_policy_paper_trade",runner)
+        self.assertEqual(1,runner.count("write_connection.commit()"))
+        self.assertIn('"mode": "EXISTING"',runner)

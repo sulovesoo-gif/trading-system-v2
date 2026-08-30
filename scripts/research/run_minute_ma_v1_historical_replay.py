@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import uuid
+from contextlib import nullcontext
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -80,53 +81,68 @@ def main() -> int:
             prepared[code] = engine.prepare(path=sample, bars=source[code])
         replay = MinuteMaV1HistoricalReplay(engine=engine)
 
-        if args.write:
-            with pool.connection() as connection, connection.cursor() as cursor:
-                cursor.execute("""INSERT INTO minute_ma_policy_historical_run(
-                  historical_run_id,policy_version,evaluation_from,evaluation_to,provenance,
-                  source_contract,code_commit,status)
-                  VALUES(%s,'V1.0',%s,%s,'HISTORICAL_REPLAY',
-                         'KRX_1MIN_COMPLETED_V1_POLICY',%s,'RUNNING')""",
-                  (run_id, args.evaluation_from, args.evaluation_to, _commit()))
-                connection.commit()
-        trade_count = long_count = short_count = 0
-        for number, path in enumerate(paths, 1):
-            trades = replay.replay(
-                path=path, prepared_points=prepared[path.signal_code],
-                execution_bars=executions[path.execution_code],
-                underlying_bars=underlying[path.signal_code],
-                evaluation_from=args.evaluation_from, evaluation_to=args.evaluation_to)
-            trade_count += len(trades)
-            if path.direction == "LONG": long_count += len(trades)
-            else: short_count += len(trades)
-            if args.write and trades:
-                rows = [(
-                    run_id, path.minute_policy_path_id, t.entry_event_key,
-                    t.entry_signal_time, t.entry_execution_time, t.entry_price,
-                    t.underlying_entry_reference_price, t.stop_threshold_price,
-                    t.exit_signal_time, t.exit_execution_time, t.exit_price, t.exit_reason,
-                    t.stop_trigger_time, t.stop_trigger_underlying_close, t.basis_capital,
-                    t.gross_return_pct, t.net_return_pct, t.realized_pnl,
-                ) for t in trades]
-                with pool.connection() as connection, connection.cursor() as cursor:
-                    cursor.executemany("""INSERT INTO minute_ma_policy_historical_trade(
-                      historical_run_id,minute_policy_path_id,entry_event_key,
-                      entry_signal_time,entry_execution_time,entry_price,
-                      underlying_entry_reference_price,stop_threshold_price,
-                      exit_signal_time,exit_execution_time,exit_price,exit_reason,
-                      stop_trigger_time,stop_trigger_underlying_close,basis_capital,
-                      gross_return_pct,net_return_pct,realized_pnl)
-                      VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                      ON CONFLICT(historical_run_id,minute_policy_path_id,entry_event_key)
-                      DO NOTHING""", rows)
-                    connection.commit()
-        if args.write:
-            with pool.connection() as connection, connection.cursor() as cursor:
-                cursor.execute("""UPDATE minute_ma_policy_historical_run
-                   SET status='COMPLETED',path_count=%s,trade_count=%s,
-                       completed_at=CURRENT_TIMESTAMP WHERE historical_run_id=%s""",
-                               (len(paths), trade_count, run_id))
-                connection.commit()
+        write_context = pool.connection() if args.write else nullcontext(None)
+        with write_context as write_connection:
+            cursor_context = write_connection.cursor() if args.write else nullcontext(None)
+            with cursor_context as write_cursor:
+                if args.write:
+                    write_cursor.execute("""SELECT historical_run_id,path_count,trade_count
+                      FROM minute_ma_policy_historical_run
+                     WHERE policy_version='V1.0' AND evaluation_from=%s AND evaluation_to=%s
+                       AND provenance='HISTORICAL_REPLAY' AND status='COMPLETED'""",
+                      (args.evaluation_from, args.evaluation_to))
+                    existing = write_cursor.fetchone()
+                    if existing is not None:
+                        print(json.dumps({
+                            "historical_run_id": str(existing[0]), "mode": "EXISTING",
+                            "evaluation_from": args.evaluation_from.isoformat(),
+                            "evaluation_to": args.evaluation_to.isoformat(),
+                            "path_count": existing[1], "trade_count": existing[2],
+                            "forward_paper_write": 0, "live_write": 0, "broker_post": 0,
+                        }, sort_keys=True))
+                        return 0
+                    write_cursor.execute("""INSERT INTO minute_ma_policy_historical_run(
+                      historical_run_id,policy_version,evaluation_from,evaluation_to,provenance,
+                      source_contract,code_commit,status)
+                      VALUES(%s,'V1.0',%s,%s,'HISTORICAL_REPLAY',
+                             'KRX_1MIN_COMPLETED_V1_POLICY',%s,'RUNNING')""",
+                      (run_id, args.evaluation_from, args.evaluation_to, _commit()))
+
+                trade_count = long_count = short_count = 0
+                for path in paths:
+                    trades = replay.replay(
+                        path=path, prepared_points=prepared[path.signal_code],
+                        execution_bars=executions[path.execution_code],
+                        underlying_bars=underlying[path.signal_code],
+                        evaluation_from=args.evaluation_from, evaluation_to=args.evaluation_to)
+                    trade_count += len(trades)
+                    if path.direction == "LONG": long_count += len(trades)
+                    else: short_count += len(trades)
+                    if args.write and trades:
+                        rows = [(
+                            run_id, path.minute_policy_path_id, t.entry_event_key,
+                            t.entry_signal_time, t.entry_execution_time, t.entry_price,
+                            t.underlying_entry_reference_price, t.stop_threshold_price,
+                            t.exit_signal_time, t.exit_execution_time, t.exit_price, t.exit_reason,
+                            t.stop_trigger_time, t.stop_trigger_underlying_close, t.basis_capital,
+                            t.gross_return_pct, t.net_return_pct, t.realized_pnl,
+                        ) for t in trades]
+                        write_cursor.executemany("""INSERT INTO minute_ma_policy_historical_trade(
+                          historical_run_id,minute_policy_path_id,entry_event_key,
+                          entry_signal_time,entry_execution_time,entry_price,
+                          underlying_entry_reference_price,stop_threshold_price,
+                          exit_signal_time,exit_execution_time,exit_price,exit_reason,
+                          stop_trigger_time,stop_trigger_underlying_close,basis_capital,
+                          gross_return_pct,net_return_pct,realized_pnl)
+                          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                          ON CONFLICT(historical_run_id,minute_policy_path_id,entry_event_key)
+                          DO NOTHING""", rows)
+                if args.write:
+                    write_cursor.execute("""UPDATE minute_ma_policy_historical_run
+                       SET status='COMPLETED',path_count=%s,trade_count=%s,
+                           completed_at=CURRENT_TIMESTAMP WHERE historical_run_id=%s""",
+                        (len(paths), trade_count, run_id))
+                    write_connection.commit()
         print(json.dumps({
             "historical_run_id": str(run_id), "mode": "WRITE" if args.write else "NO_WRITE",
             "evaluation_from": args.evaluation_from.isoformat(),
@@ -136,17 +152,6 @@ def main() -> int:
             "live_write": 0, "broker_post": 0,
         }, sort_keys=True))
         return 0
-    except Exception:
-        if args.write:
-            try:
-                with pool.connection() as connection, connection.cursor() as cursor:
-                    cursor.execute("""UPDATE minute_ma_policy_historical_run
-                       SET status='FAILED',completed_at=CURRENT_TIMESTAMP
-                       WHERE historical_run_id=%s AND status='RUNNING'""", (run_id,))
-                    connection.commit()
-            except Exception:
-                pass
-        raise
     finally:
         pool.close()
 
