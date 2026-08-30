@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS minute_ma_policy_historical_trade (
   exit_reason VARCHAR(24) NOT NULL CHECK (exit_reason IN ('NORMAL_EXIT','STOP_EXIT')),
   stop_trigger_time TIMESTAMP,
   stop_trigger_underlying_close NUMERIC,
-  basis_capital NUMERIC NOT NULL CHECK (basis_capital>0),
+  -- Existing overlapping-compound research can legitimately cross below zero.
+  -- Preserve the historical calculation result instead of clamping/rejecting it.
+  basis_capital NUMERIC NOT NULL,
   gross_return_pct NUMERIC NOT NULL,
   net_return_pct NUMERIC NOT NULL,
   realized_pnl NUMERIC NOT NULL,
