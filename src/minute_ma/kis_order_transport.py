@@ -19,8 +19,8 @@ class MinuteMaKISOrderTransportConfig:
 
 class MinuteMaKISOrderTransport:
     path="/uapi/domestic-stock/v1/trading/order-cash"
-    def __init__(self,*,client:KISClient,config:MinuteMaKISOrderTransportConfig):
-        self.client,self.config=client,config
+    def __init__(self,*,client:KISClient,config:MinuteMaKISOrderTransportConfig,attempt_recorder=None):
+        self.client,self.config,self.attempt_recorder=client,config,attempt_recorder
         self.actual_post_send_count=0
     def submit_once(self,order:BrokerOrder,*,profile:MinuteMaSendProfile)->Mapping[str,object]:
         profile.require_enabled()
@@ -35,6 +35,8 @@ class MinuteMaKISOrderTransport:
                  "ORD_UNPR":"0","EXCG_ID_DVSN_CD":"KRX"}
         if order.side=="SELL":payload["SLL_TYPE"]="01"
         try:
+            if self.attempt_recorder is not None:
+                self.attempt_recorder.mark_post_attempted(order=order)
             self.actual_post_send_count+=1
             return self.client.post_once(path=self.path,tr_id="TTTC0012U" if order.side=="BUY" else "TTTC0011U",
                                          payload=payload,custtype=self.config.custtype)

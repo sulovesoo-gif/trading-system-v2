@@ -67,6 +67,9 @@ class V1HistoricalTest(unittest.TestCase):
         self.assertEqual(Decimal("-5.00"),metric["period_compound_return_pct"])
         self.assertEqual(1,metric["period_closed_trade_count"])
         self.assertEqual(1,metric["period_stop_count"])
+        self.assertEqual((0,1),(metric["positive_day_count"],metric["evaluable_day_count"]))
+        self.assertEqual((0,1),(metric["positive_week_count"],metric["evaluable_week_count"]))
+        self.assertEqual((0,1),(metric["positive_month_count"],metric["evaluable_month_count"]))
 
     def test_positive_period_frequency_excludes_empty_periods(self):
         rows=[

@@ -112,6 +112,7 @@ def _virtual_metrics(trade_rows, *, path_ids, start):
         period_factor = Decimal("1")
         wins = losses = stop = normal = 0
         period_returns = []
+        period_rows = []
         provenances = set()
         for _, exit_time, net_return, reason, _, provenance in grouped.get(path_id, ()):
             value = Decimal(net_return)
@@ -121,6 +122,7 @@ def _virtual_metrics(trade_rows, *, path_ids, start):
                 continue
             period_factor *= factor
             period_returns.append(value)
+            period_rows.append((path_id, exit_time, value))
             wins += value > 0
             losses += value < 0
             stop += reason == "STOP_EXIT"
@@ -143,7 +145,7 @@ def _virtual_metrics(trade_rows, *, path_ids, start):
             "period_stop_count": stop, "period_normal_exit_count": normal,
             "performance_provenance": sorted(provenances),
         }
-        result[path_id].update(_positive_period_frequency(grouped.get(path_id, ())))
+        result[path_id].update(_positive_period_frequency(period_rows))
     ranked = sorted(result.items(), key=lambda item: (-item[1]["period_compound_return_pct"], item[0]))
     for rank, (path_id, _) in enumerate(ranked, 1):
         result[path_id]["period_rank"] = rank
@@ -217,6 +219,7 @@ def _v1_actual_metrics(cursor, policy_path_ids, *, start, end):
         positive_actual = _positive_period_frequency([
             (path_id, settled_at, Decimal("100") * Decimal(pnl) / Decimal(capital_at_signal))
             for _, settled_at, pnl, capital_at_signal, _ in settlements[path_id]
+            if start is None or settled_at >= start
         ])
         metric.update({
             "actual_closed_trade_count": all_count,
@@ -291,12 +294,35 @@ def _operational(cursor):
       (SELECT count(*) FROM minute_ma_paper_event WHERE event_type IN('EXIT','EOD_EXIT') AND source_bar_time::date=CURRENT_DATE)::int today_paper_exit,
       (SELECT count(*) FROM minute_ma_live_signal_event WHERE event_type='ENTRY' AND source_bar_time::date=CURRENT_DATE)::int today_live_entry,
       (SELECT count(*) FROM minute_ma_live_signal_event WHERE event_type='EXIT' AND source_bar_time::date=CURRENT_DATE)::int today_live_exit,
-      (SELECT count(*) FROM live_broker_order b JOIN minute_ma_live_order_link l USING(broker_order_id) WHERE b.created_at::date=CURRENT_DATE)::int today_orders,
+      (SELECT count(*) FROM minute_ma_live_broker_submit_attempt
+        WHERE attempted_at::date=CURRENT_DATE)::int today_post_attempts,
+      (SELECT count(*) FROM live_broker_order b JOIN minute_ma_live_order_link l USING(broker_order_id)
+        WHERE b.created_at::date=CURRENT_DATE AND b.status IN('ACCEPTED','PARTIALLY_FILLED','FILLED'))::int today_acknowledged,
+      (SELECT count(*) FROM live_broker_order b JOIN minute_ma_live_order_link l USING(order_request_id)
+        WHERE b.created_at::date=CURRENT_DATE AND b.status='REJECTED')::int today_rejected,
+      (SELECT count(*) FROM live_broker_order b JOIN minute_ma_live_order_link l USING(order_request_id)
+        WHERE b.created_at::date=CURRENT_DATE AND b.status='UNKNOWN_BROKER_STATE')::int today_unknown,
+      (SELECT count(*) FROM live_broker_order b JOIN minute_ma_live_order_link l USING(broker_order_id)
+        WHERE b.created_at::date=CURRENT_DATE)::int today_orders,
       (SELECT COALESCE(sum(a.delta_quantity),0) FROM minute_ma_live_checkpoint_allocation a WHERE a.created_at::date=CURRENT_DATE)::int today_filled_qty,
       (SELECT count(*) FROM minute_ma_live_entry_skip WHERE created_at::date=CURRENT_DATE)::int today_skips,
       (SELECT send_enabled FROM minute_ma_send_profile WHERE profile_code='MINUTE_MA_LIVE_SEND') send_enabled,
       (SELECT max(updated_at) FROM minute_ma_runtime_cursor)::timestamp last_runtime_at""")
     return dict(zip([d.name for d in cursor.description], cursor.fetchone()))
+
+def _recent_rejections(cursor, limit=10):
+    cursor.execute("""SELECT s.source_daily_strategy_id strategy_id,s.signal_code,s.execution_code,
+        s.direction,b.quantity,b.payload->>'order_policy' order_policy,x.kis_tr_id,x.kis_endpoint,
+        x.response_code,x.response_message,x.rejected_at,x.evidence_type
+      FROM minute_ma_live_broker_rejection x
+      JOIN live_broker_order b USING(broker_order_id)
+      JOIN minute_ma_live_order_link l USING(order_request_id)
+      JOIN minute_ma_live_intent i USING(intent_id)
+      JOIN minute_ma_policy_path pp ON pp.minute_policy_path_id=i.minute_policy_path_id
+      JOIN minute_ma_path p ON p.minute_path_id=pp.minute_path_id
+      JOIN minute_ma_strategy_master s USING(minute_strategy_id)
+     ORDER BY x.rejected_at DESC,x.broker_order_id DESC LIMIT %s""",(limit,))
+    return _dicts(cursor)
 
 def _v1_summary(cursor):
     cursor.execute("""SELECT count(*)::int policy_paths,
@@ -380,6 +406,7 @@ def dashboard_payload(pool, *, scope="V1_LIVE", axis=None, operation=None, page=
     performance_source = performance_source if performance_source in RESEARCH_SOURCES else "COMBINED"
     with pool.connection() as c, c.cursor() as q:
         operational = _operational(q)
+        recent_rejections = _recent_rejections(q)
         q.execute("SELECT to_regclass('public.vw_minute_ma_v1_policy_dashboard')")
         has_v1 = q.fetchone()[0] is not None
         v1_summary = _v1_summary(q) if has_v1 else {
@@ -409,6 +436,7 @@ def dashboard_payload(pool, *, scope="V1_LIVE", axis=None, operation=None, page=
             for row in rows:
                 row.update(research[int(row["minute_path_id"])])
     return {"status": "OK", "scope": scope, "operational": operational,
+            "recent_rejections": recent_rejections,
             "v1_summary": v1_summary, "rows": rows, "row_count": len(rows),
             "page": page, "page_size": page_size, "total_count": total,
             "total_pages": max(1, (total + page_size - 1) // page_size),

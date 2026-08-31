@@ -6,7 +6,13 @@ from .kis_order_history import UnknownResolution
 
 class SubmitState(str,Enum): PREPARED='PREPARED'; ACCEPTED='ACCEPTED'; REJECTED='REJECTED'; UNKNOWN_BROKER_STATE='UNKNOWN_BROKER_STATE'
 @dataclass
-class SubmitRecord: request_key:str; state:SubmitState=SubmitState.PREPARED; broker_order_number:str|None=None
+class SubmitRecord:
+ request_key:str
+ state:SubmitState=SubmitState.PREPARED
+ broker_order_number:str|None=None
+ broker_response_code:str|None=None
+ broker_response_message:str|None=None
+ broker_response:dict|None=None
 class InMemoryDailyMaSubmitStore:
  def __init__(self):self.rows={}
  def get_or_create(self,key):return self.rows.setdefault(key,SubmitRecord(key))
@@ -40,7 +46,11 @@ class DailyMaBrokerSubmitRuntime:
   except PermissionError:return r,'SEND_LOCKED'
   except TimeoutError:r.state=SubmitState.UNKNOWN_BROKER_STATE;return r,'UNKNOWN_BROKER_STATE'
   if raw.get('rt_cd')=='0':r.state=SubmitState.ACCEPTED;r.broker_order_number=str(raw.get('output',{}).get('ODNO') or '');return r,'ACK'
-  r.state=SubmitState.REJECTED;return r,'REJECTED'
+  r.state=SubmitState.REJECTED
+  r.broker_response=dict(raw)
+  r.broker_response_code=str(raw.get('msg_cd') or raw.get('rt_cd') or '')
+  r.broker_response_message=str(raw.get('msg1') or '')
+  return r,'REJECTED'
 
  def recover_unknown(self,*,order,history_lookup,order_date):
   """Read-only recovery.  UNRESOLVED deliberately leaves resend forbidden."""
@@ -64,4 +74,7 @@ class DailyMaDurableSubmitService:
   record,status=self.runtime.submit(order)
   if status=='ACK':self.store.acknowledge(order=order,raw={'output':{'ODNO':record.broker_order_number}})
   elif status=='UNKNOWN_BROKER_STATE':self.store.mark_unknown(order=order)
+  elif status=='REJECTED' and hasattr(self.store,'reject'):
+   self.store.reject(order=order,raw=record.broker_response or {
+    'rt_cd':record.broker_response_code,'msg1':record.broker_response_message})
   return record,status

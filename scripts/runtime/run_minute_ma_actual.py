@@ -65,7 +65,9 @@ def main():
           price_lookup=price_lookup,cash_lookup=cash_lookup)
         signal_result=signals.run_day(trading_date=today)
         store=PostgresMinuteMaActualSubmitStore(factory)
-        transport=MinuteMaKISOrderTransport(client=client,config=MinuteMaKISOrderTransportConfig.from_environment(whitelist=whitelist))
+        transport=MinuteMaKISOrderTransport(client=client,
+          config=MinuteMaKISOrderTransportConfig.from_environment(whitelist=whitelist),
+          attempt_recorder=store)
         runtime=DailyMaBrokerSubmitRuntime(store=InMemoryDailyMaSubmitStore(),transport=transport,profile=profile)
         submitter=DailyMaSendOrchestrator(submit_store=store,submit_runtime=runtime)
         submitted={}

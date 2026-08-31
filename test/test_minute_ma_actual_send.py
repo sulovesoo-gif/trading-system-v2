@@ -9,21 +9,56 @@ from src.minute_ma.send_authorization import MinuteMaSendProfile
 from src.minute_ma.live_signal_runtime import MinuteMaLiveSignalRuntime
 from src.minute_ma.contracts import Axis,MinuteMaPath
 from src.minute_ma.reference_price import MinuteMaKISReferencePriceLookup
+from src.daily_ma_v03.actual_submit import DailyMaDurableSubmitService,SubmitRecord,SubmitState
 
 class Client:
     def __init__(self):self.calls=0
     def post_once(self,**kwargs):self.calls+=1;return {'rt_cd':'0','output':{'ODNO':'1'}}
 
 class MinuteActualSendTest(unittest.TestCase):
+    def test_explicit_rejection_is_durable_and_never_resent(self):
+        class Store:
+            def __init__(self):self.claims=0;self.rejections=[]
+            def claim(self,request_key):
+                self.claims+=1
+                return None if self.claims>1 else SimpleNamespace(client_order_key=request_key)
+            def reject(self,**kwargs):self.rejections.append(kwargs['raw'])
+        class Runtime:
+            def submit(self,order):
+                return SubmitRecord(order.client_order_key,SubmitState.REJECTED,
+                  broker_response_code='APBK0919',broker_response_message='explicit reject',
+                  broker_response={'rt_cd':'1','msg_cd':'APBK0919','msg1':'explicit reject'}),'REJECTED'
+        store=Store();service=DailyMaDurableSubmitService(store=store,runtime=Runtime())
+        self.assertEqual('REJECTED',service.submit_request('reject-key')[1])
+        self.assertEqual({'rt_cd':'1','msg_cd':'APBK0919','msg1':'explicit reject'},store.rejections[0])
+        self.assertEqual('RESEND_FORBIDDEN',service.submit_request('reject-key')[1])
+
     def test_transport_requires_minute_policy_and_profile(self):
-        client=Client();transport=MinuteMaKISOrderTransport(client=client,config=MinuteMaKISOrderTransportConfig('1','1',frozenset({'0193T0'})))
+        class Recorder:
+            def __init__(self):self.count=0
+            def mark_post_attempted(self,**_):self.count+=1
+        client=Client();recorder=Recorder();transport=MinuteMaKISOrderTransport(client=client,
+          config=MinuteMaKISOrderTransportConfig('1','1',frozenset({'0193T0'})),attempt_recorder=recorder)
         order=BrokerOrder('b','r','s','0193T0','BUY',2,'k',BrokerOrderStatus.SUBMITTING,{'order_policy':'MINUTE_MA_KRX_MARKET'})
         with self.assertRaises(PermissionError):transport.submit_once(order,profile=MinuteMaSendProfile(enabled=False))
         self.assertEqual(transport.submit_once(order,profile=MinuteMaSendProfile(enabled=True))['rt_cd'],'0')
-        self.assertEqual(client.calls,1)
+        self.assertEqual(client.calls,1);self.assertEqual(recorder.count,1)
 
     def test_environment_is_fail_closed(self):
         with patch.dict(os.environ,{},clear=True):self.assertFalse(MinuteMaSendProfile.from_environment().enabled)
+
+    def test_rejection_migration_and_dashboard_lifecycle_contract(self):
+        from pathlib import Path
+        root=Path(__file__).resolve().parents[1]
+        sql=(root/'database/migrations/20260831_minute_ma_reject_recovery_additive.sql').read_text(encoding='utf-8')
+        self.assertIn('minute_ma_live_broker_submit_attempt',sql)
+        self.assertIn('minute_ma_live_broker_rejection',sql)
+        self.assertIn('response_code',sql);self.assertIn('response_message',sql)
+        page=(root/'reports/multi-ma/minute-ma.html').read_text(encoding='utf-8')
+        for label in ('today_post_attempts','today_acknowledged','today_rejected','today_unknown'):
+            self.assertIn(label,page)
+        self.assertIn('recent_rejections',page)
+        self.assertIn('응답코드',page);self.assertIn('응답메시지',page)
 
     def test_stop_anchor_uses_exact_entry_minute_open(self):
         class QuoteClient:

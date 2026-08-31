@@ -34,6 +34,25 @@ class PostgresMinuteMaActualSubmitStore:
             c.commit()
         return BrokerOrder(broker_id,str(row[0]),str(row[1]),str(row[2]),str(row[3]),int(row[4]),request_key,
                            BrokerOrderStatus.SUBMITTING,payload,created_at=row[5])
+    def mark_post_attempted(self,*,order):
+        with self.connection_factory() as c,c.cursor() as q:
+            q.execute("SELECT intent_id FROM minute_ma_live_order_link WHERE order_request_id=%s",
+              (order.order_request_id,));row=q.fetchone()
+            if row is None:raise ValueError('MINUTE_MA_POST_INTENT_LINK_REQUIRED')
+            q.execute("""INSERT INTO minute_ma_live_broker_submit_attempt(
+              broker_order_id,order_request_id,intent_id,kis_tr_id,kis_endpoint,attempted_at)
+              VALUES(%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+              ON CONFLICT(broker_order_id) DO NOTHING""",
+              (order.broker_order_id,order.order_request_id,row[0],
+               'TTTC0012U' if order.side=='BUY' else 'TTTC0011U',
+               '/uapi/domestic-stock/v1/trading/order-cash'))
+            q.execute("""INSERT INTO live_broker_order_audit(event_type,broker_order_id,detail)
+              SELECT 'MINUTE_MA_ORDER_POST_ATTEMPT',%s,%s::jsonb
+              WHERE NOT EXISTS (SELECT 1 FROM live_broker_order_audit
+                WHERE broker_order_id=%s AND event_type='MINUTE_MA_ORDER_POST_ATTEMPT')""",
+              (order.broker_order_id,json.dumps({'kis_endpoint':'/uapi/domestic-stock/v1/trading/order-cash'}),
+               order.broker_order_id))
+            c.commit()
     def acknowledge(self,*,order,raw):
         number=str((raw.get('output') or {}).get('ODNO') or '').strip()
         if not number:raise ValueError('MINUTE_MA_ACK_ORDER_NUMBER_REQUIRED')
@@ -49,6 +68,35 @@ class PostgresMinuteMaActualSubmitStore:
             q.execute("UPDATE live_order_request SET status='UNKNOWN_BROKER_STATE' WHERE order_request_id=%s",(order.order_request_id,))
             q.execute("""UPDATE minute_ma_live_intent i SET lifecycle_status='UNKNOWN_BROKER_STATE',updated_at=CURRENT_TIMESTAMP
               FROM minute_ma_live_order_link l WHERE l.order_request_id=%s AND i.intent_id=l.intent_id""",(order.order_request_id,));c.commit()
+    def reject(self,*,order,raw):
+        safe_response={key:str(raw.get(key) or '') for key in ('rt_cd','msg_cd','msg1')}
+        response_code=safe_response['msg_cd'] or safe_response['rt_cd'] or 'KIS_REJECTED'
+        response_message=safe_response['msg1'] or 'KIS_ORDER_REJECTED'
+        with self.connection_factory() as c,c.cursor() as q:
+            q.execute("""SELECT l.intent_id FROM minute_ma_live_order_link l
+              WHERE l.order_request_id=%s FOR UPDATE""",(order.order_request_id,));row=q.fetchone()
+            if row is None:raise ValueError('MINUTE_MA_REJECT_INTENT_LINK_REQUIRED')
+            intent_id=row[0]
+            q.execute("""UPDATE live_broker_order SET status='REJECTED'
+              WHERE broker_order_id=%s AND status='SUBMITTING'""",(order.broker_order_id,))
+            q.execute("""UPDATE live_order_request SET status='REJECTED',reason='KIS_REJECTED'
+              WHERE order_request_id=%s AND status='SUBMITTING'""",(order.order_request_id,))
+            q.execute("""UPDATE minute_ma_live_intent SET lifecycle_status='REJECTED',
+              block_reason='KIS_REJECTED',updated_at=CURRENT_TIMESTAMP
+              WHERE intent_id=%s AND lifecycle_status='SUBMITTING'""",(intent_id,))
+            q.execute("""INSERT INTO minute_ma_live_broker_rejection(
+              broker_order_id,order_request_id,intent_id,response_code,response_message,
+              kis_tr_id,kis_endpoint,rejected_at,response_payload,evidence_type)
+              VALUES(%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP,%s::jsonb,'KIS_RESPONSE')
+              ON CONFLICT(broker_order_id) DO NOTHING""",
+              (order.broker_order_id,order.order_request_id,intent_id,response_code,response_message,
+               'TTTC0012U' if order.side=='BUY' else 'TTTC0011U','/uapi/domestic-stock/v1/trading/order-cash',
+               json.dumps(safe_response)))
+            q.execute("""INSERT INTO live_broker_order_audit(event_type,broker_order_id,detail)
+              VALUES('MINUTE_MA_ORDER_REJECTED',%s,%s::jsonb)""",
+              (order.broker_order_id,json.dumps({'response_code':response_code,
+                'response_message':response_message})))
+            c.commit()
     def pending_broker_orders(self):
         from types import SimpleNamespace
         with self.connection_factory() as c,c.cursor() as q:
