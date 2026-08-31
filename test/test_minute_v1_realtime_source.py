@@ -54,6 +54,10 @@ class MinuteV1RealtimeSourceTest(unittest.TestCase):
         self.assertIn('flow_realtime_minute_bar',method)
         self.assertNotIn('raw_stock_minute',method)
 
+    def test_dispatcher_wakes_only_for_krx_signal_session(self):
+        source=Path('src/minute_ma/realtime_dispatch.py').read_text(encoding='utf-8')
+        self.assertIn("bar_time::time BETWEEN TIME '09:00' AND TIME '15:30'",source)
+
     def test_dispatcher_bootstraps_without_replay(self):
         watermark=DispatchWatermark(BASE,BASE-timedelta(minutes=1),'005930')
         class Repo:

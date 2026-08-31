@@ -24,6 +24,7 @@ class MinuteV1RealtimeDispatchRepository:
           FROM flow_realtime_minute_bar b
           JOIN minute_ma_realtime_dispatch_cursor c ON c.consumer_code=%s
           WHERE b.stock_code IN ('005930','000660') AND b.quality_status<>'INCOMPLETE'
+            AND b.bar_time::time BETWEEN TIME '09:00' AND TIME '15:30'
             AND NOT b.source_gap_flag AND NOT b.reconnect_flag
             AND NOT b.event_time_regression_flag AND NOT b.ordering_invariant_failure
             AND NOT b.accumulated_volume_regression
@@ -51,7 +52,8 @@ class MinuteV1RealtimeDispatchRepository:
             cursor.execute("""INSERT INTO minute_ma_policy_runtime_cursor(
               runtime_name,policy_version,signal_code,last_source_bar_time)
               SELECT %s,'V1.0',stock_code,max(bar_time) FROM flow_realtime_minute_bar
-              WHERE stock_code IN ('005930','000660') AND finalized_at<=%s GROUP BY stock_code
+              WHERE stock_code IN ('005930','000660') AND finalized_at<=%s
+                AND bar_time::time BETWEEN TIME '09:00' AND TIME '15:30' GROUP BY stock_code
               ON CONFLICT(runtime_name,policy_version,signal_code) DO UPDATE SET
                 last_source_bar_time=GREATEST(minute_ma_policy_runtime_cursor.last_source_bar_time,
                                                EXCLUDED.last_source_bar_time),
