@@ -8,7 +8,9 @@ from src.minute_ma.engine import PreparedMaPoint, SignalEvent, SignalType
 from src.minute_ma.v1_historical import MinuteMaV1HistoricalReplay
 from src.minute_ma.v1_policy import LONG_POLICY, SHORT_POLICY
 from src.service.minute_ma_dashboard_service import (
-    _period_window, _positive_period_frequency, _virtual_metrics,
+    _lifecycle_predicate, _operational, _period_window, _positive_metrics_by_path,
+    _positive_period_frequency,
+    _v1_summary, _virtual_metrics,
 )
 
 
@@ -67,9 +69,13 @@ class V1HistoricalTest(unittest.TestCase):
         self.assertEqual(Decimal("-5.00"),metric["period_compound_return_pct"])
         self.assertEqual(1,metric["period_closed_trade_count"])
         self.assertEqual(1,metric["period_stop_count"])
-        self.assertEqual((0,1),(metric["positive_day_count"],metric["evaluable_day_count"]))
-        self.assertEqual((0,1),(metric["positive_week_count"],metric["evaluable_week_count"]))
-        self.assertEqual((0,1),(metric["positive_month_count"],metric["evaluable_month_count"]))
+        self.assertEqual((1,2),(metric["positive_day_count"],metric["evaluable_day_count"]))
+        self.assertEqual((1,2),(metric["positive_week_count"],metric["evaluable_week_count"]))
+        self.assertEqual((1,2),(metric["positive_month_count"],metric["evaluable_month_count"]))
+        self.assertEqual(2,metric["cumulative_closed_trade_count"])
+        self.assertEqual(1,metric["cumulative_win_count"])
+        self.assertEqual(1,metric["cumulative_loss_count"])
+        self.assertEqual(Decimal("4.500"),metric["cumulative_compound_return_pct"])
 
     def test_positive_period_frequency_excludes_empty_periods(self):
         rows=[
@@ -83,6 +89,39 @@ class V1HistoricalTest(unittest.TestCase):
         self.assertEqual((2,3),(metric["positive_week_count"],metric["evaluable_week_count"]))
         self.assertEqual((1,2),(metric["positive_month_count"],metric["evaluable_month_count"]))
         self.assertNotIn(date(2026,8,4),rows)
+
+    def test_positive_metrics_are_grouped_by_strategy_identity(self):
+        rows=[
+            (1,datetime(2026,8,3,10),Decimal("1"),"NORMAL_EXIT","1","HISTORICAL_REPLAY"),
+            (2,datetime(2026,8,3,11),Decimal("-1"),"NORMAL_EXIT","2","PAPER_FORWARD"),
+        ]
+        metric=_positive_metrics_by_path(rows,[1,2,3])
+        self.assertEqual((1,1),(metric[1]["positive_day_count"],metric[1]["evaluable_day_count"]))
+        self.assertEqual((0,1),(metric[2]["positive_day_count"],metric[2]["evaluable_day_count"]))
+        self.assertEqual((0,0),(metric[3]["positive_day_count"],metric[3]["evaluable_day_count"]))
+
+    def test_lifecycle_filters_are_strategy_identity_exists_predicates(self):
+        for name in ("TODAY_LIVE_ENTRY","OPEN_PAPER","OVERNIGHT_PAPER","STOP_PAPER",
+                     "POST","ACK","REJECT","UNKNOWN","FILL"):
+            predicate,params=_lifecycle_predicate(name,date(2026,8,31))
+            self.assertIn("EXISTS",predicate)
+            self.assertIn("d.minute_policy_path_id",predicate)
+            self.assertIsInstance(params,list)
+        self.assertEqual((None,[]),_lifecycle_predicate("NOT_ALLOWED",date(2026,8,31)))
+
+    def test_dashboard_lifecycle_queries_bind_every_placeholder(self):
+        class Cursor:
+            def execute(self,sql,params=()):
+                self.description=[SimpleNamespace(name=f"c{i}") for i in range(sql.count("::int")+2)]
+                self.row=tuple(0 for _ in self.description)
+                self.assertion=(sql.count("%s"),len(params))
+                if self.assertion[0]!=self.assertion[1]:
+                    raise AssertionError(self.assertion)
+            def fetchone(self): return self.row
+        cursor=Cursor();_operational(cursor,date(2026,8,31))
+        self.assertEqual(cursor.assertion[0],cursor.assertion[1])
+        cursor=Cursor();_v1_summary(cursor,date(2026,8,31))
+        self.assertEqual(cursor.assertion[0],cursor.assertion[1])
 
     def test_research_schema_is_provenance_isolated(self):
         from pathlib import Path
@@ -99,6 +138,11 @@ class V1HistoricalTest(unittest.TestCase):
         self.assertIn("state={scope:'V1_LIVE'",page)
         self.assertIn("실제 기간수익률",page)
         self.assertIn("양수기간",page);self.assertIn("Rank(최근5)",page)
+        self.assertIn("PAPER 성과범위",page)
+        self.assertIn("통합 연구성과",page)
+        self.assertIn("lifecycle_filter",(root/"scripts/dashboard/serve_multi_ma_dashboard.py").read_text(encoding="utf-8"))
+        self.assertIn("data-life=",page)
+        self.assertIn("cumulative_closed_trade_count",page)
         self.assertIn("LIVE_ACTUAL",page)
         self.assertNotIn('class="strategy-card"',page)
         self.assertIn('class="performance-live-row"',page)
