@@ -315,9 +315,9 @@ def _recent_rejections(cursor, limit=10):
         s.direction,b.quantity,b.payload->>'order_policy' order_policy,x.kis_tr_id,x.kis_endpoint,
         x.response_code,x.response_message,x.rejected_at,x.evidence_type
       FROM minute_ma_live_broker_rejection x
-      JOIN live_broker_order b USING(broker_order_id)
-      JOIN minute_ma_live_order_link l USING(order_request_id)
-      JOIN minute_ma_live_intent i USING(intent_id)
+      JOIN live_broker_order b ON b.broker_order_id=x.broker_order_id
+      JOIN minute_ma_live_order_link l ON l.order_request_id=x.order_request_id
+      JOIN minute_ma_live_intent i ON i.intent_id=x.intent_id
       JOIN minute_ma_policy_path pp ON pp.minute_policy_path_id=i.minute_policy_path_id
       JOIN minute_ma_path p ON p.minute_path_id=pp.minute_path_id
       JOIN minute_ma_strategy_master s USING(minute_strategy_id)
