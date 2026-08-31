@@ -42,8 +42,9 @@ def issue_approval_key(*, base_url: str, app_key: str, app_secret: str) -> str:
 
 
 class FlowRawCollector:
-    SYMBOLS = ("005930", "000660")
-    TR_IDS = (TR_EXECUTION, TR_PROGRAM, TR_ORDERBOOK)
+    FLOW_SYMBOLS = ("005930", "000660")
+    REALTIME_MINUTE_SYMBOLS = ("005930", "000660", "0193W0", "0193T0", "0193L0", "0197X0")
+    SYMBOLS = REALTIME_MINUTE_SYMBOLS
 
     def __init__(self, repository, *, ws_url: str, approval_provider: Callable[[], str],
                  now_provider: Callable[[], datetime] | None = None) -> None:
@@ -60,7 +61,13 @@ class FlowRawCollector:
 
     @property
     def subscriptions(self) -> list[dict[str, str]]:
-        return [{"tr_id": tr_id, "tr_key": symbol} for symbol in self.SYMBOLS for tr_id in self.TR_IDS]
+        execution = [{"tr_id": TR_EXECUTION, "tr_key": symbol} for symbol in self.REALTIME_MINUTE_SYMBOLS]
+        flow = [
+            {"tr_id": tr_id, "tr_key": symbol}
+            for symbol in self.FLOW_SYMBOLS
+            for tr_id in (TR_PROGRAM, TR_ORDERBOOK)
+        ]
+        return execution + flow
 
     def _remember_hash(self, identity: tuple[str, str, str]) -> bool:
         duplicate = identity in self._hashes

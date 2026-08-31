@@ -1,4 +1,4 @@
-"""Run the two-symbol KIS FLOW RAW websocket collector."""
+"""Run KIS FLOW RAW (two FLOW symbols and six execution symbols)."""
 
 from __future__ import annotations
 

@@ -37,6 +37,24 @@ class MinuteMaV1PaperRuntime:
             grouped[path.signal_code].append(path)
         created = normal = stopped = rejected = 0
         for signal_code, group in grouped.items():
+            path_by_policy_id = {int(path.minute_policy_path_id): path for path in group}
+            pending_reader = getattr(self.repository, "v1_pending_entries", None)
+            if pending_reader is not None:
+                pending_entries = pending_reader(policy_path_ids=tuple(path_by_policy_id))
+                for pending in pending_entries:
+                    path = path_by_policy_id.get(pending.minute_policy_path_id)
+                    if path is None:
+                        continue
+                    execution_bar = self.repository.execution_bar(
+                        stock_code=path.execution_code, at=pending.proxy_bar_time)
+                    underlying_bar = self.repository.underlying_bar(
+                        stock_code=path.signal_code, at=pending.proxy_bar_time)
+                    if execution_bar is None or underlying_bar is None:
+                        continue
+                    created += self.repository.v1_open_trade(
+                        path=path,event=pending.event,execution_bar=execution_bar,
+                        underlying_entry_reference_price=Decimal(str(underlying_bar.open_price)),
+                        pending_entry_id=pending.pending_entry_id)
             bars = self.repository.source_bars(
                 stock_code=signal_code, axis=group[0].axis, trading_date=trading_date)
             points = self.engine.prepare(path=group[0], bars=bars)
@@ -65,6 +83,12 @@ class MinuteMaV1PaperRuntime:
                         underlying_bar = self.repository.underlying_bar(
                             stock_code=path.signal_code, at=proxy_time)
                         if execution_bar is None or underlying_bar is None:
+                            defer = getattr(self.repository, "v1_defer_entry", None)
+                            if defer is not None:
+                                reason = ("BOTH_PROXIES_MISSING" if execution_bar is None and underlying_bar is None
+                                          else "EXECUTION_PROXY_MISSING" if execution_bar is None
+                                          else "UNDERLYING_PROXY_MISSING")
+                                defer(path=path,event=event,proxy_bar_time=proxy_time,pending_reason=reason)
                             rejected += 1
                             continue
                         created += self.repository.v1_open_trade(

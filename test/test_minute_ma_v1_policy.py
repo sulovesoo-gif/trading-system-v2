@@ -113,6 +113,40 @@ class MinuteMaV1PolicyTest(unittest.TestCase):
         result=runtime.run_day(trading_date=datetime(2026,8,28).date())
         self.assertEqual((result.normal_exits,repo.closed),(1,1))
 
+    def test_late_proxy_resolves_durable_pending_exactly_once(self):
+        p=path("LONG");point=PreparedMaPoint(datetime(2026,8,28,14,0),{3:2,5:1},{3:0,5:1},100)
+        event=SignalEvent(p.minute_path_id,p.path_key,SignalType.ENTRY,point.bar_time,
+            datetime(2026,8,28,14,1,1),'a'*64,True,{3:2,5:1},{3:0,5:1})
+        class Engine:
+            def prepare(self,**kwargs):return (point,)
+            def evaluate_prepared(self,**kwargs):return (event,)
+        class Repo:
+            cursor=datetime(2026,8,28,13,59);pending=[];proxy_ready=False;created=0
+            def v1_policy_paths(self,**kwargs):return (p,)
+            def source_bars(self,**kwargs):return ()
+            def v1_runtime_cursor(self,**kwargs):return self.cursor
+            def v1_open_trades(self,**kwargs):return ()
+            def v1_pending_entries(self,**kwargs):return tuple(self.pending)
+            def execution_bar(self,*,at,**kwargs):return MinuteBar(at,90,91,89,90) if self.proxy_ready else None
+            def underlying_bar(self,*,at,**kwargs):return MinuteBar(at,123,124,122,123) if self.proxy_ready else None
+            def v1_defer_entry(self,*,path,event,proxy_bar_time,pending_reason):
+                if not self.pending:self.pending.append(SimpleNamespace(
+                    pending_entry_id=1,minute_policy_path_id=path.minute_policy_path_id,
+                    event=event,proxy_bar_time=proxy_bar_time))
+            def v1_open_trade(self,*,pending_entry_id=None,**kwargs):
+                if pending_entry_id is not None and self.pending:
+                    self.pending.clear();self.created+=1;return 1
+                return 0
+            def advance_v1_cursor(self,*,last_source_bar_time,**kwargs):self.cursor=last_source_bar_time
+            def v1_close_normal(self,**kwargs):return 0
+        repo=Repo();runtime=MinuteMaV1PaperRuntime(repo);runtime.engine=Engine()
+        first=runtime.run_day(trading_date=datetime(2026,8,28).date())
+        self.assertEqual((first.entries_created,first.rejected_entries,len(repo.pending)),(0,1,1))
+        repo.proxy_ready=True
+        second=runtime.run_day(trading_date=datetime(2026,8,28).date())
+        third=runtime.run_day(trading_date=datetime(2026,8,28).date())
+        self.assertEqual((second.entries_created,third.entries_created,repo.created,len(repo.pending)),(1,0,1,0))
+
 
 class MinuteMaV1LiveStopTest(unittest.TestCase):
     def test_live_stop_targets_one_trade_ownership(self):

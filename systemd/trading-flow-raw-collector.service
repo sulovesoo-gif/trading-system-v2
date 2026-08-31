@@ -1,5 +1,5 @@
 [Unit]
-Description=Trading V2 KIS FLOW RAW websocket collector (005930, 000660)
+Description=Trading V2 KIS FLOW RAW websocket collector (FLOW 2 symbols; execution 6 symbols)
 After=network-online.target trading-system-v2-timescaledb-test.service
 Wants=network-online.target
 

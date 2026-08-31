@@ -1,0 +1,23 @@
+[Unit]
+Description=Trading V2 H0STCNT0 realtime research 1MIN builder
+After=network-online.target trading-system-v2-timescaledb-test.service trading-flow-raw-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/trading-system-v2
+EnvironmentFile=/home/ubuntu/projects/trading-system-v2/.env
+Environment=PYTHONPATH=/home/ubuntu/projects/trading-system-v2
+Environment=REALTIME_1MIN_FINALIZE_GRACE_MS=2000
+Environment=REALTIME_1MIN_POLL_MS=250
+ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/runtime/run_minute_realtime_1min_builder.py
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

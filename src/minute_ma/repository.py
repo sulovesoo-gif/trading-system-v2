@@ -18,6 +18,14 @@ class V1OpenTrade:
     underlying_entry_reference_price: Decimal
 
 
+@dataclass(frozen=True)
+class V1PendingEntry:
+    pending_entry_id: int
+    minute_policy_path_id: int
+    event: SignalEvent
+    proxy_bar_time: datetime
+
+
 class PostgresMinuteMaRepository:
     def __init__(self, pool, *, write_enabled: bool = False) -> None:
         self.pool = pool
@@ -95,6 +103,46 @@ class PostgresMinuteMaRepository:
                                                   EXCLUDED.last_source_bar_time),
                    updated_at=CURRENT_TIMESTAMP""", (signal_code,last_source_bar_time))
             connection.commit()
+
+    def v1_defer_entry(self, *, path: MinuteMaPath, event: SignalEvent,
+                       proxy_bar_time: datetime, pending_reason: str) -> int:
+        """Durably preserve an eligible signal before advancing the source cursor."""
+        if not self.write_enabled:
+            return 0
+        import json
+        snapshot = json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values,
+                               "trend_passed":event.trend_passed}, sort_keys=True)
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_paper_pending_entry(
+              minute_policy_path_id,signal_event_key,source_bar_time,confirmed_at,proxy_bar_time,
+              source_snapshot,pending_reason)
+              VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s)
+              ON CONFLICT(minute_policy_path_id,signal_event_key) DO UPDATE SET
+                last_checked_at=CURRENT_TIMESTAMP,pending_reason=EXCLUDED.pending_reason
+              RETURNING pending_entry_id""",
+              (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,
+               event.confirmed_at,proxy_bar_time,snapshot,pending_reason))
+            pending_id=int(cursor.fetchone()[0]);connection.commit();return pending_id
+
+    def v1_pending_entries(self, *, policy_path_ids: tuple[int, ...]) -> tuple[V1PendingEntry, ...]:
+        if not self.write_enabled or not policy_path_ids:
+            return ()
+        import json
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT pending_entry_id,minute_policy_path_id,signal_event_key,
+              source_bar_time,confirmed_at,proxy_bar_time,source_snapshot
+              FROM minute_ma_policy_paper_pending_entry
+              WHERE pending_status='PENDING' AND minute_policy_path_id=ANY(%s)
+              ORDER BY proxy_bar_time,pending_entry_id""", (list(policy_path_ids),))
+            rows=cursor.fetchall()
+        pending=[]
+        for row in rows:
+            snapshot=row[6] if isinstance(row[6],dict) else json.loads(row[6])
+            event=SignalEvent(0,"V1_PENDING",SignalType.ENTRY,row[3],row[4],str(row[2]),
+                              bool(snapshot.get("trend_passed",True)),snapshot.get("ma",{}),
+                              snapshot.get("previous_ma",{}))
+            pending.append(V1PendingEntry(int(row[0]),int(row[1]),event,row[5]))
+        return tuple(pending)
 
     def snapshot_v1_telemetry(self, *, snapshot_date: date) -> int:
         """Persist one immutable daily rank snapshot; it never changes Operation."""
@@ -364,7 +412,8 @@ class PostgresMinuteMaRepository:
 
     def v1_open_trade(self, *, path: MinuteMaPath, event: SignalEvent,
                       execution_bar: MinuteBar,
-                      underlying_entry_reference_price: Decimal) -> int:
+                      underlying_entry_reference_price: Decimal,
+                      pending_entry_id: int | None = None) -> int:
         if not self.write_enabled:
             return 0
         policy = path.operation_policy
@@ -382,7 +431,14 @@ class PostgresMinuteMaRepository:
                execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
                underlying_entry_reference_price,snapshot))
             if cursor.fetchone() is None:
-                connection.rollback(); return 0
+                if pending_entry_id is not None:
+                    cursor.execute("""UPDATE minute_ma_policy_paper_pending_entry
+                      SET pending_status='COMPLETED',resolved_at=CURRENT_TIMESTAMP,last_checked_at=CURRENT_TIMESTAMP
+                      WHERE pending_entry_id=%s AND pending_status='PENDING'""",(pending_entry_id,))
+                    connection.commit()
+                else:
+                    connection.rollback()
+                return 0
             cursor.execute("SELECT current_capital FROM minute_ma_policy_paper_capital WHERE minute_policy_path_id=%s FOR UPDATE",
                            (path.minute_policy_path_id,)); capital=cursor.fetchone()[0]
             cursor.execute("""INSERT INTO minute_ma_policy_paper_trade(
@@ -394,6 +450,10 @@ class PostgresMinuteMaRepository:
                Decimal(str(execution_bar.open_price)),underlying_entry_reference_price,threshold,
                "UNDERLYING_1PCT" if policy.direction=="SHORT" else "UNDERLYING_5PCT",capital))
             created=1 if cursor.fetchone() is not None else 0
+            if pending_entry_id is not None:
+                cursor.execute("""UPDATE minute_ma_policy_paper_pending_entry
+                  SET pending_status='COMPLETED',resolved_at=CURRENT_TIMESTAMP,last_checked_at=CURRENT_TIMESTAMP
+                  WHERE pending_entry_id=%s AND pending_status='PENDING'""",(pending_entry_id,))
             connection.commit(); return created
 
     def v1_open_trades(self, *, path: MinuteMaPath) -> tuple[V1OpenTrade,...]:

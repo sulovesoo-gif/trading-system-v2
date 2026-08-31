@@ -59,9 +59,12 @@ class FlowContractTest(unittest.TestCase):
         identity = (TR_EXECUTION, "005930", "hash")
         self.assertFalse(collector._remember_hash(identity))
         self.assertTrue(collector._remember_hash(identity))
-        self.assertEqual({item["tr_key"] for item in collector.subscriptions}, {"005930", "000660"})
+        self.assertEqual({item["tr_key"] for item in collector.subscriptions},
+                         {"005930", "000660", "0193W0", "0193T0", "0193L0", "0197X0"})
         self.assertEqual({item["tr_id"] for item in collector.subscriptions}, {TR_EXECUTION, TR_PROGRAM, TR_ORDERBOOK})
-        self.assertEqual(len(collector.subscriptions), 6)
+        self.assertEqual(len(collector.subscriptions), 10)
+        self.assertEqual(sum(item["tr_id"] == TR_EXECUTION for item in collector.subscriptions), 6)
+        self.assertEqual(sum(item["tr_id"] != TR_EXECUTION for item in collector.subscriptions), 4)
 
     def test_l0_collector_has_no_l1_rebuild_call(self):
         source = Path("src/flow_raw/collector.py").read_text(encoding="utf-8")
