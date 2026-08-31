@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.flow_raw.collector import FlowRawCollector
 from src.flow_raw.contracts import (
-    EXECUTION_FIELDS, ORDERBOOK_FIELDS, PROGRAM_FIELDS, TR_EXECUTION, TR_ORDERBOOK,
+    EXECUTION_FIELDS, ORDERBOOK_FIELDS, ORDERBOOK_GATEWAY_62_FIELDS, PROGRAM_FIELDS, TR_EXECUTION, TR_ORDERBOOK,
     TR_PROGRAM, FlowContractError, five_second_bucket, source_datetime, split_wire_frame,
 )
 
@@ -45,6 +45,27 @@ class FlowContractTest(unittest.TestCase):
         self.assertEqual(program.values["NTBY_TR_PBMN"], "-12345")
         self.assertEqual(orderbook.values["ASKP10"], "80000")
         self.assertEqual(orderbook.values["BIDP10"], "70000")
+
+    def test_gateway_62_field_orderbook_keeps_official_core_and_trailing_values(self):
+        orderbook = split_wire_frame(frame(TR_ORDERBOOK, ORDERBOOK_GATEWAY_62_FIELDS, [{
+            "MKSC_SHRN_ISCD": "005930", "BSOP_HOUR": "091504",
+            "ASKP1": "80000", "BIDP1": "79900",
+            "KIS_UNDOCUMENTED_FIELD_60": "x60",
+            "KIS_UNDOCUMENTED_FIELD_61": "x61",
+            "KIS_UNDOCUMENTED_FIELD_62": "x62",
+        }]))[0]
+        self.assertEqual(orderbook.values["ASKP1"], "80000")
+        self.assertEqual(orderbook.values["BIDP1"], "79900")
+        self.assertEqual(orderbook.values["KIS_UNDOCUMENTED_FIELD_60"], "x60")
+        self.assertEqual(orderbook.values["KIS_UNDOCUMENTED_FIELD_62"], "x62")
+
+    def test_gateway_62_field_multi_record_order_is_preserved(self):
+        parsed = split_wire_frame(frame(TR_ORDERBOOK, ORDERBOOK_GATEWAY_62_FIELDS, [
+            {"MKSC_SHRN_ISCD": "005930", "BSOP_HOUR": "091504"},
+            {"MKSC_SHRN_ISCD": "000660", "BSOP_HOUR": "091505"},
+        ]))
+        self.assertEqual([item.event_index for item in parsed], [0, 1])
+        self.assertEqual([item.values["MKSC_SHRN_ISCD"] for item in parsed], ["005930", "000660"])
 
     def test_bad_width_fails_closed(self):
         with self.assertRaises(FlowContractError):

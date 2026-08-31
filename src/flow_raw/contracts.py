@@ -48,7 +48,25 @@ ORDERBOOK_FIELDS = (
     "OVTM_TOTAL_ASKP_ICDC", "OVTM_TOTAL_BIDP_ICDC", "STCK_DEAL_CLS_CODE",
 )
 
+# The published H0STASP0 KRX contract has 59 fields.  The operating KIS
+# gateway returned three additive trailing values on 2026-08-31.  Their
+# semantics are not published for H0STASP0, so retain them losslessly without
+# assigning names borrowed from another venue contract.
+ORDERBOOK_GATEWAY_62_FIELDS = ORDERBOOK_FIELDS + (
+    "KIS_UNDOCUMENTED_FIELD_60",
+    "KIS_UNDOCUMENTED_FIELD_61",
+    "KIS_UNDOCUMENTED_FIELD_62",
+)
+
 FIELDS = {TR_EXECUTION: EXECUTION_FIELDS, TR_PROGRAM: PROGRAM_FIELDS, TR_ORDERBOOK: ORDERBOOK_FIELDS}
+FIELD_VARIANTS = {
+    TR_EXECUTION: {len(EXECUTION_FIELDS): EXECUTION_FIELDS},
+    TR_PROGRAM: {len(PROGRAM_FIELDS): PROGRAM_FIELDS},
+    TR_ORDERBOOK: {
+        len(ORDERBOOK_FIELDS): ORDERBOOK_FIELDS,
+        len(ORDERBOOK_GATEWAY_62_FIELDS): ORDERBOOK_GATEWAY_62_FIELDS,
+    },
+}
 
 
 class FlowContractError(ValueError):
@@ -78,11 +96,21 @@ def split_wire_frame(frame: str) -> list[WireEvent]:
         count = int(parts[2])
     except ValueError as error:
         raise FlowContractError("invalid realtime record count") from error
-    names = FIELDS[tr_id]
     values = parts[3].split("^")
-    expected = count * len(names)
-    if len(values) != expected:
-        raise FlowContractError(f"{tr_id} field count mismatch: expected={expected}, actual={len(values)}")
+    if count <= 0 or len(values) % count:
+        expected = sorted(FIELD_VARIANTS[tr_id])
+        raise FlowContractError(
+            f"{tr_id} field count mismatch: expected_per_record={expected}, "
+            f"records={count}, actual={len(values)}"
+        )
+    width = len(values) // count
+    names = FIELD_VARIANTS[tr_id].get(width)
+    if names is None:
+        expected = sorted(FIELD_VARIANTS[tr_id])
+        raise FlowContractError(
+            f"{tr_id} field count mismatch: expected_per_record={expected}, "
+            f"records={count}, actual={len(values)}"
+        )
     events = []
     for index in range(count):
         record = values[index * len(names):(index + 1) * len(names)]
