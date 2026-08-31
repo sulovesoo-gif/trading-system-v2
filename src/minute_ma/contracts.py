@@ -70,6 +70,9 @@ class MinuteBar:
     low_price: float
     close_price: float
     volume: int = 0
+    finalized_at: datetime | None = None
+    signal_eligible: bool = True
+    source_name: str = "REST_1MIN_LEGACY"
 
     def __post_init__(self) -> None:
         if min(self.open_price, self.high_price, self.low_price, self.close_price) <= 0:

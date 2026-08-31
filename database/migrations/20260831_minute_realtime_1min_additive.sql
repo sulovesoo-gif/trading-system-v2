@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS flow_realtime_minute_bar (
     reconnect_flag BOOLEAN NOT NULL,
     source_gap_flag BOOLEAN NOT NULL,
     event_time_regression_flag BOOLEAN NOT NULL,
+    ordering_invariant_failure BOOLEAN NOT NULL,
     accumulated_volume_regression BOOLEAN NOT NULL,
     duplicate_excluded_count BIGINT NOT NULL,
     suspect_trade_count BIGINT NOT NULL DEFAULT 0,

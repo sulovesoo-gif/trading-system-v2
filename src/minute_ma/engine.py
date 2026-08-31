@@ -28,6 +28,7 @@ class SignalEvent:
     trend_passed: bool
     ma_values: dict[int, float]
     previous_ma_values: dict[int, float]
+    signal_source: str = "REST_1MIN_LEGACY"
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,8 @@ class PreparedMaPoint:
     current: dict[int,float]
     previous: dict[int,float] | None
     source_close: float = 0.0
+    finalized_at: datetime | None = None
+    source_name: str = "REST_1MIN_LEGACY"
 
 
 class _RollingMa:
@@ -82,6 +85,10 @@ class MinuteMaSignalEngine:
             seen.add(bar.bar_time)
             if not start <= bar.bar_time.time() <= end:
                 continue
+            if not bar.signal_eligible:
+                # Do not bridge a crossover across a rejected realtime source bar.
+                prior_values = None
+                continue
             if (path.axis.continuity is ContinuityMode.RESET
                     and prior_date is not None and bar.bar_time.date() != prior_date):
                 rolling.reset()
@@ -90,7 +97,8 @@ class MinuteMaSignalEngine:
             current = rolling.push(bar.close_price)
             if current is None:
                 continue
-            points.append(PreparedMaPoint(bar.bar_time,current,prior_values,bar.close_price))
+            points.append(PreparedMaPoint(
+                bar.bar_time,current,prior_values,bar.close_price,bar.finalized_at,bar.source_name))
             prior_values=current
         return tuple(points)
 
@@ -122,13 +130,13 @@ class MinuteMaSignalEngine:
             exit_cross = GapTransition.DOWN_CROSS if direction == "LONG" else GapTransition.UP_CROSS
             entry = entry_transition is entry_cross and trend_passed
             exit_ = exit_transition is exit_cross
-            confirmed_at = point.bar_time + timedelta(minutes=1, seconds=1)
+            confirmed_at = point.finalized_at or point.bar_time + timedelta(minutes=1, seconds=1)
             for kind, emitted in ((SignalType.ENTRY, entry), (SignalType.EXIT, exit_)):
                 if emitted:
                     events.append(SignalEvent(
                         path.minute_path_id, path.path_key, kind, point.bar_time,
                         confirmed_at, _event_key(path, kind, point.bar_time),
-                        trend_passed, current.copy(), prior_values.copy(),
+                        trend_passed, current.copy(), prior_values.copy(),point.source_name,
                     ))
         return tuple(events)
 

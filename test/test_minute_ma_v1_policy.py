@@ -21,8 +21,8 @@ def path(direction="SHORT",policy_path_id=1):
 class FakePaperRepository:
     def __init__(self,trades):self.trades=list(trades);self.stop_calls=[]
     def v1_open_trades(self,*,path):return tuple(x for x in self.trades if x.open)
-    def execution_bar(self,*,stock_code,at):return MinuteBar(at,90,91,89,90)
-    def v1_close_stop(self,*,path,trade,trigger_bar_time,trigger_underlying_close,execution_bar):
+    def v1_realtime_bar(self,*,stock_code,at):return MinuteBar(at,90,91,89,90)
+    def v1_close_stop(self,*,path,trade,trigger_bar_time,trigger_underlying_close,execution_bar,**kwargs):
         if not trade.open:return 0
         trade.open=False;self.stop_calls.append(trade.minute_policy_paper_trade_id);return 1
 
@@ -81,11 +81,11 @@ class MinuteMaV1PolicyTest(unittest.TestCase):
         class Repo:
             anchor=None
             def v1_policy_paths(self,**kwargs):return (p,)
-            def source_bars(self,**kwargs):return ()
+            def v1_source_bars(self,**kwargs):return ()
             def v1_runtime_cursor(self,**kwargs):return datetime(2026,8,28,13,59)
             def v1_open_trades(self,**kwargs):return ()
-            def execution_bar(self,*,at,**kwargs):return MinuteBar(at,90,91,89,90)
-            def underlying_bar(self,*,at,**kwargs):return MinuteBar(at,123,124,122,123)
+            def v1_realtime_bar(self,*,at,stock_code):
+                return MinuteBar(at,123,124,122,123) if stock_code==p.signal_code else MinuteBar(at,90,91,89,90)
             def v1_open_trade(self,*,underlying_entry_reference_price,**kwargs):self.anchor=underlying_entry_reference_price;return 1
             def advance_v1_cursor(self,**kwargs):pass
             def v1_close_normal(self,**kwargs):return 0
@@ -103,10 +103,10 @@ class MinuteMaV1PolicyTest(unittest.TestCase):
         class Repo:
             closed=0
             def v1_policy_paths(self,**kwargs):return (p,)
-            def source_bars(self,**kwargs):return ()
+            def v1_source_bars(self,**kwargs):return ()
             def v1_runtime_cursor(self,**kwargs):return datetime(2026,8,27,15,30)
             def v1_open_trades(self,**kwargs):return ()
-            def execution_bar(self,*,at,**kwargs):return MinuteBar(at,90,91,89,90)
+            def v1_realtime_bar(self,*,at,**kwargs):return MinuteBar(at,90,91,89,90)
             def v1_close_normal(self,**kwargs):self.closed+=1;return 1
             def advance_v1_cursor(self,**kwargs):pass
         repo=Repo();runtime=MinuteMaV1PaperRuntime(repo);runtime.engine=Engine()
@@ -123,12 +123,13 @@ class MinuteMaV1PolicyTest(unittest.TestCase):
         class Repo:
             cursor=datetime(2026,8,28,13,59);pending=[];proxy_ready=False;created=0
             def v1_policy_paths(self,**kwargs):return (p,)
-            def source_bars(self,**kwargs):return ()
+            def v1_source_bars(self,**kwargs):return ()
             def v1_runtime_cursor(self,**kwargs):return self.cursor
             def v1_open_trades(self,**kwargs):return ()
             def v1_pending_entries(self,**kwargs):return tuple(self.pending)
-            def execution_bar(self,*,at,**kwargs):return MinuteBar(at,90,91,89,90) if self.proxy_ready else None
-            def underlying_bar(self,*,at,**kwargs):return MinuteBar(at,123,124,122,123) if self.proxy_ready else None
+            def v1_realtime_bar(self,*,at,stock_code):
+                if not self.proxy_ready:return None
+                return MinuteBar(at,123,124,122,123) if stock_code==p.signal_code else MinuteBar(at,90,91,89,90)
             def v1_defer_entry(self,*,path,event,proxy_bar_time,pending_reason):
                 if not self.pending:self.pending.append(SimpleNamespace(
                     pending_entry_id=1,minute_policy_path_id=path.minute_policy_path_id,
@@ -173,7 +174,7 @@ class MinuteMaV1LiveStopTest(unittest.TestCase):
         class Repo:
             cursor=None
             def v1_policy_paths(self,**kwargs):return (p,)
-            def source_bars(self,**kwargs):return ()
+            def v1_source_bars(self,**kwargs):return ()
             def v1_live_runtime_cursor(self,**kwargs):return self.cursor
             def advance_v1_live_cursor(self,*,last_source_bar_time,**kwargs):self.cursor=last_source_bar_time
             def v1_live_open_trades(self,**kwargs):return ()

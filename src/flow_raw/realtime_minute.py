@@ -66,6 +66,7 @@ class RealtimeMinuteBar:
     reconnect_flag: bool
     source_gap_flag: bool
     event_time_regression_flag: bool
+    ordering_invariant_failure: bool
     accumulated_volume_regression: bool
     duplicate_excluded_count: int
     quality_status: str
@@ -120,6 +121,7 @@ def build_realtime_minute_bars(
             last_accumulated = accumulated[-1] if accumulated else None
             volume = None if previous_last is None or last_accumulated is None else last_accumulated - previous_last
             accumulated_regression = volume is not None and volume < 0
+            ordering_failure = len({item.order_key for item in valid}) != len(valid)
             reasons: list[str] = []
             if previous_last is None:
                 reasons.append("PREVIOUS_MINUTE_ACCUMULATED_VOLUME_MISSING")
@@ -130,13 +132,16 @@ def build_realtime_minute_bars(
                 reasons.append("SOURCE_GAP")
             if any(item.event_time_regression_flag for item in valid):
                 reasons.append("EVENT_TIME_REGRESSION")
+            if ordering_failure:
+                reasons.append("ORDERING_INVARIANT_FAILURE")
             if any(item.reconnect_flag for item in valid):
                 reasons.append("RECONNECT_BOUNDARY")
             if reason == "GRACE_WATERMARK":
                 reasons.append("NO_NEXT_MINUTE_EVENT")
             quality = "COMPLETE" if not reasons else (
                 "INCOMPLETE" if any(reason in reasons for reason in (
-                    "PREVIOUS_MINUTE_ACCUMULATED_VOLUME_MISSING", "ACCUMULATED_VOLUME_REGRESSION", "SOURCE_GAP"
+                    "PREVIOUS_MINUTE_ACCUMULATED_VOLUME_MISSING", "ACCUMULATED_VOLUME_REGRESSION", "SOURCE_GAP",
+                    "ORDERING_INVARIANT_FAILURE"
                 )) else "SUSPECT"
             )
             result.append(RealtimeMinuteBar(
@@ -160,6 +165,7 @@ def build_realtime_minute_bars(
                 reconnect_flag=any(item.reconnect_flag for item in valid),
                 source_gap_flag=any(item.source_gap_flag for item in valid),
                 event_time_regression_flag=any(item.event_time_regression_flag for item in valid),
+                ordering_invariant_failure=ordering_failure,
                 accumulated_volume_regression=accumulated_regression,
                 duplicate_excluded_count=len(raw_group) - len(valid),
                 quality_status=quality,

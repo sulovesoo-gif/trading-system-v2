@@ -115,13 +115,14 @@ class PostgresMinuteMaRepository:
         with self.pool.connection() as connection, connection.cursor() as cursor:
             cursor.execute("""INSERT INTO minute_ma_policy_paper_pending_entry(
               minute_policy_path_id,signal_event_key,source_bar_time,confirmed_at,proxy_bar_time,
-              source_snapshot,pending_reason)
-              VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s)
+              source_snapshot,pending_reason,signal_source,source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,CURRENT_TIMESTAMP)
               ON CONFLICT(minute_policy_path_id,signal_event_key) DO UPDATE SET
                 last_checked_at=CURRENT_TIMESTAMP,pending_reason=EXCLUDED.pending_reason
               RETURNING pending_entry_id""",
               (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,
-               event.confirmed_at,proxy_bar_time,snapshot,pending_reason))
+               event.confirmed_at,proxy_bar_time,snapshot,pending_reason,event.signal_source,
+               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
             pending_id=int(cursor.fetchone()[0]);connection.commit();return pending_id
 
     def v1_pending_entries(self, *, policy_path_ids: tuple[int, ...]) -> tuple[V1PendingEntry, ...]:
@@ -140,7 +141,7 @@ class PostgresMinuteMaRepository:
             snapshot=row[6] if isinstance(row[6],dict) else json.loads(row[6])
             event=SignalEvent(0,"V1_PENDING",SignalType.ENTRY,row[3],row[4],str(row[2]),
                               bool(snapshot.get("trend_passed",True)),snapshot.get("ma",{}),
-                              snapshot.get("previous_ma",{}))
+                              snapshot.get("previous_ma",{}),"KIS_H0STCNT0_REALTIME")
             pending.append(V1PendingEntry(int(row[0]),int(row[1]),event,row[5]))
         return tuple(pending)
 
@@ -225,6 +226,52 @@ class PostgresMinuteMaRepository:
             cursor.execute(sql, params)
             rows = cursor.fetchall()
         return tuple(MinuteBar(r[0],float(r[1]),float(r[2]),float(r[3]),float(r[4]),int(r[5] or 0)) for r in rows)
+
+    def v1_source_bars(self, *, stock_code: str, trading_date: date) -> tuple[MinuteBar, ...]:
+        """Realtime-authoritative V1 stream with pre-cutover REST history only."""
+        day_start=datetime.combine(trading_date,time.min);day_end=day_start+timedelta(days=1)
+        sql="""WITH cutover AS (
+          SELECT min(bar_time) AS at FROM flow_realtime_minute_bar WHERE stock_code=%s
+        ), rest_dedup AS (
+          SELECT DISTINCT ON (r.bar_time) r.bar_time,r.open_price,r.high_price,r.low_price,r.close_price,r.volume
+          FROM raw_stock_minute r CROSS JOIN cutover c
+          WHERE c.at IS NOT NULL AND r.stock_code=%s AND r.data_source='KIS'
+            AND r.trading_venue='KRX' AND r.collect_cycle='1MIN' AND r.bar_time<c.at
+            AND r.bar_time::time BETWEEN TIME '09:00' AND TIME '15:30'
+          ORDER BY r.bar_time,r.collected_at DESC
+        ), all_bars AS (
+          SELECT r.bar_time,r.open_price,r.high_price,r.low_price,r.close_price,r.volume,
+                 NULL::timestamp AS finalized_at,TRUE AS signal_eligible,'REST_1MIN_PRE_CUTOVER'::text AS source_name
+          FROM rest_dedup r
+          UNION ALL
+          SELECT w.bar_time,w.open_price,w.high_price,w.low_price,w.close_price,w.volume,
+                 w.finalized_at,
+                 (w.quality_status<>'INCOMPLETE' AND NOT w.source_gap_flag AND NOT w.reconnect_flag
+                  AND NOT w.event_time_regression_flag AND NOT w.ordering_invariant_failure
+                  AND NOT w.accumulated_volume_regression),
+                 'KIS_H0STCNT0_REALTIME'::text
+          FROM flow_realtime_minute_bar w WHERE w.stock_code=%s
+        ), prior AS (
+          SELECT * FROM all_bars WHERE bar_time<%s ORDER BY bar_time DESC LIMIT 50
+        ), current_day AS (
+          SELECT * FROM all_bars WHERE bar_time>=%s AND bar_time<%s
+        ) SELECT * FROM prior UNION ALL SELECT * FROM current_day ORDER BY bar_time"""
+        with self.pool.connection() as connection,connection.cursor() as cursor:
+            cursor.execute(sql,(stock_code,stock_code,stock_code,day_start,day_start,day_end));rows=cursor.fetchall()
+        return tuple(MinuteBar(r[0],float(r[1]),float(r[2]),float(r[3]),float(r[4]),int(r[5] or 0),
+                               r[6],bool(r[7]),str(r[8])) for r in rows)
+
+    def v1_realtime_bar(self, *, stock_code: str, at: datetime) -> MinuteBar | None:
+        """Exact real-trade OPEN proxy; no REST fallback and no synthetic bar."""
+        sql="""SELECT bar_time,open_price,high_price,low_price,close_price,volume,finalized_at
+          FROM flow_realtime_minute_bar WHERE stock_code=%s AND bar_time=%s
+           AND quality_status<>'INCOMPLETE' AND NOT source_gap_flag AND NOT reconnect_flag
+           AND NOT event_time_regression_flag AND NOT ordering_invariant_failure
+           AND NOT accumulated_volume_regression"""
+        with self.pool.connection() as connection,connection.cursor() as cursor:
+            cursor.execute(sql,(stock_code,at));row=cursor.fetchone()
+        return None if row is None else MinuteBar(row[0],float(row[1]),float(row[2]),float(row[3]),
+          float(row[4]),int(row[5] or 0),row[6],True,"KIS_H0STCNT0_REALTIME")
 
     def execution_bar(self, *, stock_code: str, at: datetime) -> MinuteBar | None:
         if not time(9,0) <= at.time() <= time(15,19):
@@ -424,12 +471,14 @@ class PostgresMinuteMaRepository:
         with self.pool.connection() as connection, connection.cursor() as cursor:
             cursor.execute("""INSERT INTO minute_ma_policy_paper_event(
               minute_policy_path_id,signal_event_key,event_type,source_bar_time,confirmed_at,
-              proxy_bar_time,proxy_price,underlying_price,source_snapshot)
-              VALUES(%s,%s,'ENTRY',%s,%s,%s,%s,%s,%s::jsonb)
+              proxy_bar_time,proxy_price,underlying_price,source_snapshot,signal_source,
+              source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,'ENTRY',%s,%s,%s,%s,%s,%s::jsonb,%s,%s,CURRENT_TIMESTAMP)
               ON CONFLICT(minute_policy_path_id,signal_event_key,event_type) DO NOTHING RETURNING 1""",
               (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
-               underlying_entry_reference_price,snapshot))
+               underlying_entry_reference_price,snapshot,event.signal_source,
+               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
             if cursor.fetchone() is None:
                 if pending_entry_id is not None:
                     cursor.execute("""UPDATE minute_ma_policy_paper_pending_entry
@@ -487,12 +536,13 @@ class PostgresMinuteMaRepository:
         with self.pool.connection() as connection, connection.cursor() as cursor:
             cursor.execute("""INSERT INTO minute_ma_policy_paper_event(
               minute_policy_path_id,signal_event_key,event_type,source_bar_time,confirmed_at,
-              proxy_bar_time,proxy_price,source_snapshot)
-              VALUES(%s,%s,'NORMAL_EXIT',%s,%s,%s,%s,%s::jsonb)
+              proxy_bar_time,proxy_price,source_snapshot,signal_source,source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,'NORMAL_EXIT',%s,%s,%s,%s,%s::jsonb,%s,%s,CURRENT_TIMESTAMP)
               ON CONFLICT(minute_policy_path_id,signal_event_key,event_type) DO NOTHING RETURNING 1""",
               (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
-               json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values},sort_keys=True)))
+               json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values},sort_keys=True),
+               event.signal_source,event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
             if cursor.fetchone() is None:
                 connection.rollback(); return 0
             cursor.execute("""SELECT minute_policy_paper_trade_id FROM minute_ma_policy_paper_trade
@@ -506,24 +556,26 @@ class PostgresMinuteMaRepository:
 
     def v1_close_stop(self, *, path: MinuteMaPath, trade: V1OpenTrade,
                       trigger_bar_time: datetime, trigger_underlying_close: Decimal,
-                      execution_bar: MinuteBar) -> int:
+                      execution_bar: MinuteBar,
+                      trigger_confirmed_at: datetime | None = None) -> int:
         if not self.write_enabled:
             return 0
         key=stop_event_key(policy_path_id=int(path.minute_policy_path_id),
                            trade_id=trade.minute_policy_paper_trade_id,
                            trigger_bar_time=trigger_bar_time)
-        confirmed=trigger_bar_time+timedelta(minutes=1,seconds=1)
+        confirmed=trigger_confirmed_at or trigger_bar_time+timedelta(minutes=1,seconds=1)
         import json
         with self.pool.connection() as connection, connection.cursor() as cursor:
             cursor.execute("""INSERT INTO minute_ma_policy_paper_event(
               minute_policy_path_id,signal_event_key,event_type,source_bar_time,confirmed_at,
-              proxy_bar_time,proxy_price,underlying_price,source_snapshot)
-              VALUES(%s,%s,'STOP_EXIT',%s,%s,%s,%s,%s,%s::jsonb)
+              proxy_bar_time,proxy_price,underlying_price,source_snapshot,signal_source,
+              source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,'STOP_EXIT',%s,%s,%s,%s,%s,%s::jsonb,'KIS_H0STCNT0_REALTIME',%s,CURRENT_TIMESTAMP)
               ON CONFLICT(minute_policy_path_id,signal_event_key,event_type) DO NOTHING RETURNING 1""",
               (path.minute_policy_path_id,key,trigger_bar_time,confirmed,execution_bar.bar_time,
                Decimal(str(execution_bar.open_price)),trigger_underlying_close,
                json.dumps({"target_trade_id":trade.minute_policy_paper_trade_id,
-                           "anchor":str(trade.underlying_entry_reference_price)},sort_keys=True)))
+                           "anchor":str(trade.underlying_entry_reference_price)},sort_keys=True),confirmed))
             if cursor.fetchone() is None:
                 connection.rollback(); return 0
             cursor.execute("""SELECT 1 FROM minute_ma_policy_paper_trade

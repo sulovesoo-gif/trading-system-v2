@@ -96,6 +96,13 @@ class RealtimeMinuteBuilderTest(unittest.TestCase):
         source=Path("src/flow_raw/realtime_minute_repository.py").read_text(encoding="utf-8")
         self.assertIn("ON CONFLICT(bar_time,stock_code,trading_venue) DO NOTHING",source)
 
+    def test_18_ordering_identity_collision_is_incomplete(self):
+        items=[tick(1,100,10,sequence=1,index=0),tick(1,101,11,sequence=1,index=0),
+               tick(61,102,12,sequence=2,index=0)]
+        bar=self.build(items)[0]
+        self.assertTrue(bar.ordering_invariant_failure)
+        self.assertEqual(bar.quality_status,"INCOMPLETE")
+
 
 if __name__ == "__main__":
     unittest.main()

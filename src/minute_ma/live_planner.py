@@ -57,9 +57,14 @@ class PostgresMinuteMaLivePlanner:
                    operation_id if policy_path_id is not None else None));c.commit();return reason
             event_id=str(uuid5(NAMESPACE_URL,'minute-ma-live-event|'+event.signal_event_key+'|'+str(policy_path_id or path.minute_path_id)))
             q.execute("""INSERT INTO minute_ma_live_signal_event(minute_live_signal_event_id,minute_path_id,signal_event_key,event_type,
-              source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason)
-              VALUES(%s,%s,%s,'ENTRY',%s,%s,%s::jsonb,%s,'POLICY_ENTRY') ON CONFLICT DO NOTHING""",
-              (event_id,path.minute_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,json.dumps({'ma':event.ma_values,'previous_ma':event.previous_ma_values,'trend_passed':event.trend_passed}),policy_path_id))
+              source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason,
+              signal_source,source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,%s,'ENTRY',%s,%s,%s::jsonb,%s,'POLICY_ENTRY',%s,%s,CURRENT_TIMESTAMP)
+              ON CONFLICT DO NOTHING""",
+              (event_id,path.minute_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
+               json.dumps({'ma':event.ma_values,'previous_ma':event.previous_ma_values,'trend_passed':event.trend_passed}),
+               policy_path_id,event.signal_source,
+               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
             strategy=(f'MINUTE_MA_V1_POLICY:{policy_path_id}:EPOCH:{epoch}' if policy_path_id is not None
                       else f'MINUTE_MA_PATH:{path.minute_path_id}:EPOCH:{epoch}')
             request_key=digest('MINUTE_MA_V01|REQUEST|'+key+'|BUY')
@@ -88,11 +93,14 @@ class PostgresMinuteMaLivePlanner:
         with self.connection_factory() as c,c.cursor() as q:
             self._profile(q)
             q.execute("""INSERT INTO minute_ma_live_signal_event(minute_live_signal_event_id,minute_path_id,signal_event_key,event_type,
-              source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason)
-              VALUES(%s,%s,%s,'EXIT',%s,%s,%s::jsonb,%s,%s) ON CONFLICT DO NOTHING""",
+              source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason,
+              signal_source,source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,%s,'EXIT',%s,%s,%s::jsonb,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+              ON CONFLICT DO NOTHING""",
               (event_id,path.minute_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                json.dumps({'ma':event.ma_values,'previous_ma':event.previous_ma_values,'trend_passed':event.trend_passed}),
-               policy_path_id,exit_reason))
+               policy_path_id,exit_reason,event.signal_source,
+               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
             q.execute("""SELECT t.minute_live_trade_id,t.ownership_id,t.capital_at_signal,t.capital_epoch_no,
               t.minute_policy_operation_id,
               COALESCE(lp.quantity,0) FROM minute_ma_live_trade t LEFT JOIN execution_logical_position lp
@@ -111,11 +119,14 @@ class PostgresMinuteMaLivePlanner:
         with self.connection_factory() as c,c.cursor() as q:
             self._profile(q)
             q.execute("""INSERT INTO minute_ma_live_signal_event(minute_live_signal_event_id,minute_path_id,
-              signal_event_key,event_type,source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason)
-              VALUES(%s,%s,%s,'EXIT',%s,%s,%s::jsonb,%s,%s) ON CONFLICT DO NOTHING""",
+              signal_event_key,event_type,source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason,
+              signal_source,source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,%s,'EXIT',%s,%s,%s::jsonb,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+              ON CONFLICT DO NOTHING""",
               (event_id,path.minute_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                json.dumps({'target_minute_live_trade_id':minute_live_trade_id}),
-               getattr(path,'minute_policy_path_id',None),exit_reason))
+               getattr(path,'minute_policy_path_id',None),exit_reason,event.signal_source,
+               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
             q.execute("""SELECT t.minute_live_trade_id,t.ownership_id,t.capital_at_signal,t.capital_epoch_no,
               t.minute_policy_operation_id,
               COALESCE(lp.quantity,0) FROM minute_ma_live_trade t LEFT JOIN execution_logical_position lp

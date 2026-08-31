@@ -45,9 +45,9 @@ class MinuteMaV1PaperRuntime:
                     path = path_by_policy_id.get(pending.minute_policy_path_id)
                     if path is None:
                         continue
-                    execution_bar = self.repository.execution_bar(
+                    execution_bar = self.repository.v1_realtime_bar(
                         stock_code=path.execution_code, at=pending.proxy_bar_time)
-                    underlying_bar = self.repository.underlying_bar(
+                    underlying_bar = self.repository.v1_realtime_bar(
                         stock_code=path.signal_code, at=pending.proxy_bar_time)
                     if execution_bar is None or underlying_bar is None:
                         continue
@@ -55,8 +55,7 @@ class MinuteMaV1PaperRuntime:
                         path=path,event=pending.event,execution_bar=execution_bar,
                         underlying_entry_reference_price=Decimal(str(underlying_bar.open_price)),
                         pending_entry_id=pending.pending_entry_id)
-            bars = self.repository.source_bars(
-                stock_code=signal_code, axis=group[0].axis, trading_date=trading_date)
+            bars = self.repository.v1_source_bars(stock_code=signal_code,trading_date=trading_date)
             points = self.engine.prepare(path=group[0], bars=bars)
             cursor = self.repository.v1_runtime_cursor(signal_code=signal_code)
             if cursor is not None:
@@ -78,9 +77,9 @@ class MinuteMaV1PaperRuntime:
                             rejected += 1
                             continue
                         proxy_time = event.source_bar_time + timedelta(minutes=1)
-                        execution_bar = self.repository.execution_bar(
+                        execution_bar = self.repository.v1_realtime_bar(
                             stock_code=path.execution_code, at=proxy_time)
-                        underlying_bar = self.repository.underlying_bar(
+                        underlying_bar = self.repository.v1_realtime_bar(
                             stock_code=path.signal_code, at=proxy_time)
                         if execution_bar is None or underlying_bar is None:
                             defer = getattr(self.repository, "v1_defer_entry", None)
@@ -96,7 +95,7 @@ class MinuteMaV1PaperRuntime:
                             underlying_entry_reference_price=Decimal(str(underlying_bar.open_price)))
                     else:
                         proxy_time = event.source_bar_time + timedelta(minutes=1)
-                        execution_bar = self.repository.execution_bar(
+                        execution_bar = self.repository.v1_realtime_bar(
                             stock_code=path.execution_code, at=proxy_time)
                         if execution_bar is not None:
                             normal += self.repository.v1_close_normal(
@@ -117,11 +116,12 @@ class MinuteMaV1PaperRuntime:
                         anchor=trade.underlying_entry_reference_price,
                         completed_underlying_close=close):
                     continue
-                execution_bar = self.repository.execution_bar(
+                execution_bar = self.repository.v1_realtime_bar(
                     stock_code=path.execution_code,
                     at=paper_stop_execution_time(point.bar_time))
                 if execution_bar is not None:
                     count += self.repository.v1_close_stop(
                         path=path, trade=trade, trigger_bar_time=point.bar_time,
-                        trigger_underlying_close=close, execution_bar=execution_bar)
+                        trigger_underlying_close=close, execution_bar=execution_bar,
+                        trigger_confirmed_at=point.finalized_at)
         return count

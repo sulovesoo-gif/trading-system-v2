@@ -66,7 +66,20 @@ def main() -> int:
                   "ohlc_match_pct":round(100*ohlc_match/len(common),4) if common else None,
                   "rest_mismatch":len(common)-ohlc_match,"watermark_p50_ms":round(percentile(delays,.5) or 0,3),
                   "watermark_p95_ms":round(percentile(delays,.95) or 0,3)}
-            print({"ticks": len(ticks), "bars": len(bars), "summaries": summaries})
+            from src.minute_ma.contracts import MinuteBar
+            from src.minute_ma.engine import MinuteMaSignalEngine
+            from src.minute_ma.repository import PostgresMinuteMaRepository
+            policy_paths=PostgresMinuteMaRepository(pool,write_enabled=False).v1_policy_paths()
+            signal_counts={}
+            engine=MinuteMaSignalEngine()
+            for symbol in ('005930','000660'):
+                source=[MinuteBar(bar.bar_time,bar.open_price,bar.high_price,bar.low_price,bar.close_price,
+                    bar.volume or 0,bar.finalized_at,bar.quality_status!='INCOMPLETE','KIS_H0STCNT0_REALTIME')
+                    for bar in bars if bar.stock_code==symbol]
+                signal_counts[symbol]=sum(len(engine.evaluate(path=path,bars=source))
+                    for path in policy_paths if path.signal_code==symbol)
+            print({"ticks": len(ticks), "bars": len(bars), "summaries": summaries,
+                   "realtime_ma_signal_events":signal_counts})
             return 0
         inserted,audited=repository.run_startup_backlog(
             now=datetime.now(KST).replace(tzinfo=None),grace_ms=grace_ms)

@@ -22,8 +22,8 @@ class MinuteMaV1LiveNoSendRuntime:
         paths=self.repository.v1_policy_paths(live_only=True);groups=defaultdict(list);counts=defaultdict(int)
         for path in paths:groups[path.signal_code].append(path)
         for signal_code,group in groups.items():
-            points=self.engine.prepare(path=group[0],bars=self.repository.source_bars(
-                stock_code=signal_code,axis=group[0].axis,trading_date=trading_date))
+            points=self.engine.prepare(path=group[0],bars=self.repository.v1_source_bars(
+                stock_code=signal_code,trading_date=trading_date))
             cursor=self.repository.v1_live_runtime_cursor(signal_code=signal_code)
             if cursor is None:
                 if points:self.repository.advance_v1_live_cursor(
@@ -80,6 +80,6 @@ class MinuteMaV1LiveNoSendRuntime:
                 minute_live_trade_id=trade.minute_live_trade_id,
                 execution_stock_code=path.execution_code,
                 reference_price=Decimal(self.execution_price_lookup.current_price(path.execution_code)),
-                source_event_time=point.bar_time+timedelta(minutes=1,seconds=1),
+                source_event_time=point.finalized_at or point.bar_time+timedelta(minutes=1,seconds=1),
                 exit_reason='STOP_EXIT',minute_policy_path_id=path.minute_policy_path_id)
             counts[result.status]+=1

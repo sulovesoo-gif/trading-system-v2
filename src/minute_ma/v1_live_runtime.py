@@ -39,7 +39,8 @@ class MinuteMaV1LiveStopMonitor:
                                trade_id=trade.minute_live_trade_id,
                                trigger_bar_time=bar.bar_time)
             event=SignalEvent(path.minute_path_id,path.path_key,SignalType.EXIT,bar.bar_time,
-                              bar.bar_time+timedelta(minutes=1,seconds=1),key,True,{}, {})
+                              getattr(bar,'finalized_at',None) or bar.bar_time+timedelta(minutes=1,seconds=1),
+                              key,True,{}, {},'KIS_H0STCNT0_REALTIME')
             status=self.planner.plan_trade_exit(
                 path=path,event=event,
                 reference_price=self.price_lookup.current_price(path.execution_code),
@@ -61,8 +62,8 @@ class MinuteMaV1LiveRuntime:
         groups=defaultdict(list);counts=defaultdict(int)
         for path in paths:groups[path.signal_code].append(path)
         for signal_code,group in groups.items():
-            points=self.engine.prepare(path=group[0],bars=self.repository.source_bars(
-                stock_code=signal_code,axis=group[0].axis,trading_date=trading_date))
+            points=self.engine.prepare(path=group[0],bars=self.repository.v1_source_bars(
+                stock_code=signal_code,trading_date=trading_date))
             cursor=self.repository.v1_live_runtime_cursor(signal_code=signal_code)
             if cursor is None:
                 if points:self.repository.advance_v1_live_cursor(
@@ -77,7 +78,8 @@ class MinuteMaV1LiveRuntime:
             stop_monitor=MinuteMaV1LiveStopMonitor(
                 repository=self.repository,planner=self.planner,price_lookup=self.price_lookup)
             for point in points:
-                bar=type('CompletedBar',(),{'bar_time':point.bar_time,'close_price':point.source_close})()
+                bar=type('CompletedBar',(),{'bar_time':point.bar_time,'close_price':point.source_close,
+                    'finalized_at':point.finalized_at})()
                 for path in group:
                     for status,n in stop_monitor.evaluate_completed_bar(path=path,bar=bar).items():
                         counts[status]+=n

@@ -39,8 +39,8 @@ class RealtimeMinuteRepository:
           message_count,first_source_event_time,last_source_event_time,first_received_at,
           last_received_at,finalized_at,finalize_reason,watermark_delay_ms,connection_count,
           reconnect_flag,source_gap_flag,event_time_regression_flag,accumulated_volume_regression,
-          duplicate_excluded_count,quality_status,quality_reasons)
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          ordering_invariant_failure,duplicate_excluded_count,quality_status,quality_reasons)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT(bar_time,stock_code,trading_venue) DO NOTHING RETURNING 1"""
         params = (
             bar.bar_time, bar.stock_code, bar.open_price, bar.high_price, bar.low_price,
@@ -50,7 +50,7 @@ class RealtimeMinuteRepository:
             bar.last_received_at, bar.finalized_at, bar.finalize_reason, bar.watermark_delay_ms,
             bar.connection_count, bar.reconnect_flag, bar.source_gap_flag,
             bar.event_time_regression_flag, bar.accumulated_volume_regression,
-            bar.duplicate_excluded_count, bar.quality_status, list(bar.quality_reasons),
+            bar.ordering_invariant_failure,bar.duplicate_excluded_count, bar.quality_status, list(bar.quality_reasons),
         )
         with self.pool.connection() as connection, connection.transaction(), connection.cursor() as cursor:
             cursor.execute(sql, params)
