@@ -142,6 +142,7 @@ class V1HistoricalTest(unittest.TestCase):
         self.assertIn("통합 연구성과",page)
         self.assertIn("lifecycle_filter",(root/"scripts/dashboard/serve_multi_ma_dashboard.py").read_text(encoding="utf-8"))
         self.assertIn("data-life=",page)
+        self.assertIn("paper?'V1_ALL':'V1_LIVE'",page)
         self.assertIn("cumulative_closed_trade_count",page)
         self.assertIn("LIVE_ACTUAL",page)
         self.assertNotIn('class="strategy-card"',page)
