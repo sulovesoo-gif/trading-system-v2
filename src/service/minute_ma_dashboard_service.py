@@ -9,7 +9,7 @@ PAGE_SIZES = {20, 50}
 PERIODS = {"DAILY", "WEEKLY", "MONTHLY", "ALL"}
 RESEARCH_SOURCES = {"COMBINED", "HISTORICAL_REPLAY", "PAPER_FORWARD"}
 LIFECYCLE_FILTERS = {
-    "TODAY_LIVE_ENTRY", "OPEN_PAPER", "OVERNIGHT_PAPER", "STOP_PAPER",
+    "TODAY_LIVE_ENTRY", "TODAY_LIVE_EXIT", "OPEN_PAPER", "OVERNIGHT_PAPER", "STOP_PAPER",
     "POST", "ACK", "REJECT", "UNKNOWN", "FILL",
 }
 VIRTUAL_INITIAL_CAPITAL = Decimal("1000000")
@@ -332,6 +332,8 @@ def _operational(cursor, as_of_date):
       (SELECT count(*) FROM minute_ma_policy_paper_event WHERE event_type IN('NORMAL_EXIT','STOP_EXIT') AND source_bar_time>=%s AND source_bar_time<%s)::int today_paper_exit,
       (SELECT count(*) FROM minute_ma_live_signal_event WHERE minute_policy_path_id IS NOT NULL AND event_type='ENTRY' AND source_bar_time>=%s AND source_bar_time<%s)::int today_live_entry,
       (SELECT count(*) FROM minute_ma_live_signal_event WHERE minute_policy_path_id IS NOT NULL AND event_type='EXIT' AND source_bar_time>=%s AND source_bar_time<%s)::int today_live_exit,
+      (SELECT count(DISTINCT minute_policy_path_id) FROM minute_ma_live_signal_event WHERE minute_policy_path_id IS NOT NULL AND event_type='ENTRY' AND source_bar_time>=%s AND source_bar_time<%s)::int today_live_entry_strategies,
+      (SELECT count(DISTINCT minute_policy_path_id) FROM minute_ma_live_signal_event WHERE minute_policy_path_id IS NOT NULL AND event_type='EXIT' AND source_bar_time>=%s AND source_bar_time<%s)::int today_live_exit_strategies,
       (SELECT count(*) FROM minute_ma_live_broker_submit_attempt
         WHERE attempted_at>=%s AND attempted_at<%s)::int today_post_attempts,
       (SELECT count(*) FROM live_broker_order b JOIN minute_ma_live_order_link l USING(broker_order_id)
@@ -352,7 +354,7 @@ def _operational(cursor, as_of_date):
       (SELECT count(*) FROM minute_ma_live_entry_skip WHERE minute_policy_path_id IS NOT NULL AND created_at>=%s AND created_at<%s)::int today_skips,
       (SELECT send_enabled FROM minute_ma_send_profile WHERE profile_code='MINUTE_MA_LIVE_SEND') send_enabled,
       (SELECT max(updated_at) FROM minute_ma_runtime_cursor)::timestamp last_runtime_at""",
-      (day_end, day_end) + tuple([day_start, day_end] * 11))
+      (day_end, day_end) + tuple([day_start, day_end] * 13))
     return dict(zip([d.name for d in cursor.description], cursor.fetchone()))
 
 def _recent_rejections(cursor, limit=10):
@@ -395,6 +397,7 @@ def _lifecycle_predicate(lifecycle_filter, as_of_date):
     end = start + timedelta(days=1)
     predicates = {
         "TODAY_LIVE_ENTRY": ("EXISTS (SELECT 1 FROM minute_ma_live_signal_event e WHERE e.minute_policy_path_id=d.minute_policy_path_id AND e.event_type='ENTRY' AND e.source_bar_time>=%s AND e.source_bar_time<%s)", [start, end]),
+        "TODAY_LIVE_EXIT": ("EXISTS (SELECT 1 FROM minute_ma_live_signal_event e WHERE e.minute_policy_path_id=d.minute_policy_path_id AND e.event_type='EXIT' AND e.source_bar_time>=%s AND e.source_bar_time<%s)", [start, end]),
         "OPEN_PAPER": ("EXISTS (SELECT 1 FROM minute_ma_policy_paper_trade t WHERE t.minute_policy_path_id=d.minute_policy_path_id AND t.entry_execution_time<%s AND (t.exit_execution_time IS NULL OR t.exit_execution_time>=%s))", [end, end]),
         "OVERNIGHT_PAPER": ("EXISTS (SELECT 1 FROM minute_ma_policy_paper_trade t WHERE t.minute_policy_path_id=d.minute_policy_path_id AND t.entry_execution_time::date<%s AND t.entry_execution_time<%s AND (t.exit_execution_time IS NULL OR t.exit_execution_time>=%s))", [as_of_date, end, end]),
         "STOP_PAPER": ("EXISTS (SELECT 1 FROM minute_ma_policy_paper_trade t WHERE t.minute_policy_path_id=d.minute_policy_path_id AND t.trade_status='CLOSED' AND t.exit_reason='STOP_EXIT' AND t.exit_execution_time<%s)", [end]),
@@ -430,6 +433,64 @@ def _v1_page(cursor, *, scope, page, page_size, sort, search, direction,
     for row in rows:
         row["top20_consecutive_days"] = row.get("current_top20_consecutive_days", row.get("top20_consecutive_days", 0))
     return rows, total
+
+def _v1_period_lifecycle(cursor, policy_path_ids, *, start, end):
+    """Return trade lifecycle counts without mixing OPEN trades into realized P&L."""
+    if not policy_path_ids:
+        return {}
+    paper_entry_lower = "entry_execution_time>=%s AND " if start is not None else ""
+    paper_exit_lower = "exit_execution_time>=%s AND " if start is not None else ""
+    paper_params = ([start] if start is not None else []) + [end]
+    paper_params += ([start] if start is not None else []) + [end]
+    paper_params += ([start] if start is not None else []) + [end, end, policy_path_ids, end]
+    cursor.execute("""SELECT minute_policy_path_id,
+        count(*) FILTER(WHERE """ + paper_entry_lower + """entry_execution_time<%s)::int period_paper_entry_count,
+        count(*) FILTER(WHERE exit_execution_time IS NOT NULL
+                              AND """ + paper_exit_lower + """exit_execution_time<%s)::int period_paper_exit_count,
+        count(*) FILTER(WHERE """ + paper_entry_lower + """entry_execution_time<%s
+                              AND (exit_execution_time IS NULL OR exit_execution_time>=%s))::int period_paper_open_count
+      FROM minute_ma_policy_paper_trade
+     WHERE minute_policy_path_id=ANY(%s) AND entry_execution_time<%s
+     GROUP BY minute_policy_path_id""",
+      tuple(paper_params))
+    result = {int(row[0]): {
+        "period_paper_entry_count": row[1], "period_paper_exit_count": row[2],
+        "period_paper_open_count": row[3],
+        "period_live_entry_count": 0, "period_live_exit_count": 0,
+        "period_live_open_count": 0,
+    } for row in cursor.fetchall()}
+    live_entry_lower = "t.created_at>=%s AND " if start is not None else ""
+    live_exit_lower = "s.settled_at>=%s AND " if start is not None else ""
+    live_params = ([start] if start is not None else []) + [end]
+    live_params += ([start] if start is not None else []) + [end]
+    live_params += ([start] if start is not None else []) + [end, end, policy_path_ids, end]
+    cursor.execute("""SELECT t.minute_policy_path_id,
+        count(*) FILTER(WHERE """ + live_entry_lower + """t.created_at<%s)::int period_live_entry_count,
+        count(*) FILTER(WHERE s.settled_at IS NOT NULL
+                              AND """ + live_exit_lower + """s.settled_at<%s)::int period_live_exit_count,
+        count(*) FILTER(WHERE t.trade_status<>'CANCELLED'
+                              AND """ + live_entry_lower + """t.created_at<%s
+                              AND (s.settled_at IS NULL OR s.settled_at>=%s))::int period_live_open_count
+      FROM minute_ma_live_trade t
+      LEFT JOIN minute_ma_live_capital_settlement s USING(minute_live_trade_id)
+     WHERE t.minute_policy_path_id=ANY(%s) AND t.created_at<%s
+     GROUP BY t.minute_policy_path_id""",
+      tuple(live_params))
+    for path_id, entries, exits, opens in cursor.fetchall():
+        metric = result.setdefault(int(path_id), {
+            "period_paper_entry_count": 0, "period_paper_exit_count": 0,
+            "period_paper_open_count": 0,
+        })
+        metric.update({"period_live_entry_count": entries,
+                       "period_live_exit_count": exits,
+                       "period_live_open_count": opens})
+    for path_id in policy_path_ids:
+        result.setdefault(int(path_id), {
+            "period_paper_entry_count": 0, "period_paper_exit_count": 0,
+            "period_paper_open_count": 0, "period_live_entry_count": 0,
+            "period_live_exit_count": 0, "period_live_open_count": 0,
+        })
+    return result
 
 def _legacy_page(cursor, *, axis, operation, page, page_size, sort, search, direction):
     conditions, params = [], []
@@ -504,12 +565,14 @@ def dashboard_payload(pool, *, scope="V1_LIVE", axis=None, operation=None, page=
                 for path_id in ids:
                     research[path_id].update(combined_positive[path_id])
             actual = _v1_actual_metrics(q, ids, start=period_start, end=period_end)
+            lifecycle = _v1_period_lifecycle(q, ids, start=period_start, end=period_end)
             period_ranks = _v1_period_ranks(
                 q, source=performance_source, start=period_start, end=period_end)
             for row in rows:
                 path_id = int(row["minute_policy_path_id"])
                 row.update(research[path_id]); row["period_rank"] = period_ranks.get(path_id)
                 row.update(actual.get(path_id, {}))
+                row.update(lifecycle[path_id])
         else:
             rows, total = _legacy_page(q, axis=axis, operation=operation, page=page,
                                        page_size=page_size, sort=sort, search=search,
