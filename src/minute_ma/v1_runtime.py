@@ -38,6 +38,29 @@ class MinuteMaV1PaperRuntime:
         created = normal = stopped = rejected = 0
         for signal_code, group in grouped.items():
             path_by_policy_id = {int(path.minute_policy_path_id): path for path in group}
+            pending_exit_reader = getattr(self.repository, "v1_pending_exits", None)
+            if pending_exit_reader is not None:
+                pending_exits = pending_exit_reader(policy_path_ids=tuple(path_by_policy_id))
+                for pending in pending_exits:
+                    path = path_by_policy_id.get(pending.minute_policy_path_id)
+                    if path is None:
+                        continue
+                    execution_bar = self.repository.v1_realtime_bar(
+                        stock_code=path.execution_code, at=pending.proxy_bar_time)
+                    if execution_bar is None:
+                        continue
+                    if pending.exit_type == "NORMAL_EXIT":
+                        normal += self.repository.v1_close_normal(
+                            path=path,event=pending.event,execution_bar=execution_bar,
+                            pending_exit_id=pending.pending_exit_id)
+                    elif pending.exit_type == "STOP_EXIT" and pending.trade is not None:
+                        stopped += self.repository.v1_close_stop(
+                            path=path,trade=pending.trade,
+                            trigger_bar_time=pending.event.source_bar_time,
+                            trigger_underlying_close=pending.trigger_underlying_close,
+                            execution_bar=execution_bar,
+                            trigger_confirmed_at=pending.event.confirmed_at,
+                            pending_exit_id=pending.pending_exit_id)
             pending_reader = getattr(self.repository, "v1_pending_entries", None)
             if pending_reader is not None:
                 pending_entries = pending_reader(policy_path_ids=tuple(path_by_policy_id))
@@ -100,6 +123,10 @@ class MinuteMaV1PaperRuntime:
                         if execution_bar is not None:
                             normal += self.repository.v1_close_normal(
                                 path=path, event=event, execution_bar=execution_bar)
+                        else:
+                            defer = getattr(self.repository, "v1_defer_normal_exit", None)
+                            if defer is not None:
+                                defer(path=path,event=event,proxy_bar_time=proxy_time)
             if points:
                 self.repository.advance_v1_cursor(
                     signal_code=signal_code, last_source_bar_time=points[-1].bar_time)
@@ -124,4 +151,11 @@ class MinuteMaV1PaperRuntime:
                         path=path, trade=trade, trigger_bar_time=point.bar_time,
                         trigger_underlying_close=close, execution_bar=execution_bar,
                         trigger_confirmed_at=point.finalized_at)
+                else:
+                    defer = getattr(self.repository, "v1_defer_stop", None)
+                    if defer is not None:
+                        defer(path=path,trade=trade,trigger_bar_time=point.bar_time,
+                              trigger_underlying_close=close,
+                              proxy_bar_time=paper_stop_execution_time(point.bar_time),
+                              trigger_confirmed_at=point.finalized_at)
         return count

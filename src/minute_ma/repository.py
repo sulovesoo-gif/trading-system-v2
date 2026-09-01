@@ -26,6 +26,17 @@ class V1PendingEntry:
     proxy_bar_time: datetime
 
 
+@dataclass(frozen=True)
+class V1PendingExit:
+    pending_exit_id: int
+    minute_policy_path_id: int
+    exit_type: str
+    event: SignalEvent
+    proxy_bar_time: datetime
+    trade: V1OpenTrade | None = None
+    trigger_underlying_close: Decimal | None = None
+
+
 class PostgresMinuteMaRepository:
     def __init__(self, pool, *, write_enabled: bool = False) -> None:
         self.pool = pool
@@ -143,6 +154,96 @@ class PostgresMinuteMaRepository:
                               bool(snapshot.get("trend_passed",True)),snapshot.get("ma",{}),
                               snapshot.get("previous_ma",{}),"KIS_H0STCNT0_REALTIME")
             pending.append(V1PendingEntry(int(row[0]),int(row[1]),event,row[5]))
+        return tuple(pending)
+
+    def v1_defer_normal_exit(self, *, path: MinuteMaPath, event: SignalEvent,
+                             proxy_bar_time: datetime) -> int:
+        """Preserve a NORMAL EXIT crossover until its execution OPEN exists."""
+        if not self.write_enabled:
+            return 0
+        import json
+        snapshot = json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values},
+                              sort_keys=True)
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_paper_pending_exit(
+              minute_policy_path_id,signal_event_key,exit_type,source_bar_time,confirmed_at,
+              proxy_bar_time,source_snapshot,pending_reason,signal_source,
+              source_bar_finalized_at,evaluated_at)
+              VALUES(%s,%s,'NORMAL_EXIT',%s,%s,%s,%s::jsonb,'EXECUTION_PROXY_MISSING',%s,%s,
+                     CURRENT_TIMESTAMP)
+              ON CONFLICT(minute_policy_path_id,signal_event_key,exit_type) DO UPDATE SET
+                last_checked_at=CURRENT_TIMESTAMP
+              RETURNING pending_exit_id""",
+              (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,
+               event.confirmed_at,proxy_bar_time,snapshot,event.signal_source,
+               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+            pending_id=int(cursor.fetchone()[0]);connection.commit();return pending_id
+
+    def v1_defer_stop(self, *, path: MinuteMaPath, trade: V1OpenTrade,
+                      trigger_bar_time: datetime, trigger_underlying_close: Decimal,
+                      proxy_bar_time: datetime,
+                      trigger_confirmed_at: datetime | None = None) -> int:
+        """Preserve the first trade-specific STOP trigger without inventing a price."""
+        if not self.write_enabled:
+            return 0
+        import json
+        key=stop_event_key(policy_path_id=int(path.minute_policy_path_id),
+                           trade_id=trade.minute_policy_paper_trade_id,
+                           trigger_bar_time=trigger_bar_time)
+        confirmed=trigger_confirmed_at or trigger_bar_time+timedelta(minutes=1,seconds=1)
+        snapshot=json.dumps({"target_trade_id":trade.minute_policy_paper_trade_id,
+                             "anchor":str(trade.underlying_entry_reference_price)},sort_keys=True)
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO minute_ma_policy_paper_pending_exit(
+              minute_policy_path_id,signal_event_key,exit_type,target_paper_trade_id,
+              source_bar_time,confirmed_at,proxy_bar_time,trigger_underlying_close,
+              source_snapshot,pending_reason,signal_source,source_bar_finalized_at,evaluated_at)
+              SELECT %s,%s,'STOP_EXIT',%s,%s,%s,%s,%s,%s::jsonb,'EXECUTION_PROXY_MISSING',
+                     'KIS_H0STCNT0_REALTIME',%s,CURRENT_TIMESTAMP
+              WHERE NOT EXISTS (
+                SELECT 1 FROM minute_ma_policy_paper_pending_exit
+                 WHERE exit_type='STOP_EXIT' AND target_paper_trade_id=%s
+                   AND pending_status='PENDING')
+              ON CONFLICT DO NOTHING
+              RETURNING pending_exit_id""",
+              (path.minute_policy_path_id,key,trade.minute_policy_paper_trade_id,
+               trigger_bar_time,confirmed,proxy_bar_time,trigger_underlying_close,snapshot,
+               confirmed,trade.minute_policy_paper_trade_id))
+            row=cursor.fetchone()
+            if row is None:
+                cursor.execute("""SELECT pending_exit_id
+                  FROM minute_ma_policy_paper_pending_exit
+                 WHERE exit_type='STOP_EXIT' AND target_paper_trade_id=%s
+                   AND pending_status='PENDING'""",(trade.minute_policy_paper_trade_id,))
+                row=cursor.fetchone()
+            connection.commit();return 0 if row is None else int(row[0])
+
+    def v1_pending_exits(self, *, policy_path_ids: tuple[int, ...]) -> tuple[V1PendingExit, ...]:
+        if not self.write_enabled or not policy_path_ids:
+            return ()
+        import json
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT x.pending_exit_id,x.minute_policy_path_id,x.exit_type,
+              x.signal_event_key,x.source_bar_time,x.confirmed_at,x.proxy_bar_time,
+              x.source_snapshot,x.trigger_underlying_close,t.minute_policy_paper_trade_id,
+              t.entry_execution_time,t.underlying_entry_reference_price
+              FROM minute_ma_policy_paper_pending_exit x
+              LEFT JOIN minute_ma_policy_paper_trade t
+                ON t.minute_policy_paper_trade_id=x.target_paper_trade_id
+              WHERE x.pending_status='PENDING' AND x.minute_policy_path_id=ANY(%s)
+              ORDER BY x.proxy_bar_time,x.pending_exit_id""",(list(policy_path_ids),))
+            rows=cursor.fetchall()
+        pending=[]
+        for row in rows:
+            snapshot=row[7] if isinstance(row[7],dict) else json.loads(row[7])
+            event=SignalEvent(0,"V1_PENDING",SignalType.EXIT,row[4],row[5],str(row[3]),True,
+                              snapshot.get("ma",{}),snapshot.get("previous_ma",{}),
+                              "KIS_H0STCNT0_REALTIME")
+            trade=None
+            if row[2]=='STOP_EXIT' and row[9] is not None:
+                trade=V1OpenTrade(int(row[9]),row[10],Decimal(row[11]))
+            pending.append(V1PendingExit(int(row[0]),int(row[1]),str(row[2]),event,row[6],
+                                         trade,Decimal(row[8]) if row[8] is not None else None))
         return tuple(pending)
 
     def snapshot_v1_telemetry(self, *, snapshot_date: date) -> int:
@@ -529,7 +630,8 @@ class PostgresMinuteMaRepository:
         return tuple(V1LiveOpenTrade(int(r[0]),int(r[1]),str(r[2]),Decimal(r[3]),r[4]) for r in rows)
 
     def v1_close_normal(self, *, path: MinuteMaPath, event: SignalEvent,
-                        execution_bar: MinuteBar) -> int:
+                        execution_bar: MinuteBar,
+                        pending_exit_id: int | None = None) -> int:
         if not self.write_enabled:
             return 0
         import json
@@ -544,7 +646,16 @@ class PostgresMinuteMaRepository:
                json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values},sort_keys=True),
                event.signal_source,event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
             if cursor.fetchone() is None:
-                connection.rollback(); return 0
+                if pending_exit_id is not None:
+                    cursor.execute("""UPDATE minute_ma_policy_paper_pending_exit
+                      SET pending_status='COMPLETED',resolved_at=CURRENT_TIMESTAMP,
+                          last_checked_at=CURRENT_TIMESTAMP
+                      WHERE pending_exit_id=%s AND pending_status='PENDING'""",
+                      (pending_exit_id,))
+                    connection.commit()
+                else:
+                    connection.rollback()
+                return 0
             cursor.execute("""SELECT minute_policy_paper_trade_id FROM minute_ma_policy_paper_trade
                WHERE minute_policy_path_id=%s AND trade_status='OPEN' AND entry_execution_time<=%s
                ORDER BY entry_execution_time,minute_policy_paper_trade_id FOR UPDATE""",
@@ -552,12 +663,19 @@ class PostgresMinuteMaRepository:
             for trade_id in ids:
                 self._settle_v1(cursor=cursor,trade_id=trade_id,signal_time=event.confirmed_at,
                                 execution_bar=execution_bar,reason="NORMAL_EXIT")
+            if pending_exit_id is not None:
+                cursor.execute("""UPDATE minute_ma_policy_paper_pending_exit
+                  SET pending_status='COMPLETED',resolved_at=CURRENT_TIMESTAMP,
+                      last_checked_at=CURRENT_TIMESTAMP
+                  WHERE pending_exit_id=%s AND pending_status='PENDING'""",
+                  (pending_exit_id,))
             connection.commit(); return len(ids)
 
     def v1_close_stop(self, *, path: MinuteMaPath, trade: V1OpenTrade,
                       trigger_bar_time: datetime, trigger_underlying_close: Decimal,
                       execution_bar: MinuteBar,
-                      trigger_confirmed_at: datetime | None = None) -> int:
+                      trigger_confirmed_at: datetime | None = None,
+                      pending_exit_id: int | None = None) -> int:
         if not self.write_enabled:
             return 0
         key=stop_event_key(policy_path_id=int(path.minute_policy_path_id),
@@ -566,6 +684,20 @@ class PostgresMinuteMaRepository:
         confirmed=trigger_confirmed_at or trigger_bar_time+timedelta(minutes=1,seconds=1)
         import json
         with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT 1 FROM minute_ma_policy_paper_trade
+              WHERE minute_policy_paper_trade_id=%s AND trade_status='OPEN' FOR UPDATE""",
+              (trade.minute_policy_paper_trade_id,))
+            if cursor.fetchone() is None:
+                if pending_exit_id is not None:
+                    cursor.execute("""UPDATE minute_ma_policy_paper_pending_exit
+                      SET pending_status='COMPLETED',resolved_at=CURRENT_TIMESTAMP,
+                          last_checked_at=CURRENT_TIMESTAMP
+                      WHERE pending_exit_id=%s AND pending_status='PENDING'""",
+                      (pending_exit_id,))
+                    connection.commit()
+                else:
+                    connection.rollback()
+                return 0
             cursor.execute("""INSERT INTO minute_ma_policy_paper_event(
               minute_policy_path_id,signal_event_key,event_type,source_bar_time,confirmed_at,
               proxy_bar_time,proxy_price,underlying_price,source_snapshot,signal_source,
@@ -577,16 +709,26 @@ class PostgresMinuteMaRepository:
                json.dumps({"target_trade_id":trade.minute_policy_paper_trade_id,
                            "anchor":str(trade.underlying_entry_reference_price)},sort_keys=True),confirmed))
             if cursor.fetchone() is None:
-                connection.rollback(); return 0
-            cursor.execute("""SELECT 1 FROM minute_ma_policy_paper_trade
-              WHERE minute_policy_paper_trade_id=%s AND trade_status='OPEN' FOR UPDATE""",
-              (trade.minute_policy_paper_trade_id,))
-            if cursor.fetchone() is None:
-                connection.rollback(); return 0
+                if pending_exit_id is not None:
+                    cursor.execute("""UPDATE minute_ma_policy_paper_pending_exit
+                      SET pending_status='COMPLETED',resolved_at=CURRENT_TIMESTAMP,
+                          last_checked_at=CURRENT_TIMESTAMP
+                      WHERE pending_exit_id=%s AND pending_status='PENDING'""",
+                      (pending_exit_id,))
+                    connection.commit()
+                else:
+                    connection.rollback()
+                return 0
             self._settle_v1(cursor=cursor,trade_id=trade.minute_policy_paper_trade_id,
                             signal_time=confirmed,execution_bar=execution_bar,reason="STOP_EXIT",
                             stop_trigger_time=trigger_bar_time,
                             stop_trigger_underlying_close=trigger_underlying_close)
+            if pending_exit_id is not None:
+                cursor.execute("""UPDATE minute_ma_policy_paper_pending_exit
+                  SET pending_status='COMPLETED',resolved_at=CURRENT_TIMESTAMP,
+                      last_checked_at=CURRENT_TIMESTAMP
+                  WHERE pending_exit_id=%s AND pending_status='PENDING'""",
+                  (pending_exit_id,))
             connection.commit(); return 1
 
     @staticmethod
