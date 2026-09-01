@@ -29,6 +29,7 @@ SYMBOLS = ("005930", "000660")
 WINDOW_START = wall_time(15, 0)
 WINDOW_END = wall_time(15, 30)
 CADENCE_SECONDS = 5
+INTER_REQUEST_SECONDS = 0.1
 
 
 def _now() -> datetime:
@@ -99,7 +100,11 @@ def run(*, output: Path, once: bool, allow_outside_window: bool) -> int:
         if allow_outside_window or _in_window(observed_at):
             bucket = _bucket_start(observed_at).isoformat()
             if bucket not in captured_buckets:
-                rows = [_capture(client, stock_code, observed_at) for stock_code in SYMBOLS]
+                rows = []
+                for index, stock_code in enumerate(SYMBOLS):
+                    rows.append(_capture(client, stock_code, observed_at))
+                    if index + 1 < len(SYMBOLS):
+                        time.sleep(INTER_REQUEST_SECONDS)
                 _append_jsonl(output, rows)
                 captured_buckets.add(bucket)
                 print(f"REST shadow bucket={bucket} rows={len(rows)} output={output}", flush=True)
