@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.flow_raw.collector import FlowRawCollector
@@ -45,6 +45,27 @@ class FlowContractTest(unittest.TestCase):
         self.assertEqual(program.values["NTBY_TR_PBMN"], "-12345")
         self.assertEqual(orderbook.values["ASKP10"], "80000")
         self.assertEqual(orderbook.values["BIDP10"], "70000")
+
+    def test_naive_kst_received_date_is_not_advanced_after_1500(self):
+        program = split_wire_frame(frame(TR_PROGRAM, PROGRAM_FIELDS, [{
+            "MKSC_SHRN_ISCD": "000660", "STCK_CNTG_HOUR": "150004",
+        }]))[0]
+        orderbook = split_wire_frame(frame(TR_ORDERBOOK, ORDERBOOK_FIELDS, [{
+            "MKSC_SHRN_ISCD": "005930", "BSOP_HOUR": "152955",
+        }]))[0]
+        received = datetime(2026, 8, 31, 15, 0, 4)
+        self.assertEqual(source_datetime(program, received_at=received),
+                         datetime(2026, 8, 31, 15, 0, 4))
+        self.assertEqual(source_datetime(orderbook, received_at=received),
+                         datetime(2026, 8, 31, 15, 29, 55))
+
+    def test_aware_received_time_is_converted_to_kst_date(self):
+        program = split_wire_frame(frame(TR_PROGRAM, PROGRAM_FIELDS, [{
+            "MKSC_SHRN_ISCD": "000660", "STCK_CNTG_HOUR": "000004",
+        }]))[0]
+        received_utc = datetime(2026, 8, 31, 15, 0, 4, tzinfo=timezone.utc)
+        self.assertEqual(source_datetime(program, received_at=received_utc),
+                         datetime(2026, 9, 1, 0, 0, 4))
 
     def test_gateway_62_field_orderbook_keeps_official_core_and_trailing_values(self):
         orderbook = split_wire_frame(frame(TR_ORDERBOOK, ORDERBOOK_GATEWAY_62_FIELDS, [{

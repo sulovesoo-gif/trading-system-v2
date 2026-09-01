@@ -122,7 +122,16 @@ def source_datetime(event: WireEvent, *, received_at: datetime) -> datetime:
     values = event.values
     hhmmss = values["STCK_CNTG_HOUR"] if event.tr_id != TR_ORDERBOOK else values["BSOP_HOUR"]
     business = values.get("BSOP_DATE")
-    source_date = datetime.strptime(business, "%Y%m%d").date() if business else received_at.astimezone(KST).date()
+    # The operating collector clock is already a naive KST wall-clock.  Calling
+    # astimezone(KST) on that value makes Python interpret it in the host's UTC
+    # timezone first, which advances the business date after 15:00 KST.  Only
+    # timezone-aware inputs require conversion; naive inputs retain their KST
+    # calendar date exactly as received.
+    received_kst_date = (
+        received_at.date() if received_at.tzinfo is None
+        else received_at.astimezone(KST).date()
+    )
+    source_date = datetime.strptime(business, "%Y%m%d").date() if business else received_kst_date
     parsed_time = datetime.strptime(hhmmss[:6], "%H%M%S").time()
     return datetime.combine(source_date, parsed_time)
 
