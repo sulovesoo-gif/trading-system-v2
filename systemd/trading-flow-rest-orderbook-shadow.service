@@ -1,0 +1,15 @@
+[Unit]
+Description=Trading V2 FLOW REST orderbook shadow evidence (15:00-15:30 KST)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/trading-system-v2
+EnvironmentFile=/home/ubuntu/projects/trading-system-v2/.env
+Environment=PYTHONPATH=/home/ubuntu/projects/trading-system-v2
+ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/observation/run_flow_rest_orderbook_shadow.py --output /home/ubuntu/projects/trading-system-v2/var/flow-rest-orderbook-shadow.jsonl
+TimeoutStartSec=1900
+NoNewPrivileges=true
+PrivateTmp=true
+
