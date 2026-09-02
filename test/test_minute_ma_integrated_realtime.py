@@ -66,6 +66,8 @@ class MinuteMaIntegratedRealtimeTest(unittest.TestCase):
         migration=Path('database/migrations/20260902_minute_ma_integrated_realtime_additive.sql').read_text(encoding='utf-8')
         self.assertIn("CHECK (trading_venue='INTEGRATED')",migration)
         self.assertIn("CHECK (tr_id='H0UNCNT0')",migration)
+        self.assertIn('volume BIGINT,',migration)
+        self.assertNotIn('    volume BIGINT NOT NULL,',migration.splitlines())
         self.assertNotIn('ALTER TABLE flow_realtime_minute_bar',migration)
 
 

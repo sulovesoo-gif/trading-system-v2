@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS minute_ma_integrated_realtime_minute_bar (
     high_price BIGINT NOT NULL,
     low_price BIGINT NOT NULL,
     close_price BIGINT NOT NULL,
-    volume BIGINT NOT NULL,
+    volume BIGINT,
     execution_volume_sum BIGINT,
     first_accumulated_volume BIGINT,
     last_accumulated_volume BIGINT,
