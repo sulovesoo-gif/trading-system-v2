@@ -20,7 +20,7 @@ from src.repository.database import DatabaseSettings, create_connection_pool
 def main() -> int:
     load_dotenv(ROOT / ".env")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    pool = create_connection_pool(DatabaseSettings.from_environment(), min_size=1, max_size=3)
+    pool = create_connection_pool(DatabaseSettings.from_environment())
     try:
         asyncio.run(collector_from_environment(
             MinuteMaIntegratedRealtimeRepository(pool)).run_forever())

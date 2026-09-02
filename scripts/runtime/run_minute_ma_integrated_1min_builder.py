@@ -30,7 +30,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     grace_ms = max(0, int(os.getenv("MINUTE_MA_INTEGRATED_FINALIZE_GRACE_MS", "2000")))
     poll_ms = max(50, int(os.getenv("MINUTE_MA_INTEGRATED_POLL_MS", "250")))
-    pool = create_connection_pool(DatabaseSettings.from_environment(), min_size=1, max_size=3)
+    pool = create_connection_pool(DatabaseSettings.from_environment())
     repository = MinuteMaIntegratedRealtimeRepository(pool)
     try:
         inserted = repository.run_startup_backlog(
