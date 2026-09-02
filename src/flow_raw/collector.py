@@ -106,6 +106,7 @@ class FlowRawCollector:
                 approval = await asyncio.to_thread(self.approval_provider)
                 async with websockets.connect(self.ws_url, ping_interval=None, close_timeout=5) as socket:
                     self._sequence = 0
+                    deferred_frames: deque[tuple[datetime, str]] = deque()
                     self.repository.open_connection(
                         connection_id=connection_id, collector_instance_id=self.instance_id,
                         connected_at=connected_at, reconnect_flag=reconnect, subscriptions=self.subscriptions,
@@ -122,14 +123,18 @@ class FlowRawCollector:
                             "header": {"approval_key": approval, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
                             "body": {"input": subscription},
                         }))
-                        acknowledgement = await asyncio.wait_for(socket.recv(), timeout=3.0)
-                        if isinstance(acknowledgement, bytes):
-                            acknowledgement = acknowledgement.decode("utf-8")
-                        if not acknowledgement.startswith("{"):
-                            raise FlowCollectorError(
-                                f"KIS subscription acknowledgement is not JSON for {subscription['tr_id']}"
-                            )
-                        ack_payload = json.loads(acknowledgement)
+                        while True:
+                            acknowledgement = await asyncio.wait_for(socket.recv(), timeout=3.0)
+                            if isinstance(acknowledgement, bytes):
+                                acknowledgement = acknowledgement.decode("utf-8")
+                            if not acknowledgement.startswith("{"):
+                                deferred_frames.append((self.now(), acknowledgement))
+                                continue
+                            ack_payload = json.loads(acknowledgement)
+                            if ack_payload.get("header", {}).get("tr_id") == "PINGPONG":
+                                await socket.send(acknowledgement)
+                                continue
+                            break
                         safe_ack = self._safe_ack(ack_payload)
                         LOGGER.info("FLOW subscription response=%s", safe_ack)
                         if str(safe_ack.get("rt_cd")) != "0":
@@ -145,11 +150,14 @@ class FlowRawCollector:
                     first_data = True
                     integrated_first_data = True
                     while True:
-                        try:
-                            frame = await asyncio.wait_for(socket.recv(), timeout=1.0)
-                        except asyncio.TimeoutError:
-                            continue
-                        received_at = self.now()
+                        if deferred_frames:
+                            received_at,frame = deferred_frames.popleft()
+                        else:
+                            try:
+                                frame = await asyncio.wait_for(socket.recv(), timeout=1.0)
+                            except asyncio.TimeoutError:
+                                continue
+                            received_at = self.now()
                         if isinstance(frame, bytes):
                             frame = frame.decode("utf-8")
                         if frame.startswith("{"):
