@@ -27,12 +27,13 @@ class CompletedMinuteRawCollector:
     def run_cycle(self, *, now: datetime) -> dict[str, object]:
         target_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
         results: dict[str, object] = {}
+        stock_codes = self.source_registry.stock_codes()
         # Do not call the intraday API outside a persisted regular-session
         # minute.  This prevents KIS's post-close last-price response from
         # becoming a sequence of synthetic completed bars.
         if not is_regular_completed_minute(trading_venue=self.venue, bar_time=target_time):
-            return {stock_code: "OUTSIDE_REGULAR_SESSION" for stock_code in self.source_registry.stock_codes()}
-        for stock_code in self.source_registry.stock_codes():
+            return {stock_code: "OUTSIDE_REGULAR_SESSION" for stock_code in stock_codes}
+        for stock_code in stock_codes:
             rows = self.collector.collect(
                 stock_code=stock_code,
                 market_code="KOSPI",

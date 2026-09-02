@@ -133,7 +133,7 @@ class PostgresMinuteMaRepository:
               RETURNING pending_entry_id""",
               (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,
                event.confirmed_at,proxy_bar_time,snapshot,pending_reason,event.signal_source,
-               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+               event.confirmed_at if event.signal_source.startswith('KIS_H0') else None))
             pending_id=int(cursor.fetchone()[0]);connection.commit();return pending_id
 
     def v1_pending_entries(self, *, policy_path_ids: tuple[int, ...]) -> tuple[V1PendingEntry, ...]:
@@ -142,7 +142,7 @@ class PostgresMinuteMaRepository:
         import json
         with self.pool.connection() as connection, connection.cursor() as cursor:
             cursor.execute("""SELECT pending_entry_id,minute_policy_path_id,signal_event_key,
-              source_bar_time,confirmed_at,proxy_bar_time,source_snapshot
+              source_bar_time,confirmed_at,proxy_bar_time,source_snapshot,signal_source
               FROM minute_ma_policy_paper_pending_entry
               WHERE pending_status='PENDING' AND minute_policy_path_id=ANY(%s)
               ORDER BY proxy_bar_time,pending_entry_id""", (list(policy_path_ids),))
@@ -152,7 +152,7 @@ class PostgresMinuteMaRepository:
             snapshot=row[6] if isinstance(row[6],dict) else json.loads(row[6])
             event=SignalEvent(0,"V1_PENDING",SignalType.ENTRY,row[3],row[4],str(row[2]),
                               bool(snapshot.get("trend_passed",True)),snapshot.get("ma",{}),
-                              snapshot.get("previous_ma",{}),"KIS_H0STCNT0_REALTIME")
+                              snapshot.get("previous_ma",{}),str(row[7]))
             pending.append(V1PendingEntry(int(row[0]),int(row[1]),event,row[5]))
         return tuple(pending)
 
@@ -176,7 +176,7 @@ class PostgresMinuteMaRepository:
               RETURNING pending_exit_id""",
               (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,
                event.confirmed_at,proxy_bar_time,snapshot,event.signal_source,
-               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+               event.confirmed_at if event.signal_source.startswith('KIS_H0') else None))
             pending_id=int(cursor.fetchone()[0]);connection.commit();return pending_id
 
     def v1_defer_stop(self, *, path: MinuteMaPath, trade: V1OpenTrade,
@@ -226,7 +226,7 @@ class PostgresMinuteMaRepository:
             cursor.execute("""SELECT x.pending_exit_id,x.minute_policy_path_id,x.exit_type,
               x.signal_event_key,x.source_bar_time,x.confirmed_at,x.proxy_bar_time,
               x.source_snapshot,x.trigger_underlying_close,t.minute_policy_paper_trade_id,
-              t.entry_execution_time,t.underlying_entry_reference_price
+              t.entry_execution_time,t.underlying_entry_reference_price,x.signal_source
               FROM minute_ma_policy_paper_pending_exit x
               LEFT JOIN minute_ma_policy_paper_trade t
                 ON t.minute_policy_paper_trade_id=x.target_paper_trade_id
@@ -238,7 +238,7 @@ class PostgresMinuteMaRepository:
             snapshot=row[7] if isinstance(row[7],dict) else json.loads(row[7])
             event=SignalEvent(0,"V1_PENDING",SignalType.EXIT,row[4],row[5],str(row[3]),True,
                               snapshot.get("ma",{}),snapshot.get("previous_ma",{}),
-                              "KIS_H0STCNT0_REALTIME")
+                              str(row[12]))
             trade=None
             if row[2]=='STOP_EXIT' and row[9] is not None:
                 trade=V1OpenTrade(int(row[9]),row[10],Decimal(row[11]))
@@ -329,16 +329,16 @@ class PostgresMinuteMaRepository:
         return tuple(MinuteBar(r[0],float(r[1]),float(r[2]),float(r[3]),float(r[4]),int(r[5] or 0)) for r in rows)
 
     def v1_source_bars(self, *, stock_code: str, trading_date: date) -> tuple[MinuteBar, ...]:
-        """Realtime-authoritative V1 stream with pre-cutover REST history only."""
+        """INTEGRATED-only V1 signal stream: REST warm-up then H0UNCNT0 realtime."""
         day_start=datetime.combine(trading_date,time.min);day_end=day_start+timedelta(days=1)
         sql="""WITH cutover AS (
-          SELECT min(bar_time) AS at FROM flow_realtime_minute_bar WHERE stock_code=%s
+          SELECT min(bar_time) AS at FROM minute_ma_integrated_realtime_minute_bar WHERE stock_code=%s
         ), rest_dedup AS (
           SELECT DISTINCT ON (r.bar_time) r.bar_time,r.open_price,r.high_price,r.low_price,r.close_price,r.volume
           FROM raw_stock_minute r CROSS JOIN cutover c
           WHERE c.at IS NOT NULL AND r.stock_code=%s AND r.data_source='KIS'
-            AND r.trading_venue='KRX' AND r.collect_cycle='1MIN' AND r.bar_time<c.at
-            AND r.bar_time::time BETWEEN TIME '09:00' AND TIME '15:30'
+            AND r.trading_venue='INTEGRATED' AND r.collect_cycle='1MIN' AND r.bar_time<c.at
+            AND r.bar_time::time BETWEEN TIME '08:00' AND TIME '20:00'
           ORDER BY r.bar_time,r.collected_at DESC
         ), all_bars AS (
           SELECT r.bar_time,r.open_price,r.high_price,r.low_price,r.close_price,r.volume,
@@ -350,8 +350,8 @@ class PostgresMinuteMaRepository:
                  (w.quality_status<>'INCOMPLETE' AND NOT w.source_gap_flag AND NOT w.reconnect_flag
                   AND NOT w.event_time_regression_flag AND NOT w.ordering_invariant_failure
                   AND NOT w.accumulated_volume_regression),
-                 'KIS_H0STCNT0_REALTIME'::text
-          FROM flow_realtime_minute_bar w WHERE w.stock_code=%s
+                 'KIS_H0UNCNT0_INTEGRATED'::text
+          FROM minute_ma_integrated_realtime_minute_bar w WHERE w.stock_code=%s
         ), prior AS (
           SELECT * FROM all_bars WHERE bar_time<%s ORDER BY bar_time DESC LIMIT 50
         ), current_day AS (
@@ -579,7 +579,7 @@ class PostgresMinuteMaRepository:
               (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
                underlying_entry_reference_price,snapshot,event.signal_source,
-               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+               event.confirmed_at if event.signal_source.startswith('KIS_H0') else None))
             if cursor.fetchone() is None:
                 if pending_entry_id is not None:
                     cursor.execute("""UPDATE minute_ma_policy_paper_pending_entry
@@ -644,7 +644,7 @@ class PostgresMinuteMaRepository:
               (path.minute_policy_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
                json.dumps({"ma":event.ma_values,"previous_ma":event.previous_ma_values},sort_keys=True),
-               event.signal_source,event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+               event.signal_source,event.confirmed_at if event.signal_source.startswith('KIS_H0') else None))
             if cursor.fetchone() is None:
                 if pending_exit_id is not None:
                     cursor.execute("""UPDATE minute_ma_policy_paper_pending_exit

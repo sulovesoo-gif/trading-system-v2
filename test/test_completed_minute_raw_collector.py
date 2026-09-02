@@ -56,3 +56,12 @@ class CompletedMinuteRawCollectorTest(unittest.TestCase):
         ).run_cycle(now=datetime(2026, 8, 19, 15, 31, 1))
         self.assertEqual(result["005930"].inserted_count, 1)
         self.assertEqual(len(collector.calls), 1)
+
+    def test_all_registry_symbols_are_always_requested_as_krx(self):
+        codes=("000660","005930","0193T0","0197X0","0193W0","0193L0")
+        now=datetime(2026,8,19,10,1,1);target=datetime(2026,8,19,10,0)
+        collector=Collector({code:[row(target)] for code in codes})
+        CompletedMinuteRawCollector(collector=collector,repository=Repository(),
+                                    source_registry=Sources(codes)).run_cycle(now=now)
+        self.assertEqual(len(collector.calls),6)
+        self.assertEqual({call["trading_venue"] for call in collector.calls},{"KRX"})

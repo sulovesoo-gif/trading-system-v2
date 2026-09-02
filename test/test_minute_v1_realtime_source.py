@@ -21,16 +21,16 @@ def path():
 class MinuteV1RealtimeSourceTest(unittest.TestCase):
     def test_finalized_at_is_official_confirmation_time(self):
         finalized=BASE+timedelta(minutes=1,milliseconds=247)
-        point=PreparedMaPoint(BASE,{3:101,5:100},{3:99,5:100},100,finalized,'KIS_H0STCNT0_REALTIME')
+        point=PreparedMaPoint(BASE,{3:101,5:100},{3:99,5:100},100,finalized,'KIS_H0UNCNT0_INTEGRATED')
         events=MinuteMaSignalEngine().evaluate_prepared(path=path(),points=(point,))
         self.assertEqual((len(events),events[0].confirmed_at,events[0].signal_source),
-                         (1,finalized,'KIS_H0STCNT0_REALTIME'))
+                         (1,finalized,'KIS_H0UNCNT0_INTEGRATED'))
 
     def test_ineligible_bar_cannot_emit_or_bridge_crossover(self):
         bars=[MinuteBar(BASE+timedelta(minutes=i),100,100,100,100) for i in range(5)]
         bars.append(MinuteBar(BASE+timedelta(minutes=5),110,110,110,110,
                               finalized_at=BASE+timedelta(minutes=6),signal_eligible=False,
-                              source_name='KIS_H0STCNT0_REALTIME'))
+                              source_name='KIS_H0UNCNT0_INTEGRATED'))
         points=MinuteMaSignalEngine().prepare(path=path(),bars=bars)
         self.assertNotIn(BASE+timedelta(minutes=5),{point.bar_time for point in points})
 
@@ -54,9 +54,27 @@ class MinuteV1RealtimeSourceTest(unittest.TestCase):
         self.assertIn('flow_realtime_minute_bar',method)
         self.assertNotIn('raw_stock_minute',method)
 
-    def test_dispatcher_wakes_only_for_krx_signal_session(self):
+    def test_dispatcher_wakes_only_for_integrated_signal_bars(self):
         source=Path('src/minute_ma/realtime_dispatch.py').read_text(encoding='utf-8')
-        self.assertIn("bar_time::time BETWEEN TIME '09:00' AND TIME '15:30'",source)
+        self.assertIn('minute_ma_integrated_realtime_minute_bar',source)
+        self.assertNotIn('FROM flow_realtime_minute_bar b',source)
+
+    def test_signal_warmup_and_realtime_are_both_integrated(self):
+        source=Path('src/minute_ma/repository.py').read_text(encoding='utf-8')
+        method=source.split('def v1_source_bars',1)[1].split('def v1_realtime_bar',1)[0]
+        self.assertIn("trading_venue='INTEGRATED'",method)
+        self.assertIn('minute_ma_integrated_realtime_minute_bar',method)
+        self.assertNotIn("trading_venue='KRX'",method)
+
+    def test_stop_uses_integrated_signal_point_and_paper_proxy_remains_krx(self):
+        source=Path('src/minute_ma/repository.py').read_text(encoding='utf-8')
+        proxy=source.split('def v1_realtime_bar',1)[1].split('def execution_bar',1)[0]
+        self.assertNotIn('def v1_stop_bars',source)
+        self.assertIn('flow_realtime_minute_bar',proxy)
+        for filename in ('src/minute_ma/v1_runtime.py','src/minute_ma/v1_live_runtime.py',
+                         'src/minute_ma/v1_live_nosend.py'):
+            runtime=Path(filename).read_text(encoding='utf-8')
+            self.assertNotIn('v1_stop_bars',runtime)
 
     def test_dispatcher_bootstraps_without_replay(self):
         watermark=DispatchWatermark(BASE,BASE-timedelta(minutes=1),'005930')

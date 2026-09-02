@@ -64,7 +64,7 @@ class PostgresMinuteMaLivePlanner:
               (event_id,path.minute_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                json.dumps({'ma':event.ma_values,'previous_ma':event.previous_ma_values,'trend_passed':event.trend_passed}),
                policy_path_id,event.signal_source,
-               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+               event.confirmed_at if event.signal_source.startswith('KIS_H0') else None))
             strategy=(f'MINUTE_MA_V1_POLICY:{policy_path_id}:EPOCH:{epoch}' if policy_path_id is not None
                       else f'MINUTE_MA_PATH:{path.minute_path_id}:EPOCH:{epoch}')
             request_key=digest('MINUTE_MA_V01|REQUEST|'+key+'|BUY')
@@ -100,7 +100,7 @@ class PostgresMinuteMaLivePlanner:
               (event_id,path.minute_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                json.dumps({'ma':event.ma_values,'previous_ma':event.previous_ma_values,'trend_passed':event.trend_passed}),
                policy_path_id,exit_reason,event.signal_source,
-               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+               event.confirmed_at if event.signal_source.startswith('KIS_H0') else None))
             q.execute("""SELECT t.minute_live_trade_id,t.ownership_id,t.capital_at_signal,t.capital_epoch_no,
               t.minute_policy_operation_id,
               COALESCE(lp.quantity,0) FROM minute_ma_live_trade t LEFT JOIN execution_logical_position lp
@@ -126,7 +126,7 @@ class PostgresMinuteMaLivePlanner:
               (event_id,path.minute_path_id,event.signal_event_key,event.source_bar_time,event.confirmed_at,
                json.dumps({'target_minute_live_trade_id':minute_live_trade_id}),
                getattr(path,'minute_policy_path_id',None),exit_reason,event.signal_source,
-               event.confirmed_at if event.signal_source=='KIS_H0STCNT0_REALTIME' else None))
+               event.confirmed_at if event.signal_source.startswith('KIS_H0') else None))
             q.execute("""SELECT t.minute_live_trade_id,t.ownership_id,t.capital_at_signal,t.capital_epoch_no,
               t.minute_policy_operation_id,
               COALESCE(lp.quantity,0) FROM minute_ma_live_trade t LEFT JOIN execution_logical_position lp

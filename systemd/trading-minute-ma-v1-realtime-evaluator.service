@@ -1,6 +1,6 @@
 [Unit]
 Description=Trading V2 Minute MA V1 realtime finalized-bar evaluator
-After=network-online.target trading-minute-realtime-1min-builder.service trading-execution-reconciliation.service
+After=network-online.target trading-minute-realtime-1min-builder.service trading-minute-ma-integrated-1min-builder.service trading-execution-reconciliation.service
 Wants=network-online.target
 
 [Service]

@@ -19,7 +19,7 @@ from src.collector.raw.converters import kst_now
 from src.collector.raw.domestic_stock.stock_minute_collector import StockMinuteCollector
 from src.collector.raw.kis_client import KISClient
 from src.collector.runtime.completed_minute_raw_collector import CompletedMinuteRawCollector
-from src.forward.source_registry import ForwardSourceRegistry
+from src.collector.runtime.minute_raw_source_registry import MinuteRawSourceRegistry
 from src.repository.database import DatabaseSettings, create_connection_pool
 from src.repository.raw_repository import RawRepository
 
@@ -34,7 +34,7 @@ def main() -> int:
     try:
         runtime = CompletedMinuteRawCollector(
             collector=StockMinuteCollector(KISClient()), repository=RawRepository(pool),
-            source_registry=ForwardSourceRegistry(pool),
+            source_registry=MinuteRawSourceRegistry(pool),
         )
         while True:
             result = runtime.run_cycle(now=kst_now())

@@ -89,7 +89,7 @@ class MinuteMaV1PaperRuntime:
                     if event.source_bar_time.date() == trading_date:
                         events_by_time[event.source_bar_time].append((path,event))
             for point in points:
-                # A completed underlying close can stop each independently owned trade.
+                # MA, ENTRY, NORMAL EXIT, and STOP share one INTEGRATED source point.
                 stopped += self._apply_stops(group, point)
                 events = sorted(events_by_time.get(point.bar_time,()),
                                 key=lambda item: 0 if item[1].signal_type is SignalType.EXIT else 1)
