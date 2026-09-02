@@ -4,7 +4,6 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from src.minute_ma.integrated_realtime_collector import MinuteMaIntegratedExecutionCollector
 from src.minute_ma.integrated_realtime_contracts import (
     INTEGRATED_EXECUTION_FIELDS, IntegratedRealtimeContractError,
     integrated_source_datetime, split_integrated_execution_frame,
@@ -36,15 +35,6 @@ class MinuteMaIntegratedRealtimeTest(unittest.TestCase):
     def test_wrong_width_fails_closed(self):
         with self.assertRaises(IntegratedRealtimeContractError):
             split_integrated_execution_frame("0|H0UNCNT0|1|005930^090001")
-
-    def test_only_two_integrated_execution_subscriptions(self):
-        class Repo: pass
-        collector=MinuteMaIntegratedExecutionCollector(
-            Repo(),ws_url="ws://example",approval_provider=lambda:"x")
-        self.assertEqual(collector.subscriptions,[
-            {"tr_id":"H0UNCNT0","tr_key":"005930"},
-            {"tr_id":"H0UNCNT0","tr_key":"000660"},
-        ])
 
     def test_integrated_ticks_build_a_completed_minute(self):
         connected=datetime(2026,9,2,8,59,50)

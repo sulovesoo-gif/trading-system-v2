@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.flow_raw.collector import FlowRawCollector
+from src.minute_ma.integrated_realtime_contracts import TR_INTEGRATED_EXECUTION
 from src.flow_raw.contracts import (
     EXECUTION_FIELDS, ORDERBOOK_FIELDS, ORDERBOOK_GATEWAY_62_FIELDS, PROGRAM_FIELDS, TR_EXECUTION, TR_ORDERBOOK,
     TR_PROGRAM, FlowContractError, five_second_bucket, source_datetime, split_wire_frame,
@@ -97,16 +98,21 @@ class FlowContractTest(unittest.TestCase):
                          datetime(2026, 8, 31, 9, 15, 5))
 
     def test_duplicate_identity_and_exact_subscription_scope(self):
-        collector = FlowRawCollector(object(), ws_url="ws://example", approval_provider=lambda: "x")
+        collector = FlowRawCollector(object(), integrated_repository=object(),
+                                     ws_url="ws://example", approval_provider=lambda: "x")
         identity = (TR_EXECUTION, "005930", "hash")
         self.assertFalse(collector._remember_hash(identity))
         self.assertTrue(collector._remember_hash(identity))
         self.assertEqual({item["tr_key"] for item in collector.subscriptions},
                          {"005930", "000660", "0193W0", "0193T0", "0193L0", "0197X0"})
-        self.assertEqual({item["tr_id"] for item in collector.subscriptions}, {TR_EXECUTION, TR_PROGRAM, TR_ORDERBOOK})
-        self.assertEqual(len(collector.subscriptions), 10)
+        self.assertEqual({item["tr_id"] for item in collector.subscriptions},
+                         {TR_EXECUTION, TR_PROGRAM, TR_ORDERBOOK,TR_INTEGRATED_EXECUTION})
+        self.assertEqual(len(collector.subscriptions), 12)
         self.assertEqual(sum(item["tr_id"] == TR_EXECUTION for item in collector.subscriptions), 6)
-        self.assertEqual(sum(item["tr_id"] != TR_EXECUTION for item in collector.subscriptions), 4)
+        self.assertEqual(sum(item["tr_id"] in {TR_PROGRAM,TR_ORDERBOOK}
+                             for item in collector.subscriptions),4)
+        self.assertEqual(sum(item["tr_id"] == TR_INTEGRATED_EXECUTION
+                             for item in collector.subscriptions),2)
 
     def test_l0_collector_has_no_l1_rebuild_call(self):
         source = Path("src/flow_raw/collector.py").read_text(encoding="utf-8")

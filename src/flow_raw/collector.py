@@ -15,6 +15,10 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .contracts import SUPPORTED_TR_IDS, TR_EXECUTION, TR_ORDERBOOK, TR_PROGRAM, FlowContractError, source_datetime, split_wire_frame
+from src.minute_ma.integrated_realtime_contracts import (
+    INTEGRATED_SIGNAL_CODES, TR_INTEGRATED_EXECUTION, IntegratedRealtimeContractError,
+    integrated_source_datetime, split_integrated_execution_frame,
+)
 
 KST = ZoneInfo("Asia/Seoul")
 LOGGER = logging.getLogger(__name__)
@@ -46,9 +50,11 @@ class FlowRawCollector:
     REALTIME_MINUTE_SYMBOLS = ("005930", "000660", "0193W0", "0193T0", "0193L0", "0197X0")
     SYMBOLS = REALTIME_MINUTE_SYMBOLS
 
-    def __init__(self, repository, *, ws_url: str, approval_provider: Callable[[], str],
+    def __init__(self, repository, *, integrated_repository=None,
+                 ws_url: str, approval_provider: Callable[[], str],
                  now_provider: Callable[[], datetime] | None = None) -> None:
         self.repository = repository
+        self.integrated_repository = integrated_repository
         self.ws_url = ws_url
         self.approval_provider = approval_provider
         self.now = now_provider or (lambda: datetime.now(KST).replace(tzinfo=None))
@@ -67,7 +73,10 @@ class FlowRawCollector:
             for symbol in self.FLOW_SYMBOLS
             for tr_id in (TR_PROGRAM, TR_ORDERBOOK)
         ]
-        return execution + flow
+        integrated = ([{"tr_id": TR_INTEGRATED_EXECUTION, "tr_key": symbol}
+                       for symbol in INTEGRATED_SIGNAL_CODES]
+                      if self.integrated_repository is not None else [])
+        return execution + flow + integrated
 
     def _remember_hash(self, identity: tuple[str, str, str]) -> bool:
         duplicate = identity in self._hashes
@@ -84,6 +93,10 @@ class FlowRawCollector:
         recent = self.repository.recent_hashes(since=self.now() - timedelta(minutes=10))
         for identity in recent:
             self._remember_hash(identity)
+        if self.integrated_repository is not None:
+            for identity in self.integrated_repository.recent_hashes(
+                    since=self.now() - timedelta(minutes=10)):
+                self._remember_hash(identity)
         backoff = 1
         while True:
             connection_id = uuid4()
@@ -97,6 +110,13 @@ class FlowRawCollector:
                         connection_id=connection_id, collector_instance_id=self.instance_id,
                         connected_at=connected_at, reconnect_flag=reconnect, subscriptions=self.subscriptions,
                     )
+                    if self.integrated_repository is not None:
+                        self.integrated_repository.open_connection(
+                            connection_id=connection_id, collector_instance_id=self.instance_id,
+                            connected_at=connected_at, reconnect_flag=reconnect,
+                            subscriptions=[item for item in self.subscriptions
+                                           if item["tr_id"] == TR_INTEGRATED_EXECUTION],
+                        )
                     for subscription in self.subscriptions:
                         await socket.send(json.dumps({
                             "header": {"approval_key": approval, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
@@ -123,6 +143,7 @@ class FlowRawCollector:
                     LOGGER.info("FLOW websocket connected connection_id=%s subscriptions=%d", connection_id, len(self.subscriptions))
                     backoff = 1
                     first_data = True
+                    integrated_first_data = True
                     while True:
                         try:
                             frame = await asyncio.wait_for(socket.recv(), timeout=1.0)
@@ -139,13 +160,34 @@ class FlowRawCollector:
                                 LOGGER.info("FLOW subscription response=%s", self._safe_ack(message))
                             continue
                         self._sequence += 1
+                        tr_id = frame.split("|", 3)[1] if "|" in frame else ""
                         try:
-                            events = split_wire_frame(frame)
-                        except FlowContractError as error:
+                            events = (split_integrated_execution_frame(frame)
+                                      if tr_id == TR_INTEGRATED_EXECUTION else split_wire_frame(frame))
+                        except (FlowContractError, IntegratedRealtimeContractError) as error:
                             LOGGER.error("FLOW invalid frame sequence=%d error=%s", self._sequence, error)
                             continue
                         for event in events:
                             symbol = event.values.get("MKSC_SHRN_ISCD", "")
+                            if tr_id == TR_INTEGRATED_EXECUTION:
+                                if self.integrated_repository is None or symbol not in INTEGRATED_SIGNAL_CODES:
+                                    continue
+                                event_time = integrated_source_datetime(event, received_at=received_at)
+                                stream = (TR_INTEGRATED_EXECUTION, symbol)
+                                previous = self._last_event_time.get(stream)
+                                regression = previous is not None and event_time < previous
+                                self._last_event_time[stream] = max(previous, event_time) if previous else event_time
+                                identity = (TR_INTEGRATED_EXECUTION, symbol, event.payload_hash)
+                                duplicate = self._remember_hash(identity)
+                                self.integrated_repository.save_event(
+                                    event, received_at=received_at, connection_id=connection_id,
+                                    collector_instance_id=self.instance_id, receive_sequence=self._sequence,
+                                    reconnect_flag=reconnect and integrated_first_data,
+                                    source_gap_flag=False,event_time_regression_flag=regression,
+                                    duplicate_flag=duplicate,
+                                )
+                                integrated_first_data = False
+                                continue
                             if symbol not in self.SYMBOLS or event.tr_id not in SUPPORTED_TR_IDS:
                                 continue
                             event_time = source_datetime(event, received_at=received_at)
@@ -168,11 +210,19 @@ class FlowRawCollector:
             except asyncio.CancelledError:
                 self.repository.close_connection(connection_id, disconnected_at=self.now(), status="DISCONNECTED",
                                                  reason="graceful shutdown", last_sequence=self._sequence)
+                if self.integrated_repository is not None:
+                    self.integrated_repository.close_connection(
+                        connection_id,disconnected_at=self.now(),status="DISCONNECTED",
+                        reason="graceful shutdown",last_sequence=self._sequence)
                 raise
             except Exception as error:
                 try:
                     self.repository.close_connection(connection_id, disconnected_at=self.now(), status="FAILED",
                                                      reason=f"{type(error).__name__}: {error}", last_sequence=self._sequence)
+                    if self.integrated_repository is not None:
+                        self.integrated_repository.close_connection(
+                            connection_id,disconnected_at=self.now(),status="FAILED",
+                            reason=f"{type(error).__name__}: {error}",last_sequence=self._sequence)
                 except Exception:
                     LOGGER.exception("FLOW connection close audit failed")
                 self._reconnect_count += 1
@@ -186,7 +236,7 @@ class FlowRawCollector:
         return {"tr_id": message.get("header", {}).get("tr_id"), "msg1": body.get("msg1"), "rt_cd": body.get("rt_cd")}
 
 
-def collector_from_environment(repository) -> FlowRawCollector:
+def collector_from_environment(repository, *, integrated_repository=None) -> FlowRawCollector:
     base_url = os.getenv("KIS_BASE_URL", "")
     app_key = os.getenv("KIS_API_KEY", "")
     app_secret = os.getenv("KIS_API_SECRET", "")
@@ -194,5 +244,5 @@ def collector_from_environment(repository) -> FlowRawCollector:
     if missing:
         raise FlowCollectorError(f"missing FLOW collector configuration: {','.join(missing)}")
     ws_url = os.getenv("KIS_WS_URL", "ws://ops.koreainvestment.com:21000")
-    return FlowRawCollector(repository, ws_url=ws_url,
+    return FlowRawCollector(repository, integrated_repository=integrated_repository, ws_url=ws_url,
                             approval_provider=lambda: issue_approval_key(base_url=base_url, app_key=app_key, app_secret=app_secret))

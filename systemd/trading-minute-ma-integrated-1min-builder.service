@@ -1,6 +1,6 @@
 [Unit]
 Description=Trading V2 Minute MA INTEGRATED realtime 1MIN builder
-After=network-online.target trading-system-v2-timescaledb-test.service trading-minute-ma-integrated-collector.service
+After=network-online.target trading-system-v2-timescaledb-test.service trading-flow-raw-collector.service
 Wants=network-online.target
 
 [Service]

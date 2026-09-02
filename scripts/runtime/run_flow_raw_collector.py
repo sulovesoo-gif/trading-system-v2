@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from src.flow_raw.collector import collector_from_environment
 from src.flow_raw.repository import FlowRawRepository
+from src.minute_ma.integrated_realtime_repository import MinuteMaIntegratedRealtimeRepository
 from src.repository.database import DatabaseSettings, create_connection_pool
 
 
@@ -22,7 +23,10 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     pool = create_connection_pool(DatabaseSettings.from_environment())
     try:
-        asyncio.run(collector_from_environment(FlowRawRepository(pool)).run_forever())
+        asyncio.run(collector_from_environment(
+            FlowRawRepository(pool),
+            integrated_repository=MinuteMaIntegratedRealtimeRepository(pool),
+        ).run_forever())
     except KeyboardInterrupt:
         return 0
     finally:
