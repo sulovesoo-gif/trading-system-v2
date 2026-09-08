@@ -43,7 +43,14 @@ def dashboard_payload(pool, query):
            {joins} LEFT JOIN flow_v3_paper_accounting_queue q USING(strategy_id)
            WHERE {condition} ORDER BY {order} LIMIT %s OFFSET %s""",params+[size,(page-1)*size])
         rows=_dicts(cur)
+        cur.execute("SELECT to_regclass('public.flow_v3_live_preparation')")
+        preparation_available=cur.fetchone()[0] is not None
         for row in rows:
+            row['live_preparation']=None
+            if preparation_available:
+                cur.execute('SELECT * FROM flow_v3_live_preparation WHERE strategy_id=%s',(row['strategy_id'],))
+                prep=_dicts(cur)
+                row['live_preparation']=prep[0] if prep else None
             cur.execute("""SELECT sum((metrics->>'entry_count')::integer) AS entry_count,
                 sum((metrics->>'closed_count')::integer) AS closed_count,
                 sum((metrics->>'win_count')::integer) AS win_count,

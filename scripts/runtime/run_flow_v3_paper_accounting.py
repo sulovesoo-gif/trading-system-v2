@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 from src.repository.database import DatabaseSettings, create_connection_pool
 from src.flow_v3.accounting_repository import PaperAccountingRepository
+from src.flow_v3.live_preparation import record_preparations
 
 
 def main():
@@ -28,6 +29,11 @@ def main():
         worker = PaperAccountingRepository(pool)
         while not stop.is_set():
             result = worker.run_batch(args.batch_size)
+            # A preparation-ledger error cannot stop independent PAPER accounting.
+            try:
+                result['no_send_observations'] = record_preparations(pool)
+            except Exception as exc:
+                print({'preparation_error':type(exc).__name__},flush=True)
             if result['processed'] or result['blocked'] or args.once:
                 print(result, flush=True)
             if args.once:

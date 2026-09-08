@@ -2,7 +2,8 @@
 
 This release implements PAPER accounting and a bounded read-only FLOW dashboard.
 It does not activate LIVE SEND, create LIVE operations/capital, or add a broker
-adapter. The 15 candidate IDs are a display filter, not authorization.
+adapter. The 15 candidate IDs also have an explicit NO_SEND preparation ledger;
+neither the display filter nor that ledger grants broker authorization.
 
 ## Provenance and preserved contracts
 
@@ -17,7 +18,8 @@ actual PAPER entry. A missing product quote on that date blocks that strategy's
 projection with `MISSING_PREVIOUS_KRX_CLOSE`, without affecting PAPER tracking.
 Shares = max(0, floor(confirmed capital / entry execution price)). Every lot
 retains its own shares. Existing OPENs do not block later entries or reserve
-cash. At equal timestamps all EXIT settlements precede all ENTRY sizings.
+cash. At equal timestamps: older-lot EXITs, then all new ENTRY sizings, then
+zero-duration lots' own EXITs. Paper trade ID is the stable in-phase tie-breaker.
 Only CLOSED lot net realized P&L updates capital. No mark-to-market capital.
 
 Existing research percentage summaries are preserved. New independent-share
@@ -57,6 +59,16 @@ WHERE strategy_id='FV3008243' ORDER BY business_date;
 ```
 
 ## Remaining scope
+
+The preparation migration and `prepare_flow_v3_live_candidates.py` initialize
+15 independent snapshots from the last completed KRX daily close * 1.5.
+`next_quantity` is indicative at that prior close, not an executable quote.
+The schema enforces SEND false and a non-submittable status. New post-cutover
+PAPER signal identities are linked to a separate preparation-intent table.
+Historical signals cannot create these intents. Late PAPER trade links are
+completed idempotently. No shared live_order_request/submit-claim rows are made.
+Verified broker cost-finalized settlements must be integrated before this
+initial snapshot can become a real live compound-capital ledger.
 
 LIVE activation and broker lifecycle integration are not delivered by this
 PAPER release. Existing MFE/MAE are not recalculated. Shared 80-million-won
