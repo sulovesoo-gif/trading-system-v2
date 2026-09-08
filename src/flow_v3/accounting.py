@@ -14,7 +14,7 @@ D = Decimal
 FEE = D('1.46527') / D('10000')
 SLIPPAGE = D('2') / D('10000')
 ROUND_TRIP = (FEE + SLIPPAGE) * 2
-VERSION = 'PAPER_INDEPENDENT_V1'
+VERSION = 'PAPER_INDEPENDENT_V2_CAUSAL'
 
 
 class AccountingError(ValueError):
@@ -40,7 +40,11 @@ def quantity(capital, price):
 
 
 def calculate(trades, *, previous_close):
-    """Replay bounded strategy history. EXIT precedes ENTRY at equal timestamps.
+    """Replay bounded strategy history with A/B/C ordering at equal timestamps.
+
+    A: exits of earlier entries; B: all new entries; C: zero-duration self exits.
+    Within each group paper_trade_id is the stable tie-breaker. No self exit
+    can precede its own entry or affect another simultaneous entry's sizing.
 
     All input lots remain observed, including lots sized at zero. Realized net
     is added once; OPEN profits never enter capital. Rebuild replaces projections
@@ -65,10 +69,14 @@ def calculate(trades, *, previous_close):
         events.append((entry, 1, tid, t))
         if t['trade_status'] == 'CLOSED':
             end = t['actual_exit_time']
-            if end is None or end <= entry:
+            if end is None or end < entry:
                 raise AccountingError('INVALID_EXIT_TIME')
+            entry_signal = t.get('entry_signal_time')
+            exit_signal = t.get('normal_exit_signal_time')
+            if entry_signal is not None and exit_signal is not None and exit_signal < entry_signal:
+                raise AccountingError('INVALID_SIGNAL_ORDER')
             positive_price(t['actual_exit_price'])
-            events.append((end, 0, tid, t))
+            events.append((end, 2 if end == entry else 0, tid, t))
     daily = defaultdict(lambda: dict(entry_count=0, closed_count=0, open_count=0,
                                      win_count=0, loss_count=0, net_pnl=D(0), returns=[]))
     max_qty = opened = max_open = 0

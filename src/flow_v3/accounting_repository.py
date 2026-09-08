@@ -62,7 +62,8 @@ class PaperAccountingRepository:
             cur.execute('SELECT execution_code FROM flow_v3_strategy_master WHERE strategy_id=%s', (strategy_id,))
             execution_code = cur.fetchone()[0]
             cur.execute("""SELECT paper_trade_id,trade_status,entry_execution_time,entry_execution_price,
-                 actual_exit_time,actual_exit_price FROM flow_v3_paper_trade
+                 actual_exit_time,actual_exit_price,entry_signal_time,normal_exit_signal_time
+                 FROM flow_v3_paper_trade
                  WHERE strategy_id=%s ORDER BY entry_execution_time,paper_trade_id""", (strategy_id,))
             keys = [x.name for x in cur.description]
             trades = [dict(zip(keys, row)) for row in cur.fetchall()]

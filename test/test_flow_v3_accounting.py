@@ -59,7 +59,32 @@ class AccountingTest(unittest.TestCase):
 
     def test_invalid_exit_fails_closed(self):
         with self.assertRaisesRegex(AccountingError,'INVALID_EXIT_TIME'):
-            calculate([trade(1,end=0)],previous_close='100')
+            calculate([trade(1,start=1,end=0)],previous_close='100')
+
+    def test_same_time_self_exit_charges_full_cost(self):
+        t=trade(230266,end=0,entry='10000',exit='10000')
+        t['entry_signal_time']=T-timedelta(minutes=2)
+        t['normal_exit_signal_time']=T-timedelta(minutes=1)
+        lots,days,s=calculate([t],previous_close='10000')
+        self.assertEqual(lots[230266]['quantity'],1)
+        self.assertEqual(lots[230266]['net_pnl'],-D('10000')*ROUND_TRIP)
+        self.assertEqual(s['open_count'],0)
+        self.assertEqual(days[T.date()]['closed_count'],1)
+
+    def test_abc_phase_order(self):
+        ts=[trade(1,end=1),trade(2,start=1,end=1),trade(3,start=1)]
+        lots,_,_=calculate(ts,previous_close='100')
+        self.assertEqual(lots[2]['quantity'],2)
+        self.assertEqual(lots[3]['quantity'],2)
+        self.assertEqual(lots[2]['capital_at_entry'],lots[3]['capital_at_entry'])
+        self.assertEqual(calculate(ts,previous_close='100'),calculate(ts[::-1],previous_close='100'))
+
+    def test_zero_duration_inverted_signals_rejected(self):
+        t=trade(1,end=0)
+        t['entry_signal_time']=T-timedelta(minutes=1)
+        t['normal_exit_signal_time']=T-timedelta(minutes=2)
+        with self.assertRaisesRegex(AccountingError,'INVALID_SIGNAL_ORDER'):
+            calculate([t],previous_close='100')
 
     def test_zero_quantity_keeps_observation(self):
         lots,_,s=calculate([trade(1,end=1,entry='1000')],previous_close='100')

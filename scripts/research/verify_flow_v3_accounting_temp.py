@@ -31,17 +31,17 @@ def main():
         for table in tables:
             conn.execute(f'CREATE TEMP TABLE {table} (LIKE public.{table} INCLUDING ALL)')
         conn.execute('SET search_path=pg_temp,public')
-        ids=['FV3008243','FV3008241','FV3005688']
+        ids=['FV3008243','FV3008241','FV3005688','FV3000001']
         conn.execute('INSERT INTO pg_temp.flow_v3_strategy_master SELECT * FROM public.flow_v3_strategy_master WHERE strategy_id=ANY(%s)',(ids,))
         conn.execute('INSERT INTO pg_temp.flow_v3_paper_trade SELECT * FROM public.flow_v3_paper_trade WHERE strategy_id=ANY(%s)',(ids,))
         conn.execute("""INSERT INTO pg_temp.raw_stock_daily SELECT * FROM public.raw_stock_daily
-          WHERE trading_venue='KRX' AND stock_code IN ('0193T0','0197X0')""")
+          WHERE trading_venue='KRX' AND stock_code IN ('0193T0','0197X0','0193W0','0193L0')""")
         repo=PaperAccountingRepository(TempPool(conn))
         for sid in ids:
             conn.execute('INSERT INTO pg_temp.flow_v3_paper_accounting_queue(strategy_id) VALUES(%s)',(sid,))
             repo.rebuild(sid)
         before=conn.execute('SELECT strategy_id,metrics FROM pg_temp.flow_v3_paper_accounting_capital ORDER BY 1').fetchall()
-        assert len(before)==3
+        assert len(before)==len(ids)
         conn.execute('INSERT INTO pg_temp.flow_v3_paper_accounting_queue(strategy_id) SELECT strategy_id FROM pg_temp.flow_v3_strategy_master')
         # New repository instance models process restart against the same durable state.
         restarted=PaperAccountingRepository(TempPool(conn))
@@ -56,7 +56,10 @@ def main():
           WHERE original.net_return_pct IS NOT NULL
             AND abs(t.net_return_pct-original.net_return_pct)>0.00000002""").fetchone()[0]
         assert diff==0,'research cost divergence'
-        print({'temp_e2e':'PASS','strategies':3,'lots':actual[0],
+        regression=conn.execute("SELECT metrics FROM pg_temp.flow_v3_paper_accounting_lot WHERE paper_trade_id=230266").fetchone()
+        assert regression is not None and regression[0]['exit_time'] is not None
+        print({'paper_trade_id':230266,'result':regression[0]},flush=True)
+        print({'temp_e2e':'PASS','strategies':len(ids),'lots':actual[0],
                'maximum_quantity':actual[2],'duplicate':0,'restart_capital_equal':True,
                'research_cost_mismatch':diff,'permanent_writes':0},flush=True)
         for sid,metrics in after: print(sid,metrics,flush=True)
