@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLOW V3 연구·운영</title>
+<style>
+/* Minute dashboard table conventions: bounded pages, paired rows, sticky identity. */
+body{font:13px system-ui;margin:0;background:#f5f7fb;color:#172033}.top{padding:12px;background:#fff}h2{margin:0 0 8px}.controls,.cards,.pager{display:flex;gap:7px;flex-wrap:wrap;align-items:center}button,select,input{min-height:34px;border:1px solid #cbd5e1;border-radius:6px;background:white;padding:4px 8px}.cards{margin:8px 0}.card{background:#eef3ff;padding:7px;border-radius:6px}.table{margin:12px;overflow:auto;max-height:70vh;isolation:isolate}table{border-collapse:separate;border-spacing:0;table-layout:fixed;min-width:2300px;width:100%}th,td{padding:6px;border-bottom:1px solid #dce2ec;white-space:nowrap;text-align:right}th{position:sticky;top:0;background:#1f3155;color:white;z-index:4}td{background:#fff}.paper td{background:#f7f9fc}.live td{border-top:3px solid #aebed2}td[rowspan]{border-top:3px solid #aebed2;background:#fcfdff;text-align:left}.sticky{position:sticky;z-index:5;box-sizing:border-box;background:#fcfdff!important}.s1{left:0;width:115px}.s2{left:115px;width:75px}.s3{left:190px;width:155px;border-right:2px solid #91a4c2}th.sticky{z-index:8;background:#1f3155!important}.muted{color:#687386}.positive{color:#067647}.negative,.error{color:#b42318}.pager{justify-content:center;padding:12px}small{display:block;font-size:10px;color:#687386}.tag{font-weight:bold}.paper .tag{color:#175cd3}.live .tag{color:#b54708}@media(max-width:700px){.table{margin:6px;max-height:75vh}.top{padding:8px}}
+</style></head><body><div class="top"><h2>FLOW V3 연구·운영 Dashboard</h2>
+<div class="controls">
+<select id="scope"><option value="CANDIDATES">승인 후보 15</option><option value="ALL">PAPER 9,600</option></select>
+<label>기준일 <input id="date" type="date"></label>
+<select id="period"><option value="ALL">전체</option><option value="DAILY">일간</option><option value="WEEKLY">주간</option><option value="MONTHLY">월간</option></select>
+<select id="direction"><option value="">방향 전체</option><option>LONG</option><option>SHORT</option></select>
+<select id="entry_family_code"><option value="">F1~F4</option><option>F1</option><option>F2</option><option>F3</option><option>F4</option></select>
+<select id="program_condition_code"><option value="">P0~P2</option><option>P0</option><option>P1</option><option>P2</option></select>
+<select id="exit_policy_code"><option value="">청산정책 전체</option><option>SIGNAL_EOD</option><option>SIGNAL_HOLD</option></select>
+<select id="lifecycle"><option value="">Lifecycle 전체</option><option value="OPEN">미청산 PAPER</option></select>
+<input id="search" placeholder="전략/본주 검색" size="13">
+<select id="sort"><option value="strategy">전략순</option><option value="capital">누적자본순</option><option value="return">누적복리순</option></select>
+<select id="page_size"><option>20</option><option>50</option></select><button id="refresh">조회</button>
+</div><div id="summary" class="cards"></div><span id="status" role="status"></span>
+<p class="muted">PAPER = 독립 주수 기반 연구계산 · LIVE = 실제 거래원장만 표시. 누적은 전체 보존기간, 기간은 선택범위. 공유계좌 8,000만원 모델 미구현. 이 화면은 주문을 활성화하지 않습니다.</p></div>
+<div class="table"><table><colgroup><col style="width:115px"><col style="width:75px"><col style="width:155px"><col style="width:95px"><col style="width:85px"><col style="width:70px"><col style="width:95px"><col style="width:135px"><col style="width:85px"><col style="width:75px"><col style="width:150px"><col style="width:155px"><col style="width:150px"><col style="width:120px"><col style="width:115px"><col style="width:115px"><col style="width:115px"><col style="width:110px"><col style="width:115px"><col style="width:170px"></colgroup>
+<thead><tr><th class="sticky s1">전략</th><th class="sticky s2">방향</th><th class="sticky s3">본주 → 실행</th><th>진입유형</th><th>Entry 평균</th><th>프로그램</th><th>Exit 평균</th><th>청산정책</th><th>Operation</th><th>구분</th><th>기간 진입/완료</th><th>초기/기간 시작자본</th><th>누적/기간 종료자본</th><th>누적/기간 수익금</th><th>누적 복리수익률</th><th>누적 승/패</th><th>누적 승률</th><th>최대 주수</th><th>MDD</th><th>상태/계산시각</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="pager"><button id="prev">이전</button><span id="pageLabel"></span><button id="next">다음</button></div>
+<script>
+const $=id=>document.getElementById(id),ids=['scope','date','period','direction','entry_family_code','program_condition_code','exit_policy_code','lifecycle','search','sort','page_size'];let page=1,pages=1,seq=0;
+$('date').value=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul'}).format(new Date());
+const esc=v=>String(v??'해당없음').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num=v=>v==null?'해당없음':Number(v).toLocaleString('ko-KR',{maximumFractionDigits:2});const pct=v=>v==null?'해당없음':num(v)+'%';
+const cell=(v,c='',span=0)=>'<td class="'+c+'"'+(span?' rowspan="2"':'')+'>'+v+'</td>';
+function render(x){const c=x.paper_cumulative||{},p=x.paper_period||{},op=x.operation?.operation_status||'미설정';
+ const common=[cell(esc(x.strategy_id),'sticky s1',2),cell(esc(x.direction),'sticky s2',2),cell(esc(x.stock_code)+' → '+esc(x.execution_code),'sticky s3',2),cell(esc(x.entry_family_code),'',2),cell(x.entry_fast_period+'/'+x.entry_slow_period,'',2),cell(esc(x.program_condition_code),'',2),cell(x.exit_fast_period+'/'+x.exit_slow_period,'',2),cell(esc(x.exit_policy_code),'',2),cell(esc(op),'',2)].join('');
+ const actual=x.live_actual||[],closed=actual.find(t=>t.trade_status==='CLOSED');
+ const live=cell('LIVE','tag')+cell('해당없음')+cell('해당없음')+cell('해당없음')+cell(closed?num(closed.net_realized_pnl):'해당없음')+Array(5).fill(cell('해당없음')).join('')+cell('원장 '+actual.reduce((n,t)=>n+t.trade_count,0)+'건');
+ const paper=cell('PAPER','tag')+cell('진입 '+num(p.entry_count??0)+' / 완료 '+num(p.closed_count??0))+cell(num(c.initial_capital)+'<small>기간 '+num(p.starting_capital)+'</small>')+cell(num(c.current_capital)+'<small>기간 '+num(p.ending_capital)+'</small>')+cell(num(c.net_pnl)+'<small>기간 '+num(p.net_pnl??0)+'</small>')+cell(pct(c.compound_return_pct))+cell(num(c.win_count??0)+' / '+num(c.loss_count??0))+cell(pct(c.win_rate_pct))+cell(num(c.maximum_quantity))+cell(pct(c.max_drawdown_pct))+cell(esc(x.last_error||(x.accounting_pending?'집계 대기':'집계 완료'))+'<small>'+esc(x.calculated_at)+'</small>');
+ return '<tr class="live" data-strategy="'+esc(x.strategy_id)+'">'+common+live+'</tr><tr class="paper">'+paper+'</tr>';
+}
+async function load(){const current=++seq;$('status').textContent='조회 중…';try{const q=new URLSearchParams({page});ids.forEach(k=>q.set(k,$(k).value));const r=await fetch('/flow-v3/api/dashboard?'+q,{cache:'no-store'}),d=await r.json();if(current!==seq)return;if(!r.ok)throw Error(d.error||'조회 실패');pages=d.total_pages;$('rows').innerHTML=d.items.map(render).join('');$('pageLabel').textContent=page+' / '+pages+' · '+d.total_count+'전략';$('prev').disabled=page<=1;$('next').disabled=page>=pages;$('summary').innerHTML='<span class="card">PAPER 활성 '+d.paper_enabled+' / '+d.strategy_master+'</span><span class="card">집계 대기 '+d.accounting_pending+' · 차단 '+d.accounting_blocked+'</span>';$('status').textContent='전략 '+d.items.length+'개 · 표시행 '+d.items.length*2+'개';}catch(e){if(current===seq)$('status').textContent=e.message;}}
+ids.forEach(k=>$(k).onchange=()=>{page=1;load()});$('refresh').onclick=()=>load();$('prev').onclick=()=>{if(page>1){page--;load()}};$('next').onclick=()=>{if(page<pages){page++;load()}};load();
+</script></body></html>
