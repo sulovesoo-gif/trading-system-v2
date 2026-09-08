@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -23,9 +23,28 @@ from src.minute_ma.integrated_realtime_contracts import (
 KST = ZoneInfo("Asia/Seoul")
 LOGGER = logging.getLogger(__name__)
 
+RECEIVE_TIMEOUT_SECONDS = 1.0
+MARKET_DATA_SILENCE_SECONDS = 60.0
+MARKET_LIVENESS_START = time(9, 0)
+MARKET_LIVENESS_END = time(15, 31)
+
 
 class FlowCollectorError(RuntimeError):
     pass
+
+
+def liveness_reconnect_reason(
+    *, connected_at: datetime, last_data_frame_at: datetime, now: datetime
+) -> str | None:
+    """Return a reconnect reason without treating normal short silence as failure."""
+    if now.date() != connected_at.date():
+        return "KST_TRADING_DATE_ROLLOVER"
+    if (
+        MARKET_LIVENESS_START <= now.time() < MARKET_LIVENESS_END
+        and (now - last_data_frame_at).total_seconds() >= MARKET_DATA_SILENCE_SECONDS
+    ):
+        return f"MARKET_DATA_SILENCE_{int(MARKET_DATA_SILENCE_SECONDS)}S"
+    return None
 
 
 def issue_approval_key(*, base_url: str, app_key: str, app_secret: str) -> str:
@@ -149,13 +168,23 @@ class FlowRawCollector:
                     backoff = 1
                     first_data = True
                     integrated_first_data = True
+                    last_data_frame_at = self.now()
                     while True:
                         if deferred_frames:
                             received_at,frame = deferred_frames.popleft()
                         else:
                             try:
-                                frame = await asyncio.wait_for(socket.recv(), timeout=1.0)
+                                frame = await asyncio.wait_for(
+                                    socket.recv(), timeout=RECEIVE_TIMEOUT_SECONDS
+                                )
                             except asyncio.TimeoutError:
+                                reason = liveness_reconnect_reason(
+                                    connected_at=connected_at,
+                                    last_data_frame_at=last_data_frame_at,
+                                    now=self.now(),
+                                )
+                                if reason is not None:
+                                    raise FlowCollectorError(reason)
                                 continue
                             received_at = self.now()
                         if isinstance(frame, bytes):
@@ -167,6 +196,7 @@ class FlowRawCollector:
                             else:
                                 LOGGER.info("FLOW subscription response=%s", self._safe_ack(message))
                             continue
+                        last_data_frame_at = received_at
                         self._sequence += 1
                         tr_id = frame.split("|", 3)[1] if "|" in frame else ""
                         try:

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from src.flow_raw.collector import FlowRawCollector
+from src.flow_raw.collector import (
+    MARKET_DATA_SILENCE_SECONDS,
+    RECEIVE_TIMEOUT_SECONDS,
+    FlowRawCollector,
+    liveness_reconnect_reason,
+)
 from src.minute_ma.integrated_realtime_contracts import TR_INTEGRATED_EXECUTION
 from src.flow_raw.contracts import (
     EXECUTION_FIELDS, ORDERBOOK_FIELDS, ORDERBOOK_GATEWAY_62_FIELDS, PROGRAM_FIELDS, TR_EXECUTION, TR_ORDERBOOK,
@@ -117,6 +122,42 @@ class FlowContractTest(unittest.TestCase):
     def test_l0_collector_has_no_l1_rebuild_call(self):
         source = Path("src/flow_raw/collector.py").read_text(encoding="utf-8")
         self.assertNotIn("refresh_l1", source)
+
+    def test_previous_day_connection_requires_reconnect(self):
+        connected = datetime(2026, 9, 7, 15, 29)
+        reason = liveness_reconnect_reason(
+            connected_at=connected,
+            last_data_frame_at=connected,
+            now=datetime(2026, 9, 8, 8, 30),
+        )
+        self.assertEqual(reason, "KST_TRADING_DATE_ROLLOVER")
+
+    def test_market_data_silence_requires_reconnect_at_threshold(self):
+        connected = datetime(2026, 9, 8, 9, 0)
+        reason = liveness_reconnect_reason(
+            connected_at=connected,
+            last_data_frame_at=connected,
+            now=connected + timedelta(seconds=MARKET_DATA_SILENCE_SECONDS),
+        )
+        self.assertEqual(reason, "MARKET_DATA_SILENCE_60S")
+
+    def test_normal_receive_timeout_does_not_reconnect(self):
+        connected = datetime(2026, 9, 8, 9, 0)
+        reason = liveness_reconnect_reason(
+            connected_at=connected,
+            last_data_frame_at=connected,
+            now=connected + timedelta(seconds=RECEIVE_TIMEOUT_SECONDS),
+        )
+        self.assertIsNone(reason)
+
+    def test_market_silence_outside_collection_window_does_not_reconnect(self):
+        connected = datetime(2026, 9, 8, 15, 31)
+        reason = liveness_reconnect_reason(
+            connected_at=connected,
+            last_data_frame_at=connected,
+            now=connected + timedelta(minutes=30),
+        )
+        self.assertIsNone(reason)
 
 
 if __name__ == "__main__":
