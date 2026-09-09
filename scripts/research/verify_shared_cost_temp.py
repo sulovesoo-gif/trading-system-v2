@@ -33,6 +33,7 @@ def main(migration):
           (broker_order_id uuid,checkpoint_version int,minute_live_trade_id bigint,stock_code text,side text,
            delta_quantity int,delta_amount numeric,broker_event_time timestamp)''')
         c.execute(migration.replace('CREATE TABLE IF NOT EXISTS','CREATE TEMP TABLE IF NOT EXISTS'))
+        c.execute('ALTER TABLE flow_v3_live_checkpoint_allocation ADD COLUMN IF NOT EXISTS broker_trade_date date')
         c.execute("INSERT INTO daily_strategy_live_trade VALUES(1,'D1')")
         c.execute('INSERT INTO flow_v3_live_trade VALUES(1)')
         for side in ('BUY','SELL'):

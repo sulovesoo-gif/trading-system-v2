@@ -45,7 +45,23 @@ def dashboard_payload(pool, query):
         rows=_dicts(cur)
         cur.execute("SELECT to_regclass('public.flow_v3_live_preparation')")
         preparation_available=cur.fetchone()[0] is not None
+        cur.execute("SELECT to_regclass('public.flow_v3_live_capital')")
+        live_pipeline_available=cur.fetchone()[0] is not None
         for row in rows:
+            row['live_capital']=None
+            row['live_orders']=[]
+            row['live_lots']=[]
+            if live_pipeline_available:
+                cur.execute('SELECT * FROM flow_v3_live_capital WHERE strategy_id=%s',(row['strategy_id'],))
+                capitals=_dicts(cur)
+                row['live_capital']=capitals[0] if capitals else None
+                cur.execute("""SELECT i.status,count(*) AS count,COALESCE(sum(o.post_attempt_count),0) AS post_attempts
+                    FROM flow_v3_live_intent i LEFT JOIN flow_v3_live_order o USING(intent_id)
+                    WHERE i.strategy_id=%s GROUP BY i.status""",(row['strategy_id'],))
+                row['live_orders']=_dicts(cur)
+                cur.execute("""SELECT exposure_status,count(*) AS count,sum(bought_quantity-sold_quantity) AS open_quantity
+                    FROM flow_v3_live_lot WHERE strategy_id=%s GROUP BY exposure_status""",(row['strategy_id'],))
+                row['live_lots']=_dicts(cur)
             row['live_preparation']=None
             if preparation_available:
                 cur.execute('SELECT * FROM flow_v3_live_preparation WHERE strategy_id=%s',(row['strategy_id'],))

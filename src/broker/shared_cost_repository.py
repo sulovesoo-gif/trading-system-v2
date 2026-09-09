@@ -16,7 +16,7 @@ class SharedBrokerCostFinalizer:
         with self.factory() as c,c.cursor() as q:
             q.execute("""SELECT trade_date,execution_stock_code FROM daily_strategy_live_broker_cost_snapshot
                 UNION SELECT trade_date,execution_stock_code FROM minute_ma_live_broker_cost_snapshot
-                UNION SELECT broker_event_time::date,stock_code FROM flow_v3_live_checkpoint_allocation""")
+                UNION SELECT COALESCE(broker_trade_date,broker_event_time::date),stock_code FROM flow_v3_live_checkpoint_allocation""")
             days=q.fetchall()
         final=0
         for day,stock in days:
@@ -42,7 +42,7 @@ class SharedBrokerCostFinalizer:
                 WHERE stock_code=%s AND broker_event_time::date=%s
                 UNION ALL SELECT 'FLOW',live_trade_id,broker_order_id::text,checkpoint_version,
                     side,delta_quantity,delta_amount FROM flow_v3_live_checkpoint_allocation
-                WHERE stock_code=%s AND broker_event_time::date=%s ORDER BY 1,2,3,4""",
+                WHERE stock_code=%s AND COALESCE(broker_trade_date,broker_event_time::date)=%s ORDER BY 1,2,3,4""",
                 (stock,day,stock,day,stock,day))
             rows=q.fetchall()
             fingerprint=sha256(repr(rows).encode()).hexdigest()
