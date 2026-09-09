@@ -14,6 +14,7 @@ from src.collector.raw.kis_client import KISClient
 from src.collector.raw.kis_order_account import KISOrderAccount
 from src.flow_v3.live_repository import LiveRepository
 from src.flow_v3.live_broker import FlowBrokerReader,kst_now
+from src.flow_v3.live_transport import FlowTransport
 
 
 def main():
@@ -30,7 +31,9 @@ def main():
     try:
         if args.activate_approved:
             repository.activate(kst_now())
-        reader=FlowBrokerReader(KISClient(),KISOrderAccount.from_environment())
+        client=KISClient();account=KISOrderAccount.from_environment()
+        reader=FlowBrokerReader(client,account)
+        transport=FlowTransport(repository,client,account)
         while not stop.is_set():
             try:
                 polled=reader.poll(repository)
@@ -42,6 +45,7 @@ def main():
                     quotes={}
                     quote_error=type(exc).__name__
                 result=repository.cycle(kst_now(),quotes)
+                result['post']=transport.run()  # Closed code + DB gates return 0.
                 if quote_error:
                     repository.record_error('QUOTE:'+quote_error)
                     result['quote_error']=quote_error

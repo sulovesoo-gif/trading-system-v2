@@ -34,7 +34,9 @@ Request objects contain the existing KRX market-order endpoint/TR/body, without
 account secrets. `record_response` handles an authoritative submit response;
 `observe` handles exact order-number matched cumulative history. Unknown orders
 without a durable number are never matched by quantity/time and never resent.
-This release DOES NOT call order POST. Both the Python boundary and database
+`live_transport.py` connects request/cancel claims to the response hooks but the
+installed code gate and DB gates are closed; this release DOES NOT call order POST.
+Both the Python boundary and database
 constraints physically prohibit SEND. No existing authorization is changed.
 
 An unfilled or partially filled entry remains exposed; an exit waits for the entry

@@ -169,7 +169,7 @@ class LiveRepository:
             status='CANCEL_ACK' if str(response.get('rt_cd',''))=='0' else 'UNKNOWN'
             c.execute("""UPDATE flow_v3_live_entry_release SET status=%s,cancel_response_code=%s,
                 cancel_response_message=%s,cancel_order_number=%s,cancel_responded_at=%s,updated_at=now()
-                WHERE entry_intent_id=%s AND status='CANCEL_READY_NO_SEND'""",
+                WHERE entry_intent_id=%s AND status IN ('CANCEL_READY_NO_SEND','UNKNOWN')""",
                 (status,str(response.get('msg_cd','')),str(response.get('msg1','')),
                  str((response.get('output') or {}).get('ODNO','')),observed_at,entry_intent_id))
 
