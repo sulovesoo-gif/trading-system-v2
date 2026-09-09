@@ -41,10 +41,12 @@ def test_lot_exit_family_and_hold_next_day():
 
 def test_physical_no_send():
     from src.flow_v3.live_transport import FlowTransport
+    from unittest.mock import patch
     with unittest.TestCase().assertRaises(PermissionError): NoSendBoundary.submit()
     # Even without a usable repository/client/account, no IO is attempted.
-    assert FlowTransport(None,None,None).run()==0
-    assert NoSendBoundary.actual_post_count==0 and SEND_ENABLED is False
+    with patch.dict('os.environ', {'FLOW_V3_ACTUAL_SEND':'N'}):
+        assert FlowTransport(None,None,None).run()==0
+    assert NoSendBoundary.actual_post_count==0
 
 
 def test_transport_claim_response_with_fake_io_only():
@@ -58,8 +60,11 @@ def test_transport_claim_response_with_fake_io_only():
         def transaction(self): return nullcontext()
         def execute(self,sql,args=None):
             self.row=None
+            if 'SELECT enabled' in sql:
+                self.row=('Y',)
             if 'SELECT o.broker_order_id' in sql and self.available:
-                self.row=('fixture-order',request_payload('0193T0','BUY',2))
+                self.row=('fixture-order',request_payload('0193T0','BUY',2),LONG_IDS[0],
+                          '000660','LONG','0193T0','BUY',2,None,None)
             if "SET status='SUBMITTING'" in sql:
                 self.available=False
             return self
@@ -69,7 +74,7 @@ def test_transport_claim_response_with_fake_io_only():
                          record_response=lambda *args:responses.append(args))
     client=SimpleNamespace(post_once=lambda **kw:(calls.append(kw) or {'rt_cd':'0','output':{'ODNO':'fixture'}}))
     adapter=FlowTransport(repo,client,SimpleNamespace(cano='fixture',account_product_code='00'))
-    with patch('src.flow_v3.live_transport.SEND_ENABLED',True):
+    with patch.dict('os.environ', {'FLOW_V3_ACTUAL_SEND':'Y'}):
         assert adapter.run()==1
         assert adapter.run()==0
     assert len(calls)==len(responses)==1 and calls[0]['payload']['ORD_QTY']=='2'

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime,timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
@@ -40,8 +41,12 @@ def main(migration=None):
             c.execute(f'CREATE TEMP TABLE {table}(LIKE public.{table} INCLUDING ALL)')
         sql=migration or (ROOT/'database/migrations/20260909_flow_v3_live_pipeline.sql').read_text()
         c.execute(sql.replace('CREATE TABLE IF NOT EXISTS','CREATE TEMP TABLE IF NOT EXISTS'))
+        approval_sql=(ROOT/'database/migrations/20260910_flow_v3_send_authorization.sql').read_text()
+        c.execute(approval_sql.replace('CREATE TABLE IF NOT EXISTS','CREATE TEMP TABLE IF NOT EXISTS'))
+        c.execute(approval_sql.replace('CREATE TABLE IF NOT EXISTS','CREATE TEMP TABLE IF NOT EXISTS'))
         for table in ('flow_v3_live_capital','flow_v3_live_intent','flow_v3_live_order','flow_v3_live_trade',
-                      'flow_v3_strategy_operation','raw_stock_daily','flow_v3_live_checkpoint_allocation'):
+                      'flow_v3_strategy_operation','raw_stock_daily','flow_v3_live_checkpoint_allocation',
+                      'flow_v3_send_profile','flow_v3_live_entry_release','flow_v3_live_worker_status'):
             assert c.execute("SELECT relpersistence FROM pg_class WHERE oid=%s::regclass",(table,)).fetchone()[0]=='t'
         for sid,(direction,code) in WHITELIST.items():
             c.execute('INSERT INTO flow_v3_strategy_master VALUES(%s,%s,%s,%s)',(sid,'000660',direction,code))
@@ -177,10 +182,59 @@ def main(migration=None):
                 assert sell is None
                 assert c.execute('SELECT count(*) FROM flow_v3_live_lot WHERE entry_intent_id=%s',(iid,)).fetchone()[0]==0;c.commit()
         print('PARTIAL_ENTRY_PASS: 5/3->3; cancel-race 5/3->4; full5->5; zero0->no-sell; restart; duplicate0; lot remainder0')
+        # Approval tests use TEMP profile/ledgers and a fake HTTP endpoint only.
+        from types import SimpleNamespace
+        from src.flow_v3.live_transport import FlowTransport
+        from src.flow_v3.send_authorization import send_authorized
+        for env,db,expected in [('N','N',False),('Y','N',False),('N','Y',False),('Y','Y',True)]:
+            c.execute('UPDATE flow_v3_send_profile SET enabled=%s,updated_at=clock_timestamp()', (db,));c.commit()
+            with patch.dict('os.environ',{'FLOW_V3_ACTUAL_SEND':env}):
+                assert send_authorized(c)==expected
+            c.commit()
+        with patch.dict('os.environ',{'FLOW_V3_ACTUAL_SEND':'Y'}):
+            event(500,LONG_IDS[0],datetime(2026,9,9,14))
+            event(501,LONG_IDS[0],datetime(2026,9,9,14))
+            event(502,LONG_IDS[1],datetime(2026,9,9,14))
+            cycle(datetime(2026,9,9,14,1))
+            assert c.execute("SELECT count(*) FROM flow_v3_live_order o JOIN flow_v3_live_intent i USING(intent_id) WHERE o.send_enabled AND i.event_id>=500").fetchone()[0]==3;c.commit()
+            assert c.execute("SELECT count(*) FROM flow_v3_live_order o JOIN flow_v3_live_intent i USING(intent_id) WHERE o.send_enabled AND i.event_id<500").fetchone()[0]==0;c.commit()
+            class ClockConnection:
+                def transaction(self): return c.transaction()
+                def execute(self,sql,args=None):
+                    return c.execute(sql.replace('localtimestamp',"timestamp '2026-09-09 14:01:00'")
+                        .replace('current_date',"date '2026-09-09'").replace('localtime',"time '14:01:00'"),args)
+            class ClockPool:
+                @contextmanager
+                def connection(self):
+                    try:
+                        yield ClockConnection();c.commit()
+                    except Exception:
+                        c.rollback();raise
+            calls=[]
+            def fake_post(**kw):
+                calls.append(kw)
+                return {'rt_cd':'1','msg_cd':'FIXTURE_REJECT','msg1':'TEMP ONLY'}
+            transport=FlowTransport(LiveRepository(ClockPool()),SimpleNamespace(post_once=fake_post),
+                SimpleNamespace(cano='fixture',account_product_code='fixture'))
+            assert transport.run()==3
+            assert transport.run()==0
+            cycle(datetime(2026,9,9,14,1))
+            assert transport.run()==0
+            assert len(calls)==3
+            assert c.execute('SELECT sum(post_attempt_count) FROM flow_v3_live_order').fetchone()[0]==3;c.commit()
+            try:
+                with c.transaction():
+                    c.execute('UPDATE flow_v3_live_order SET post_attempt_count=2')
+                raise AssertionError('MISSING_AT_MOST_ONCE_CONSTRAINT')
+            except psycopg.errors.CheckViolation:
+                pass
+        print('FLOW_SEND_TEMP_PASS: NN/YN/NY blocked; YY 3 fake calls; old orders remain OFF; same-strategy independent entries; duplicate0; count2 constraint rejects; actual HTTP0')
         print('FLOW_LIVE_TEMP_PASS: whitelist15, independent entries/lots, lot exits, duplicate0, broker actual-price separation, costs, variable quantity2, restart, EOD1519, HOLD cutoff, POST0')
         c.rollback()
     finally:
         c.close()
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    with patch.dict('os.environ',{'FLOW_V3_ACTUAL_SEND':'N'}):
+        main()

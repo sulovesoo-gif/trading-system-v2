@@ -9,7 +9,6 @@ WHITELIST = {**{s: ('LONG','0193T0') for s in LONG_IDS},
              **{s: ('SHORT','0197X0') for s in SHORT_IDS}}
 CUTOFF = time(15,18)
 EOD_EXECUTION = time(15,19)
-SEND_ENABLED = False  # This release has no order POST implementation.
 
 
 def validate_mapping(strategy_id, stock_code, direction, execution_code):

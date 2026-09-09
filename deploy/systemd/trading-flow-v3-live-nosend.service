@@ -1,5 +1,5 @@
 [Unit]
-Description=FLOW V3 independent LIVE ledger worker (physical No-SEND)
+Description=FLOW V3 independent LIVE ledger worker (dual approval; default OFF)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,6 +12,7 @@ Restart=on-failure
 RestartSec=15
 TimeoutStopSec=30
 Environment=PYTHONUNBUFFERED=1
+Environment=FLOW_V3_ACTUAL_SEND=N
 NoNewPrivileges=true
 
 [Install]

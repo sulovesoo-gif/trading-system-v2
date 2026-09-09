@@ -4,6 +4,7 @@ from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid5
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from .send_authorization import send_authorized
 from .live_contract import (WHITELIST, CUTOFF, EOD_EXECUTION, validate_mapping,
                             order_quantity, request_payload, normal_exit, cumulative_delta,cancel_payload)
 
@@ -73,9 +74,11 @@ class LiveRepository:
             q.execute("""UPDATE flow_v3_live_trade t SET paper_trade_id=i.paper_trade_id
                 FROM flow_v3_live_intent i WHERE i.side='BUY' AND i.live_trade_id=t.live_trade_id
                 AND t.paper_trade_id IS NULL AND i.paper_trade_id IS NOT NULL""")
-            q.execute("""INSERT INTO flow_v3_live_worker_status(worker_code,heartbeat_at,cycle_result)
-                VALUES('FLOW_V3_NO_SEND',now(),%s) ON CONFLICT(worker_code) DO UPDATE SET
-                heartbeat_at=now(),cycle_result=EXCLUDED.cycle_result,last_error=NULL""", (Jsonb(result),))
+            result['send_enabled'] = send_authorized(q)
+            q.execute("""INSERT INTO flow_v3_live_worker_status(worker_code,heartbeat_at,cycle_result,send_enabled)
+                VALUES('FLOW_V3_NO_SEND',now(),%s,%s) ON CONFLICT(worker_code) DO UPDATE SET
+                heartbeat_at=now(),cycle_result=EXCLUDED.cycle_result,send_enabled=EXCLUDED.send_enabled,last_error=NULL""",
+                (Jsonb(result),result['send_enabled']))
         return result
 
     @staticmethod
@@ -389,10 +392,14 @@ class LiveRepository:
             q.execute("""UPDATE flow_v3_live_intent SET quantity=%s,reference_price=%s,reference_observed_at=%s,
                 capital_at_entry=%s,status='READY_NO_SEND',reason='PHYSICAL_SEND_DISABLED',updated_at=now() WHERE intent_id=%s""",
                 (qty,i['quote'],i['quote_time'],i['current_capital'],i['intent_id']))
-            q.execute("""INSERT INTO flow_v3_live_order(broker_order_id,intent_id,request_payload,status)
-                VALUES(%s,%s,%s,'READY_NO_SEND') ON CONFLICT(intent_id) DO NOTHING""",
-                (identity('ORDER|'+str(i['intent_id'])),i['intent_id'],Jsonb(payload)))
+            authorized = send_authorized(q, i['created_at'])
+            q.execute("""INSERT INTO flow_v3_live_order(broker_order_id,intent_id,request_payload,status,send_enabled)
+                VALUES(%s,%s,%s,'READY_NO_SEND',%s) ON CONFLICT(intent_id) DO NOTHING""",
+                (identity('ORDER|'+str(i['intent_id'])),i['intent_id'],Jsonb(payload),authorized))
             count+=q.rowcount
+            if authorized:
+                q.execute("UPDATE flow_v3_live_intent SET reason='FLOW_DUAL_APPROVAL_AT_PREPARATION' WHERE intent_id=%s",
+                          (i['intent_id'],))
         return count
 
     @staticmethod

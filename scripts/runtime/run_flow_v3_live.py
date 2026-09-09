@@ -1,4 +1,4 @@
-"""Independent FLOW LIVE preparation/recovery worker. Order POST is unavailable."""
+"""Independent FLOW LIVE worker. Broker POST requires FLOW ENV and DB approval."""
 import argparse
 import json
 import signal
@@ -45,11 +45,11 @@ def main():
                     quotes={}
                     quote_error=type(exc).__name__
                 result=repository.cycle(kst_now(),quotes)
-                result['post']=transport.run()  # Closed code + DB gates return 0.
+                result['post']=transport.run()
                 if quote_error:
                     repository.record_error('QUOTE:'+quote_error)
                     result['quote_error']=quote_error
-                print(json.dumps(dict(result,polled=polled,send=False),default=str),flush=True)
+                print(json.dumps(dict(result,polled=polled),default=str),flush=True)
             except Exception as exc:
                 # Safe names only: no token/account or HTTP payload in journal.
                 repository.record_error(type(exc).__name__)
