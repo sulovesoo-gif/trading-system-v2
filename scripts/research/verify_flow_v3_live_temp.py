@@ -24,7 +24,7 @@ def main(migration=None):
             c.execute(f'CREATE TEMP SEQUENCE {pk}_fixture_seq')
             c.execute(f"ALTER TABLE {table} ALTER COLUMN {pk} SET DEFAULT nextval('pg_temp.{pk}_fixture_seq')")
         c.execute('CREATE TEMP TABLE flow_v3_strategy_master(strategy_id text PRIMARY KEY,stock_code text,direction text,execution_code text)')
-        c.execute('CREATE TEMP TABLE flow_v3_live_preparation(strategy_id varchar(20) PRIMARY KEY,execution_code text)')
+        c.execute('CREATE TEMP TABLE flow_v3_live_preparation(strategy_id varchar(20) PRIMARY KEY,execution_code text,current_capital numeric)')
         c.execute('CREATE TEMP TABLE flow_v3_paper_trade(paper_trade_id bigint PRIMARY KEY)')
         c.execute('''CREATE TEMP TABLE raw_stock_daily(stock_code text,trade_date date,trading_venue text,
             collect_cycle text,data_source text,close_price numeric,collected_at timestamp)''')
@@ -45,7 +45,7 @@ def main(migration=None):
             assert c.execute("SELECT relpersistence FROM pg_class WHERE oid=%s::regclass",(table,)).fetchone()[0]=='t'
         for sid,(direction,code) in WHITELIST.items():
             c.execute('INSERT INTO flow_v3_strategy_master VALUES(%s,%s,%s,%s)',(sid,'000660',direction,code))
-            c.execute('INSERT INTO flow_v3_live_preparation VALUES(%s,%s)',(sid,code))
+            c.execute('INSERT INTO flow_v3_live_preparation(strategy_id,execution_code,current_capital) VALUES(%s,%s,150)',(sid,code))
         for code in ('0193T0','0197X0'):
             c.execute("INSERT INTO raw_stock_daily VALUES(%s,'2026-09-08','KRX','DAILY','KIS',100,'2026-09-08 16:00')",(code,))
         c.autocommit=False

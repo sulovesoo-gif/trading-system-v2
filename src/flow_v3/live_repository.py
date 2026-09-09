@@ -84,7 +84,7 @@ class LiveRepository:
             if code not in ('0193T0','0197X0') or price<=0 or not timedelta(0)<=now-observed_at<=timedelta(seconds=30):
                 continue
             q.execute("""UPDATE flow_v3_live_capital c SET reference_price=%s,reference_observed_at=%s,
-                next_quantity=greatest(0,floor(current_capital/%s))::bigint,last_error=NULL,updated_at=now()
+                next_quantity=greatest(0,floor(c.current_capital/%s))::bigint,last_error=NULL,updated_at=now()
                 FROM flow_v3_live_preparation p WHERE c.strategy_id=p.strategy_id AND p.execution_code=%s""",
                 (price,observed_at,price,code))
 
