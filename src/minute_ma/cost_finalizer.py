@@ -9,10 +9,15 @@ from src.daily_ma_v03.broker_cost_finalization import StableCostRecheck,next_krx
 from .capital import PostgresMinuteMaCapitalStore,SettlementAmounts
 
 class MinuteMaCostFinalizer:
-    def __init__(self,*,connection_factory,cost_lookup,calendar,clock):
+    def __init__(self,*,connection_factory,cost_lookup,calendar,clock,shared_finalizer=None):
         self.connection_factory,self.cost_lookup,self.calendar,self.clock=connection_factory,cost_lookup,calendar,clock
         self.capital=PostgresMinuteMaCapitalStore(connection_factory)
+        self.shared_finalizer=shared_finalizer
     def finalize_due(self,*,today):
+        if self.shared_finalizer is not None:
+            result=self.shared_finalizer.finalize_due(today=today)
+            result['minute_settled']=self._settle_due()
+            return result
         with self.connection_factory() as c,c.cursor() as q:
             q.execute("SELECT trade_date,execution_stock_code FROM minute_ma_live_broker_cost_snapshot WHERE finalization_status='PENDING_BROKER_COST' ORDER BY trade_date,execution_stock_code");rows=q.fetchall()
         finalized=settled=0

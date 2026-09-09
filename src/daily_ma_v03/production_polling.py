@@ -20,8 +20,12 @@ class ProductionCheckpointPoller:
 
 class ProductionCostFinalizer:
  """Uses the V0.4.2 repository; live data remains PENDING until T+1 recheck."""
- def __init__(self,*,connection_factory,cost_lookup,cost_store,calendar,settlement_coordinator=None):self.connection_factory=connection_factory;self.cost_lookup=cost_lookup;self.cost_store=cost_store;self.calendar=calendar;self.settlement_coordinator=settlement_coordinator
+ def __init__(self,*,connection_factory,cost_lookup,cost_store,calendar,settlement_coordinator=None,shared_finalizer=None):self.connection_factory=connection_factory;self.cost_lookup=cost_lookup;self.cost_store=cost_store;self.calendar=calendar;self.settlement_coordinator=settlement_coordinator;self.shared_finalizer=shared_finalizer
  def finalize_due(self,*,today:date):
+  if self.shared_finalizer is not None:
+   result=self.shared_finalizer.finalize_due(today=today)
+   result['daily_settled']=self.settlement_coordinator.settle_due() if self.settlement_coordinator else 0
+   return result
   # Only already-persisted product/day snapshots are eligible.  Querying KIS is
   # read-only; the store itself enforces two stable T+1 observations.
   with self.connection_factory() as c,c.cursor() as q:

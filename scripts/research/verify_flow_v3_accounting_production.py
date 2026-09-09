@@ -29,12 +29,19 @@ def main():
                     facts=c.execute("""SELECT
                       count(*) AS source_trades,
                       count(*) FILTER(WHERE t.trade_status='CLOSED' AND t.actual_exit_time=t.entry_execution_time) AS equal_time,
-                      count(*) FILTER(WHERE t.trade_status='CLOSED' AND t.actual_exit_time<t.entry_execution_time) AS reversed_time,
-                      count(*) FILTER(WHERE t.trade_status<>'CANCELLED' AND l.paper_trade_id IS NULL) AS missing_projections,
-                      count(*) FILTER(WHERE t.trade_status='CLOSED' AND
-                         abs(t.net_return_pct-(100*(t.actual_exit_price/t.entry_execution_price-1)-0.0693054))>0.00000002) AS cost_mismatch,
+                      count(*) FILTER(WHERE NOT coalesce(x.excluded_from_corrected_performance,false)
+                         AND t.trade_status='CLOSED' AND coalesce(x.corrected_exit_time,t.actual_exit_time)<t.entry_execution_time) AS reversed_time,
+                      count(*) FILTER(WHERE t.trade_status<>'CANCELLED'
+                         AND NOT coalesce(x.excluded_from_corrected_performance,false)
+                         AND (l.paper_trade_id IS NULL OR l.metrics->>'projection_current'<>'true')) AS missing_projections,
+                      count(*) FILTER(WHERE t.trade_status='CLOSED'
+                         AND NOT coalesce(x.excluded_from_corrected_performance,false) AND
+                         ((l.metrics->>'net_return_pct') IS NULL OR abs((l.metrics->>'net_return_pct')::numeric
+                         -(100*(coalesce(x.corrected_exit_price,t.actual_exit_price)/t.entry_execution_price-1)-0.0693054))>0.00000002)) AS cost_mismatch,
                       max(l.quantity) AS max_quantity
-                    FROM flow_v3_paper_trade t LEFT JOIN flow_v3_paper_accounting_lot l USING(paper_trade_id)""").fetchone()
+                    FROM flow_v3_paper_trade t LEFT JOIN flow_v3_paper_accounting_lot l USING(paper_trade_id)
+                    LEFT JOIN flow_v3_paper_contract_correction x ON x.paper_trade_id=t.paper_trade_id
+                      AND x.audit_version='FLOW_V3_EOD_1519_V1'""").fetchone()
                     print('source_equal_reversed_missing_cost_maxqty',facts,flush=True)
                     assert facts[2]==facts[3]==facts[4]==0
                     stats=c.execute("""SELECT count(*),count(DISTINCT strategy_id),

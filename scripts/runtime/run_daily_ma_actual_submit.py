@@ -54,7 +54,11 @@ elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'PRODUCTION_GUARDED':
  poller=ProductionCheckpointPoller(repository=store,history_lookup=DailyMaKISOrderHistoryLookup(client=client,account=account),checkpoint_store=PostgresDailyMaFillCheckpointStore(factory))
  costs=PostgresDailyMaBrokerCostStore(factory)
  settlement=DailyMaSettlementCoordinator(repository=costs,capital_store=PostgresDailyMaCapitalStore(factory))
- finalizer=ProductionCostFinalizer(connection_factory=factory,cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=account),cost_store=costs,calendar=KisTradingCalendar(HolidayCalendarCollector(client)),settlement_coordinator=settlement)
+ from src.broker.shared_cost_repository import SharedBrokerCostFinalizer
+ lookup=DailyMaKISProductDayCostLookup(client=client,account=account)
+ calendar=KisTradingCalendar(HolidayCalendarCollector(client))
+ finalizer=ProductionCostFinalizer(connection_factory=factory,cost_lookup=lookup,cost_store=costs,calendar=calendar,settlement_coordinator=settlement,
+   shared_finalizer=SharedBrokerCostFinalizer(connection_factory=factory,cost_lookup=lookup,calendar=calendar))
  loop=DailyMaActualRuntimeLoop(request_repository=store,orchestrator=DailyMaSendOrchestrator(submit_store=store,submit_runtime=GuardedRuntime()),checkpoint_poller=poller,cost_finalizer=finalizer)
  print('Daily MA production guarded orchestration='+str(loop.run_once(today=date.today())))
 elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'REAL':
@@ -81,7 +85,22 @@ elif os.getenv('DAILY_MA_RUNTIME_TRANSPORT','') == 'REAL':
  class Poll:
   def poll_and_recover(self,**_):return 'REAL_READ_ONLY_POLL'
  class Cost:
-  def finalize_due(self,**_):return 'REAL_COST_PENDING'
+  def finalize_due(self,*,today):
+   from src.broker.shared_cost_repository import SharedBrokerCostFinalizer
+   from src.daily_ma_v03.kis_cost_history import DailyMaKISProductDayCostLookup
+   from src.collector.raw.kis_order_account import KISOrderAccount
+   from src.collector.raw.domestic_stock.holiday_calendar_collector import HolidayCalendarCollector
+   from src.service.kis_trading_calendar import KisTradingCalendar
+   from src.daily_ma_v03.broker_cost_repository import PostgresDailyMaBrokerCostStore
+   from src.daily_ma_v03.capital_repository import PostgresDailyMaCapitalStore
+   from src.daily_ma_v03.settlement_coordinator import DailyMaSettlementCoordinator
+   client=KISClient()
+   result=SharedBrokerCostFinalizer(connection_factory=factory,
+     cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=KISOrderAccount.from_environment()),
+     calendar=KisTradingCalendar(HolidayCalendarCollector(client))).finalize_due(today=today)
+   result['daily_settled']=DailyMaSettlementCoordinator(repository=PostgresDailyMaBrokerCostStore(factory),
+     capital_store=PostgresDailyMaCapitalStore(factory)).settle_due()
+   return result
  loop=DailyMaActualRuntimeLoop(request_repository=durable,orchestrator=DailyMaSendOrchestrator(submit_store=durable,submit_runtime=runtime),checkpoint_poller=Poll(),cost_finalizer=Cost())
  print('Daily MA REAL orchestration='+str(loop.run_once(today=date.today())))
 else: raise SystemExit('Daily MA real transport requires explicit SEND authorization')

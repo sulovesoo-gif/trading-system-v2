@@ -77,8 +77,13 @@ def main():
         submit_ready()
         poll=MinuteMaCheckpointPoller(repository=store,history_lookup=DailyMaKISOrderHistoryLookup(client=client,account=account),checkpoint_store=PostgresMinuteMaFillCheckpointStore(factory)).poll()
         submit_ready()
-        costs=MinuteMaCostFinalizer(connection_factory=factory,cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=account),
-          calendar=KisTradingCalendar(HolidayCalendarCollector(client)),clock=lambda:datetime.now(ZoneInfo('Asia/Seoul'))).finalize_due(today=today)
+        from src.broker.shared_cost_repository import SharedBrokerCostFinalizer
+        cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=account)
+        cost_calendar=KisTradingCalendar(HolidayCalendarCollector(client))
+        costs=MinuteMaCostFinalizer(connection_factory=factory,cost_lookup=cost_lookup,
+          calendar=cost_calendar,clock=lambda:datetime.now(ZoneInfo('Asia/Seoul')),
+          shared_finalizer=SharedBrokerCostFinalizer(connection_factory=factory,cost_lookup=cost_lookup,
+            calendar=cost_calendar)).finalize_due(today=today)
         print(json.dumps({'mode':'REAL_V1','signals':signal_result,'submitted':submitted,'poll':poll,'costs':costs,
                           'actual_post_count':transport.actual_post_send_count},default=str,sort_keys=True))
     finally:pool.close()
