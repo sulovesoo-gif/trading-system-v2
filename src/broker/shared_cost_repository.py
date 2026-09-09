@@ -62,6 +62,11 @@ class SharedBrokerCostFinalizer:
                     c.commit()
                 return 0
             raw=self.lookup.lookup(trade_date=day,execution_stock_code=stock)
+            if (prior and not unattributed and prior[6]==fingerprint
+                and BrokerCostTotals(*prior[:4])==raw.totals and prior[8] is not None
+                and raw.broker_snapshot_at-prior[8]<timedelta(minutes=10)):
+                # Frequent polling must not move the stable-observation clock.
+                return 0
             observed=BrokerCostSnapshot(day,stock,raw.totals,raw.broker_snapshot_at,False,BrokerCostStatus.PENDING_BROKER_COST)
             stored=None if not prior else StableCostRecheck(
                 BrokerCostSnapshot(day,stock,BrokerCostTotals(*prior[:4]),prior[4],False,BrokerCostStatus(prior[5])),

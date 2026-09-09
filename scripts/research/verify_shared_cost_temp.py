@@ -56,7 +56,9 @@ def main(migration):
         repo=SharedBrokerCostFinalizer(connection_factory=factory,cost_lookup=lookup,
             calendar=SimpleNamespace(open_dates=lambda *_:[date(2026,9,9)]))
         assert repo.finalize_due(today=date(2026,9,9))['finalized']==0
-        lookup.now+=timedelta(minutes=10)
+        lookup.now+=timedelta(minutes=1)
+        assert repo.finalize_due(today=date(2026,9,9))['finalized']==0
+        lookup.now+=timedelta(minutes=9)
         assert repo.finalize_due(today=date(2026,9,9))['finalized']==1
         before=c.execute('SELECT * FROM broker_shared_cost_allocation ORDER BY family,side').fetchall()
         c.commit()
