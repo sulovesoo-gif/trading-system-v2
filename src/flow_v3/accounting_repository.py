@@ -8,6 +8,7 @@ from decimal import Decimal
 from psycopg.types.json import Jsonb
 
 from .accounting import AccountingError, VERSION, calculate
+from .contract_correction import VERSION as CORRECTION_VERSION, corrected_trades
 
 
 def json_value(value):
@@ -67,6 +68,13 @@ class PaperAccountingRepository:
                  WHERE strategy_id=%s ORDER BY entry_execution_time,paper_trade_id""", (strategy_id,))
             keys = [x.name for x in cur.description]
             trades = [dict(zip(keys, row)) for row in cur.fetchall()]
+            cur.execute('SELECT to_regclass(%s)', ('public.flow_v3_paper_contract_correction',))
+            if cur.fetchone()[0] is not None:
+                cur.execute('SELECT * FROM flow_v3_paper_contract_correction WHERE strategy_id=%s AND audit_version=%s',
+                            (strategy_id, CORRECTION_VERSION))
+                correction_keys = [x.name for x in cur.description]
+                corrections = {row[0]: dict(zip(correction_keys, row)) for row in cur.fetchall()}
+                trades = corrected_trades(trades, corrections)
             active = [t for t in trades if t['trade_status'] != 'CANCELLED']
             price_date = price = None
             if active:
@@ -109,13 +117,7 @@ class PaperAccountingRepository:
                     metrics=EXCLUDED.metrics,calculated_at=now()""",
                             [(tid,strategy_id,lot['quantity'],VERSION,json_value(lot))
                              for tid,lot in lots.items()])
-                # Same formula as historical research; no source price or lifecycle writes.
-                cur.executemany("""UPDATE flow_v3_paper_trade SET gross_return_pct=%s,net_return_pct=%s
-                    WHERE paper_trade_id=%s AND
-                     (gross_return_pct IS DISTINCT FROM %s::numeric(20,8)
-                      OR net_return_pct IS DISTINCT FROM %s::numeric(20,8))""",
-                            [(lot['gross_return_pct'],lot['net_return_pct'],tid,
-                              lot['gross_return_pct'],lot['net_return_pct']) for tid,lot in lots.items()])
+                # Corrected returns belong only to this projection, never to source rows.
             for day, metrics in daily.items():
                 metrics['projection_current'] = True
                 cur.execute("""INSERT INTO flow_v3_paper_accounting_daily(strategy_id,business_date,metrics)

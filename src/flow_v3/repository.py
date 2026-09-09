@@ -14,8 +14,8 @@ from .models import EntrySignal, MinuteBase, MinuteState, StrategyContract
 
 KST_OPEN = time(9, 0)
 KST_SOURCE_END = time(15, 31)
-EOD_SOURCE_LIMIT = time(15, 28)
-EOD_EXECUTION_LIMIT = time(15, 29)
+EOD_SOURCE_LIMIT = time(15, 18)
+EOD_EXECUTION_LIMIT = time(15, 19)
 
 
 def _decimal_map(value) -> dict[int, Decimal | None]:
@@ -364,7 +364,7 @@ class FlowV3PostgresRepository:
                         OR (m.direction='SHORT' AND %s=1))
                       AND (m.exit_policy_code='SIGNAL_HOLD'
                         OR (m.exit_policy_code='SIGNAL_EOD' AND t.trade_date=%s
-                            AND %s::time<=TIME '15:28:00'))
+                            AND %s::time<=TIME '15:18:00'))
                     """,
                     (
                         state.bar_time,state.flow_value,state.velocity_value,state.bar_time,
@@ -396,6 +396,13 @@ class FlowV3PostgresRepository:
                 (event_id,strategy_id,event_key,business_date,stock_code,direction,family,
                  entry_fast,entry_slow,program_code,exit_fast,exit_slow,policy,execution_code,
                  signal_time,flow,velocity,program,quality) = row
+                if signal_time.time() > EOD_SOURCE_LIMIT:
+                    cursor.execute(
+                        """UPDATE flow_v3_runtime_entry_event SET event_status='EXPIRED',
+                           failure_reason='ENTRY_AFTER_EOD_CUTOFF',updated_at=CURRENT_TIMESTAMP
+                           WHERE event_id=%s""", (event_id,),
+                    )
+                    continue
                 execution = self._execution_bar(
                     cursor, execution_code=execution_code, after=signal_time,
                     same_date=business_date,
@@ -404,7 +411,7 @@ class FlowV3PostgresRepository:
                     continue
                 execution_time, execution_price = execution
                 if policy == "SIGNAL_EOD" and execution_time.time() > EOD_EXECUTION_LIMIT:
-                    if now.date() > business_date or now.time() >= time(15,31):
+                    if now.date() > business_date or now.time() >= time(15,20):
                         cursor.execute(
                             """UPDATE flow_v3_runtime_entry_event
                                SET event_status='EXPIRED',failure_reason='NO_VALID_EOD_ENTRY',
@@ -491,7 +498,7 @@ class FlowV3PostgresRepository:
         return resolved
 
     def finalize_eod(self, *, now: datetime) -> int:
-        if now.time() < time(15,31):
+        if now.time() < time(15,20):
             return 0
         total = 0
         business_date = now.date()
@@ -500,7 +507,7 @@ class FlowV3PostgresRepository:
                 cursor.execute(
                     """SELECT max(bar_time) FROM flow_v3_minute_state
                        WHERE stock_code=%s AND business_date=%s
-                         AND bar_time::time<=TIME '15:28:00'""",
+                         AND bar_time::time<=TIME '15:18:00'""",
                     (stock_code,business_date),
                 )
                 source_bar = cursor.fetchone()[0]
@@ -522,7 +529,7 @@ class FlowV3PostgresRepository:
                         """
                         SELECT bar_time,open_price FROM raw_stock_minute
                         WHERE stock_code=%s AND trading_venue='KRX' AND collect_cycle='1MIN'
-                          AND bar_time::date=%s AND bar_time::time<=TIME '15:29:00'
+                          AND bar_time::date=%s AND bar_time::time<=TIME '15:19:00'
                           AND open_price>0
                         ORDER BY bar_time DESC,collected_at DESC LIMIT 1
                         """,

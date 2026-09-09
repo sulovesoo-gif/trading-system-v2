@@ -6,7 +6,7 @@ at each KRX business-date boundary and require contiguous completed minutes.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import time, timedelta
 from decimal import Decimal
 from typing import Iterable, Sequence
 
@@ -152,7 +152,7 @@ class FlowV3SignalEngine:
         recent_states: Sequence[MinuteState],
         strategies: Iterable[StrategyContract],
     ) -> tuple[EntrySignal, ...]:
-        if not state.is_complete:
+        if not state.is_complete or state.bar_time.time() > time(15, 18):
             return ()
         signals: list[EntrySignal] = []
         for strategy in strategies:

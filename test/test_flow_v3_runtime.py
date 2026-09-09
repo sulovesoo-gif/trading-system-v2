@@ -201,8 +201,8 @@ class FlowV3PersistenceContractTest(unittest.TestCase):
         self.assertIn("flow_v3_runtime_cursor", self.repository)
 
     def test_eod_and_hold_contracts(self) -> None:
-        self.assertIn("bar_time::time<=TIME '15:28:00'", self.repository)
-        self.assertIn("bar_time::time<=TIME '15:29:00'", self.repository)
+        self.assertIn("bar_time::time<=TIME '15:18:00'", self.repository)
+        self.assertIn("bar_time::time<=TIME '15:19:00'", self.repository)
         self.assertIn("m.exit_policy_code='SIGNAL_HOLD'", self.repository)
         self.assertIn("m.exit_policy_code='SIGNAL_EOD'", self.repository)
         self.assertNotIn("generate_series", self.repository)
