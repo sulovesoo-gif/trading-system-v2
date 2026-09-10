@@ -104,6 +104,65 @@ def dashboard_payload(pool, query):
                 shared_account_status='NOT_IMPLEMENTED', cumulative_scope='ALL_AVAILABLE_PAPER_HISTORY')
 
 
+def capital_efficiency_payload(pool, query):
+    get = lambda key, default='': (query.get(key) or [default])[0]
+    mode, slot, frequency = get('instrument_mode'), get('slot'), get('frequency')
+    if mode not in ('','STOCK_LONG','LEVERAGE_LONG','INVERSE_SHORT') or slot not in ('','1','2','3','5','10','20','MAX'):
+        raise ValueError('실행상품 또는 Slot 필터가 잘못되었습니다.')
+    bands = {'25':(0,25),'50':(26,50),'75':(51,75),'100':(76,100),'101':(101,2147483647)}
+    if frequency and frequency not in bands:
+        raise ValueError('거래수 필터가 잘못되었습니다.')
+    page, size = _page(get('page',1)), _page_size(get('page_size',20))
+    skips = '(r.skipped_position_concurrency+r.skipped_basic_deposit+r.skipped_orderable_cash+r.skipped_price_missing+r.skipped_zero_quantity)'
+    sorts = {'return':'r.compound_return_pct DESC NULLS LAST','profit':'r.compound_profit DESC NULLS LAST',
+             'capital':'r.final_compound_capital DESC NULLS LAST','per_trade':'r.avg_net_profit_per_executed_trade DESC NULLS LAST',
+             'trades':'r.executed_trade_count ASC','capture':'r.capture_rate_pct DESC NULLS LAST','skip':skips+' ASC'}
+    order = sorts.get(get('sort','return'),sorts['return'])+',r.strategy_id,r.instrument_mode,r.slot_count'
+    with pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.execute('SET TRANSACTION READ ONLY')
+        cur.execute("SET LOCAL statement_timeout='5s'")
+        cur.execute('''SELECT * FROM flow_v3_capital_efficiency_run
+            WHERE engine_version='09A_V0.8' AND contract_version='CAPITAL_4ROUTE_V1.2'
+              AND initial_economic_capital=80000000 AND validation_status='COMPLETE'
+              AND strategy_count=9600 AND k_negative_strategy_count=0 AND etp_executed_below_gate=0
+            ORDER BY calculated_at DESC,run_id DESC LIMIT 1''')
+        runs=_dicts(cur)
+        if not runs:
+            return dict(status='NOT_READY',run=None,items=[],summary=[],total_count=0,total_pages=1,page=1)
+        run=runs[0]
+        where,params=['r.run_id=%s'],[run['run_id']]
+        if mode:
+            where.append('r.instrument_mode=%s');params.append(mode)
+        if slot=='MAX':
+            where.append('r.is_max_k_slot')
+        elif slot:
+            where.append('r.slot_count=%s');params.append(int(slot))
+        if frequency:
+            where.append('r.executed_trade_count BETWEEN %s AND %s');params.extend(bands[frequency])
+        condition=' AND '.join(where)
+        cur.execute(f'SELECT count(*) FROM flow_v3_capital_efficiency_result r WHERE {condition}',params)
+        total=cur.fetchone()[0]
+        cur.execute(f'''SELECT r.*, {skips} AS total_skip,
+            m.entry_family_code,m.entry_fast_period,m.entry_slow_period,m.program_condition_code,
+            m.exit_fast_period,m.exit_slow_period,m.exit_policy_code
+            FROM flow_v3_capital_efficiency_result r JOIN flow_v3_strategy_master m USING(strategy_id)
+            WHERE {condition} ORDER BY {order} LIMIT %s OFFSET %s''',params+[size,(page-1)*size])
+        items=_dicts(cur)
+        for i,row in enumerate(items,1+(page-1)*size):
+            row['rank']=i
+        cur.execute(f'''SELECT r.instrument_mode,count(*) AS experiment_count,count(DISTINCT r.strategy_id) AS strategy_count,
+            sum(r.total_closed_signals) AS total_signals,sum(r.executed_trade_count) AS executed_trades,
+            100.0*sum(r.executed_trade_count)/NULLIF(sum(r.total_closed_signals),0) AS capture_rate_pct,
+            sum(r.skipped_basic_deposit) AS basic_deposit_skip,
+            avg(r.compound_return_pct) AS avg_return,max(r.compound_return_pct) AS best_return,
+            avg(r.final_compound_capital) AS avg_capital,max(r.final_compound_capital) AS best_capital,
+            avg(r.avg_net_profit_per_executed_trade) AS avg_profit_per_trade
+            FROM flow_v3_capital_efficiency_result r WHERE {condition} GROUP BY r.instrument_mode ORDER BY r.instrument_mode''',params)
+        summary=_dicts(cur)
+    return dict(status='OK',run=run,items=items,summary=summary,page=page,page_size=size,total_count=total,
+                total_pages=max(1,(total+size-1)//size))
+
+
 def _strategy(cur, strategy_id):
     cur.execute('''SELECT strategy_id,stock_code,direction,execution_code,entry_family_code,
         entry_fast_period,entry_slow_period,program_condition_code,exit_fast_period,

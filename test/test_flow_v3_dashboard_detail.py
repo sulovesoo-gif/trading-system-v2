@@ -7,12 +7,17 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from src.service.flow_v3_dashboard_service import _signal_window, strategy_detail_payload, trade_detail_payload, dashboard_payload
+from src.service.flow_v3_dashboard_service import _signal_window, strategy_detail_payload, trade_detail_payload, dashboard_payload, capital_efficiency_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class DetailContractTest(unittest.TestCase):
+    def test_capital_invalid_filter_before_db(self):
+        pool=MagicMock()
+        with self.assertRaises(ValueError):
+            capital_efficiency_payload(pool,{'slot':['999']})
+        pool.connection.assert_not_called()
     @unittest.skipUnless(os.getenv('FLOW_DETAIL_UI_URL') and os.getenv('PLAYWRIGHT_MODULE'), 'opt-in headless UI verification')
     def test_browser_desktop_mobile_clicks(self):
         script = r"""
@@ -21,6 +26,10 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),assert=require('assert')
  for(const width of [1440,390]){const page=await browser.newPage({viewport:{width,height:844}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(process.env.FLOW_DETAIL_UI_URL);await page.locator('#rows tr.live').first().waitFor();
  await page.selectOption('#sort','per_trade');await page.waitForFunction(()=>!document.querySelector('#status').textContent.includes('조회 중'));
+ await page.locator('#ceRows tr').first().waitFor();await page.selectOption('#ceSlot','MAX');
+ await page.waitForFunction(()=>!document.querySelector('#ceStatus').textContent.includes('조회 중'));
+ await page.locator('#ceRows tr').first().click();await page.locator('#strategyMeta dl').waitFor();
+ assert(await page.locator('#detail').evaluate(e=>e.open));await page.locator('#detailClose').click();
  await page.locator('tr.live[data-strategy="FV3008243"]').click();await page.locator('#tradeList button').first().waitFor();
  assert(await page.locator('#detail').evaluate(e=>e.open));assert.equal(await page.locator('#detailRange').inputValue(),'7');
  const box=await page.locator('#detail').boundingBox();assert(box.width<=width&&box.x>=0);
@@ -68,6 +77,37 @@ for(const key of ['value="per_trade"','<dialog','94vw','overflow:auto','data-tra
 
 @unittest.skipUnless(os.getenv('FLOW_DETAIL_TEST_ENV'), 'opt-in DB read-only verification')
 class DetailDatabaseTest(unittest.TestCase):
+    def test_capital_snapshot_and_summaries(self):
+        d=capital_efficiency_payload(self.pool,{})
+        self.assertEqual(d['status'],'OK')
+        self.assertEqual(d['run']['engine_version'],'09A_V0.8')
+        self.assertEqual(d['total_count'],43630)
+        expected={'STOCK_LONG':21.575613,'LEVERAGE_LONG':9.308409,'INVERSE_SHORT':4.842570}
+        for row in d['summary']:
+            self.assertEqual(row['strategy_count'],4800)
+            self.assertAlmostEqual(float(row['best_return']),expected[row['instrument_mode']],places=5)
+        with self.pool.connection() as conn,conn.transaction(),conn.cursor() as cur:
+            cur.execute('SET TRANSACTION READ ONLY')
+            cur.execute('''SELECT instrument_mode,sum(total_closed_signals),sum(executed_trade_count),
+                sum(skipped_basic_deposit) FROM flow_v3_capital_efficiency_result WHERE run_id=%s GROUP BY instrument_mode''',(d['run']['run_id'],))
+            direct={r[0]:r[1:] for r in cur.fetchall()}
+        for r in d['summary']:
+            self.assertEqual((r['total_signals'],r['executed_trades'],r['basic_deposit_skip']),direct[r['instrument_mode']])
+
+    def test_capital_filters_sorts_and_page(self):
+        for sort in ('return','profit','capital','per_trade','trades','capture','skip'):
+            d=capital_efficiency_payload(self.pool,{'sort':[sort],'slot':['MAX'],'frequency':['25'],'instrument_mode':['LEVERAGE_LONG']})
+            self.assertTrue(d['items'])
+            for r in d['items']:
+                self.assertTrue(r['is_max_k_slot'])
+                self.assertLessEqual(r['executed_trade_count'],25)
+                self.assertEqual(r['initial_account_cash'],80000000)
+                self.assertEqual(r['strategy_working_capital'],80000000)
+        a=capital_efficiency_payload(self.pool,{})
+        b=capital_efficiency_payload(self.pool,{'page':['2']})
+        key=lambda r:(r['strategy_id'],r['instrument_mode'],r['slot_count'])
+        self.assertFalse(set(map(key,a['items'])) & set(map(key,b['items'])))
+
     @classmethod
     def setUpClass(cls):
         from dotenv import load_dotenv
