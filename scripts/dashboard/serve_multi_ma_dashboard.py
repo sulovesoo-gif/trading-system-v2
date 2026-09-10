@@ -38,6 +38,7 @@ from src.service.daily_ma_dashboard_service import strategy_detail as daily_ma_s
 from src.service.minute_ma_dashboard_service import dashboard_payload as minute_ma_dashboard_payload
 from src.service.minute_ma_dashboard_service import path_detail as minute_ma_path_detail
 from src.service.flow_v3_dashboard_service import dashboard_payload as flow_v3_dashboard_payload
+from src.service.flow_v3_dashboard_service import strategy_detail_payload, trade_detail_payload
 from src.service.sql_analysis_runner_service import SqlAnalysisRunner, SqlAnalysisSettings
 
 KST = ZoneInfo("Asia/Seoul")
@@ -1065,6 +1066,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             except Exception as error:
                 logging.exception("SQL analysis GET failed")
                 return self._send_json({"status": "ERROR", "error": f"{type(error).__name__}: {error}"}, 500)
+        if parsed.path in ("/flow-v3/api/strategy", "/flow-v3/api/trade"):
+            try:
+                handler = strategy_detail_payload if parsed.path.endswith('/strategy') else trade_detail_payload
+                return self._send_json(handler(self.pool,parse_qs(parsed.query)))
+            except ValueError as error:
+                return self._send_json({"error":str(error)},400)
+            except KeyError as error:
+                return self._send_json({"error":str(error)},404)
+            except Exception:
+                logging.exception("FLOW V3 detail query failed")
+                return self._send_json({"error":"상세 조회 실패: 서버 로그 확인"},500)
         if parsed.path == "/flow-v3/api/dashboard":
             try:
                 return self._send_json(flow_v3_dashboard_payload(self.pool,parse_qs(parsed.query)))
