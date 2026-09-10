@@ -34,7 +34,7 @@ class PostgresMinuteMaFillCheckpointStore:
                 AND o.minute_path_id=i.minute_path_id AND o.effective_to IS NULL
               LEFT JOIN minute_ma_policy_operation po
                 ON po.minute_policy_operation_id=i.minute_policy_operation_id
-              WHERE l.broker_order_id=%s FOR UPDATE""",(order.broker_order_id,));intent=q.fetchone()
+              WHERE l.broker_order_id=%s FOR UPDATE OF i,l""",(order.broker_order_id,));intent=q.fetchone()
             if intent is None:raise ValueError('MINUTE_MA_INTENT_REQUIRED')
             intent_type,trade_id,path_id,capital,operation_id,epoch,policy_path_id,policy_operation_id,anchor,threshold,stop_policy=intent
             if epoch is None:raise ValueError('MINUTE_MA_OPERATION_REQUIRED')
