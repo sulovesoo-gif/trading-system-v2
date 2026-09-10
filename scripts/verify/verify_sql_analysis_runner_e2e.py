@@ -42,7 +42,7 @@ def wait_for(base_url: str, headers: dict[str, str], execution_id: str, timeout_
                                 params={"execution_id": execution_id}, headers=headers, timeout=30)
         response.raise_for_status()
         item = response.json()
-        if item["status"] in {"SUCCEEDED", "FAILED"}:
+        if item["status"] in {"SUCCEEDED", "FAILED", "CANCELLED"}:
             return item
         time.sleep(2)
     raise TimeoutError(f"execution {execution_id} did not finish")
@@ -85,6 +85,8 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8090")
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--existing-execution-id")
+    parser.add_argument("--safe-only", action="store_true",
+                        help="Check permanent-object privileges read-only; do not attempt destructive statements")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
     token = os.getenv("SQL_ANALYSIS_AUTH_TOKEN", "")
@@ -159,6 +161,16 @@ def main() -> int:
             "TRUNCATE": "TRUNCATE sql_analysis_execution_history;",
             "CREATE_PERMANENT": "CREATE TABLE sql_analysis_forbidden(id integer);",
         }
+        if args.safe_only:
+            privilege_check = run_sql(args.base_url, headers, """SELECT
+                1 / ((NOT has_schema_privilege('public','CREATE')
+                  AND NOT has_table_privilege('public.sql_analysis_execution_history','INSERT,UPDATE,DELETE,TRUNCATE'))::integer)
+                  AS privileges_safe;""",
+                "read-only privilege acceptance", 120)
+            if privilege_check['status'] != 'SUCCEEDED':
+                raise AssertionError('restricted analysis privilege check failed')
+            evidence['permanent_privileges_readonly'] = True
+            forbidden = {}
         blocks = {}
         for name, sql in forbidden.items():
             item = run_sql(args.base_url, headers, sql, f"permanent {name} must fail", 120)

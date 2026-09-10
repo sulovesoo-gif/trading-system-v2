@@ -1228,9 +1228,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         filename=(str(payload.get("filename") or "").strip() or None),
                         request_key=str(payload.get("request_key") or uuid.uuid4()))
                     return self._send_json(item, 202)
+                if parsed.path == "/sql-analysis/api/cancel":
+                    execution_id = str(payload.get("execution_id") or "").strip()
+                    if not execution_id:
+                        raise ValueError("execution_id is required")
+                    return self._send_json(self.sql_runner.cancel_execution(execution_id))
                 if parsed.path == "/sql-analysis/api/session/end":
                     return self._send_json(self.sql_runner.end_session())
                 return self._send_json({"error": "not found"}, 404)
+            except KeyError as error:
+                return self._send_json({"status": "ERROR", "error": str(error)}, 404)
             except (ValueError, RuntimeError, json.JSONDecodeError) as error:
                 return self._send_json({"status": "ERROR", "error": str(error)}, 409)
             except Exception as error:

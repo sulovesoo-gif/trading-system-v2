@@ -168,6 +168,10 @@ class StreamingXlsxWriter:
         self.destination.unlink(missing_ok=True)
 
 
+class UserCancelled(Exception):
+    """Cancellation requested for this execution, not statement_timeout."""
+
+
 class SqlAnalysisRunner:
     def __init__(self, history_pool, settings: SqlAnalysisSettings):
         self.history_pool = history_pool
@@ -179,6 +183,7 @@ class SqlAnalysisRunner:
         self._session_id = uuid.uuid4()
         self._last_activity = time.monotonic()
         self._active_execution: uuid.UUID | None = None
+        self._cancel_requested: uuid.UUID | None = None
         self._close_after_job = False
         self._stop = threading.Event()
         self._janitor = threading.Thread(target=self._janitor_loop, daemon=True, name="sql-analysis-janitor")
@@ -245,6 +250,7 @@ class SqlAnalysisRunner:
         writer = None
         output = self.settings.artifact_dir / f"{execution_id}.xlsx"
         try:
+            self._check_cancelled(execution_id)
             with self.history_pool.connection() as conn, conn.cursor() as cur:
                 cur.execute("UPDATE sql_analysis_execution_history SET status='RUNNING',started_at=clock_timestamp(),updated_at=clock_timestamp() WHERE execution_id=%s", (execution_id,))
             analysis = self._connect()
@@ -252,14 +258,20 @@ class SqlAnalysisRunner:
             summaries = []
             total_rows = 0
             with analysis.cursor() as cur:
+                self._check_cancelled(execution_id)
                 cur.execute(sql, prepare=False)
                 statement_number = 0
                 while True:
+                    self._check_cancelled(execution_id)
                     statement_number += 1
                     if cur.description is not None:
                         columns = [column.name for column in cur.description]
                         rows = iter(lambda: cur.fetchmany(2000), [])
-                        flat_rows = (row for batch in rows for row in batch)
+                        def checked_rows():
+                            for batch in rows:
+                                self._check_cancelled(execution_id)
+                                yield from batch
+                        flat_rows = checked_rows()
                         count = writer.add_result(f"RESULT_{len(summaries)+1:02d}", columns, flat_rows)
                         summaries.append({"result_no": len(summaries)+1, "statement_no": statement_number,
                                           "row_count": count, "column_count": len(columns), "columns": columns})
@@ -274,7 +286,10 @@ class SqlAnalysisRunner:
             writer.close()
             duration = round((time.monotonic() - started) * 1000)
             filename = f"SQL_ANALYSIS_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(execution_id)[:8]}.xlsx"
-            with self.history_pool.connection() as conn, conn.cursor() as cur:
+            # Serialize final success with cancel acceptance. Cancellation that
+            # wins this lock can never be overwritten by SUCCEEDED.
+            with self._lock, self.history_pool.connection() as conn, conn.cursor() as cur:
+                self._check_cancelled(execution_id)
                 cur.execute("""UPDATE sql_analysis_execution_history SET status='SUCCEEDED',finished_at=clock_timestamp(),
                     duration_ms=%s,result_set_count=%s,total_result_rows=%s,result_summary=%s::jsonb,
                     excel_filename=%s,excel_size_bytes=%s,updated_at=clock_timestamp() WHERE execution_id=%s""",
@@ -287,11 +302,13 @@ class SqlAnalysisRunner:
             position = getattr(diagnostic, "statement_position", None) if diagnostic else None
             context = getattr(diagnostic, "context", None) if diagnostic else None
             duration = round((time.monotonic() - started) * 1000)
-            with self.history_pool.connection() as conn, conn.cursor() as cur:
-                cur.execute("""UPDATE sql_analysis_execution_history SET status='FAILED',finished_at=clock_timestamp(),
+            with self._lock, self.history_pool.connection() as conn, conn.cursor() as cur:
+                cancelled = self._cancel_requested == execution_id
+                cur.execute("""UPDATE sql_analysis_execution_history SET status=%s,finished_at=clock_timestamp(),
                     duration_ms=%s,error_sqlstate=%s,error_message=%s,error_statement_position=%s,error_context=%s,
                     updated_at=clock_timestamp() WHERE execution_id=%s""",
-                    (duration, sqlstate, str(error)[:8000], int(position) if position else None,
+                    ('CANCELLED' if cancelled else 'FAILED', duration, sqlstate,
+                     'Cancelled by user' if cancelled else str(error)[:8000], int(position) if position else None,
                      str(context)[:8000] if context else None, execution_id))
             # A failed statement in autocommit normally leaves an idle usable
             # session.  Never retain an aborted/broken session: that would make
@@ -308,9 +325,44 @@ class SqlAnalysisRunner:
         finally:
             with self._lock:
                 self._active_execution = None
+                self._cancel_requested = None
                 self._last_activity = time.monotonic()
                 if self._close_after_job:
                     self._close_session_locked()
+
+    def _check_cancelled(self, execution_id: uuid.UUID) -> None:
+        with self._lock:
+            if self._cancel_requested == execution_id:
+                raise UserCancelled('Cancelled by user')
+
+    def cancel_execution(self, execution_id: str) -> dict:
+        target = uuid.UUID(execution_id)
+        with self._lock:
+            item = self.get_execution(str(target))
+            if target != self._active_execution or item['status'] not in {'QUEUED', 'RUNNING'}:
+                return {**item, 'cancel_requested': False}
+            if self._cancel_requested != target:
+                self._cancel_requested = target
+                threading.Thread(target=self._deliver_cancel, args=(target,),
+                                 name='sql-analysis-cancel', daemon=True).start()
+            return {**item, 'cancel_requested': True}
+
+    def _deliver_cancel(self, execution_id: uuid.UUID) -> None:
+        # A cancel packet sent just BEFORE execute reaches PostgreSQL has no
+        # effect. Retry until the worker finishes, bound to this execution under
+        # the same lock as finalization, so no packet can hit the next job.
+        while True:
+            with self._lock:
+                if self._active_execution != execution_id or self._cancel_requested != execution_id:
+                    return
+                if self._connection is not None and not self._connection.closed:
+                    try:
+                        self._connection.cancel_safe(timeout=2.0)
+                    except Exception:
+                        # Delivery is best effort; don't claim completion or
+                        # close the session. The worker owns terminal status.
+                        pass
+            time.sleep(0.1)
 
     def _row_to_dict(self, row, columns) -> dict:
         result = dict(zip(columns, row))
@@ -359,8 +411,7 @@ class SqlAnalysisRunner:
         with self._lock:
             if self._active_execution is not None:
                 self._close_after_job = True
-                if self._connection is not None and not self._connection.closed:
-                    self._connection.cancel()
+                self.cancel_execution(str(self._active_execution))
                 return {"ended": False, "pending": True}
             old = str(self._session_id)
             self._close_session_locked()
