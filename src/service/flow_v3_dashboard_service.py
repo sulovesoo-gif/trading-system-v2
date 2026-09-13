@@ -55,9 +55,10 @@ def dashboard_payload(pool, query):
             row['live_orders']=[]
             row['live_lots']=[]
             if live_pipeline_available:
-                cur.execute('SELECT * FROM flow_v3_live_capital WHERE strategy_id=%s',(row['strategy_id'],))
+                cur.execute('SELECT * FROM flow_v3_live_capital WHERE strategy_id=%s ORDER BY operation_id',(row['strategy_id'],))
                 capitals=_dicts(cur)
-                row['live_capital']=capitals[0] if capitals else None
+                row['live_capitals']=capitals
+                row['live_capital']=capitals[0] if len(capitals)==1 else None
                 cur.execute("""SELECT i.status,count(*) AS count,COALESCE(sum(o.post_attempt_count),0) AS post_attempts
                     FROM flow_v3_live_intent i LEFT JOIN flow_v3_live_order o USING(intent_id)
                     WHERE i.strategy_id=%s GROUP BY i.status""",(row['strategy_id'],))
@@ -69,7 +70,8 @@ def dashboard_payload(pool, query):
             if preparation_available:
                 cur.execute('SELECT * FROM flow_v3_live_preparation WHERE strategy_id=%s',(row['strategy_id'],))
                 prep=_dicts(cur)
-                row['live_preparation']=prep[0] if prep else None
+                row['live_preparations']=prep
+                row['live_preparation']=prep[0] if len(prep)==1 else None
             cur.execute("""SELECT sum((metrics->>'entry_count')::integer) AS entry_count,
                 sum((metrics->>'closed_count')::integer) AS closed_count,
                 sum((metrics->>'win_count')::integer) AS win_count,

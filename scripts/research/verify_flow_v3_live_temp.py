@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import psycopg
 from src.repository.database import DatabaseSettings
 from src.flow_v3.live_repository import LiveRepository
-from src.flow_v3.live_contract import WHITELIST,LONG_IDS
+from test.flow_v3_legacy_fixture import WHITELIST,LONG_IDS
 
 
 def main(migration=None):
@@ -236,5 +236,4 @@ def main(migration=None):
 
 
 if __name__=='__main__':
-    with patch.dict('os.environ',{'FLOW_V3_ACTUAL_SEND':'N'}):
-        main()
+    raise SystemExit('Legacy single-owner harness retired. Use test.test_flow_v3_live_routes on an isolated DB.')

@@ -5,12 +5,13 @@ from unittest import TestCase
 from unittest.mock import patch
 from src.flow_v3.send_authorization import send_authorized
 from src.flow_v3.live_transport import FlowTransport, validate_claim
-from src.flow_v3.live_contract import LONG_IDS, request_payload, cancel_payload
+from src.flow_v3.live_contract import request_payload, cancel_payload
+from test.flow_v3_legacy_fixture import LONG_IDS
 
 
 def fixture(cancel=False):
-    payload = cancel_payload('123','branch',2) if cancel else request_payload('0193T0','BUY',5)
-    return ('fixture',payload,LONG_IDS[0],'000660','LONG','0193T0','BUY',5,'123',2)
+    payload = cancel_payload('123','branch',2) if cancel else request_payload('000660','BUY',5)
+    return ('fixture',payload,LONG_IDS[0],'000660','LONG','000660','BUY',5,'123',2,'UNDERLYING',1,100)
 
 
 class Connection:
@@ -23,6 +24,8 @@ class Connection:
         self.statements.append((sql,args)); self.row=None
         if 'SELECT enabled' in sql:
             self.row=('N' if self.revoke and self.claimed else self.db,)
+        elif 'SELECT live_approved' in sql:
+            self.row=(True,True,None,None,self.candidate[5])
         elif ('SELECT r.entry_intent_id' if self.cancel else 'SELECT o.broker_order_id') in sql and not self.claimed:
             self.row=self.candidate
         if 'UPDATE flow_v3_live_' in sql and "status='UNKNOWN'" in sql or "SET status='SUBMITTING'" in sql:
@@ -38,7 +41,7 @@ class SendTests(TestCase):
                 with self.subTest(env=env,db=db), patch.dict('os.environ',{'FLOW_V3_ACTUAL_SEND':env}):
                     self.assertEqual(send_authorized(Connection(db=db)), env=='Y' and db=='Y')
 
-    def run_fake(self, conn, raises=False):
+    def run_fake(self, conn, raises=False, cash_reason=None):
         calls=[]; responses=[]
         def post(**kw):
             self.assertTrue(conn.claimed)
@@ -48,6 +51,7 @@ class SendTests(TestCase):
         repo=SimpleNamespace(pool=SimpleNamespace(connection=lambda:nullcontext(conn)),
             record_response=lambda *a:responses.append(a),cancel_response=lambda *a:responses.append(a))
         adapter=FlowTransport(repo,SimpleNamespace(post_once=post),SimpleNamespace(cano='fake',account_product_code='fake'))
+        adapter.cash_check=lambda *a:cash_reason
         with patch.dict('os.environ',{'FLOW_V3_ACTUAL_SEND':'Y'}):
             first=adapter.run()
             self.assertEqual(adapter.run(),0)  # Restart/reprocess same durable claim.
@@ -93,7 +97,7 @@ class SendTests(TestCase):
         self.assertTrue(any('post_attempt_count=0' in sql for sql,_ in conn.statements))
 
     def test_invalid_strategy_product_side_quantity_or_payload_zero_http(self):
-        for index,value in ((2,'FV3000001'),(3,'005930'),(5,'0197X0'),(6,'INVALID'),(7,0)):
+        for index,value in ((2,''),(3,'005930'),(5,'0197X0'),(6,'INVALID'),(7,0)):
             row=list(fixture());row[index]=value
             first,calls,_=self.run_fake(Connection(row=tuple(row)))
             self.assertEqual((first,len(calls)),(0,0))
@@ -106,3 +110,19 @@ class SendTests(TestCase):
                 if 'SELECT enabled' in sql and self.claimed: raise ConnectionError('fixture')
                 return super().execute(sql,args)
         self.assertRaises(ConnectionError,self.run_fake,Broken())
+
+    def test_all_routes_cash_recheck_denies_post_and_never_retries(self):
+        for route,code,direction in [('UNDERLYING','000660','LONG'),('LEVERAGE','0193T0','LONG'),('INVERSE','0197X0','SHORT')]:
+            row=list(fixture());row[1]=request_payload(code,'BUY',5)
+            row[4]=direction;row[5]=code;row[10]=route
+            conn=Connection(row=tuple(row))
+            first,calls,_=self.run_fake(conn,cash_reason='KIS_ORDERABLE_CASH_INSUFFICIENT')
+            self.assertEqual((first,len(calls)),(0,0))
+            self.assertTrue(any(args and 'KIS_ORDERABLE_CASH_INSUFFICIENT' in args for _,args in conn.statements))
+
+    def test_leverage_inverse_authorized_path_not_unconditionally_blocked(self):
+        for route,code,direction in [('LEVERAGE','0193T0','LONG'),('INVERSE','0197X0','SHORT')]:
+            row=list(fixture());row[1]=request_payload(code,'BUY',5)
+            row[4]=direction;row[5]=code;row[10]=route
+            first,calls,_=self.run_fake(Connection(row=tuple(row)))
+            self.assertEqual((first,len(calls)),(1,1))

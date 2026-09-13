@@ -13,9 +13,12 @@ class FlowBrokerReader:
     def __init__(self, client, account, clock=kst_now):
         self.client,self.account,self.clock=client,account,clock
 
-    def quotes(self):
+    def quotes(self, codes=()):
+        from .live_contract import EXECUTION_CODES
         result={}
-        for code in ('0193T0','0197X0'):
+        for code in sorted(set(codes)):
+            if code not in EXECUTION_CODES:
+                raise ValueError('FLOW_QUOTE_ROUTE_INVALID')
             response=self.client.get(path='/uapi/domestic-stock/v1/quotations/inquire-price',
                 tr_id='FHKST01010100',params={'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':code})
             price=Decimal(str((response.get('output') or {}).get('stck_prpr') or '0'))

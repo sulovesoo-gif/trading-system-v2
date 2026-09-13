@@ -5,7 +5,7 @@ from uuid import NAMESPACE_URL, uuid5
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from .send_authorization import send_authorized
-from .live_contract import (WHITELIST, CUTOFF, EOD_EXECUTION, validate_mapping,
+from .live_contract import (EXECUTION_CODES, CUTOFF, EOD_EXECUTION, validate_mapping,
                             order_quantity, request_payload, normal_exit, cumulative_delta,cancel_payload)
 
 
@@ -14,47 +14,24 @@ def identity(value):
 
 
 class LiveRepository:
-    def __init__(self, pool):
+    def __init__(self, pool, cash_check=None):
         self.pool = pool
+        self.cash_check = cash_check
 
     def activate(self, now):
-        """Idempotent operation promotion; PAPER master enablement is untouched."""
-        with self.pool.connection() as c, c.transaction(), c.cursor(row_factory=dict_row) as q:
-            q.execute("SELECT pg_advisory_xact_lock(hashtext('FLOW_V3_LIVE_CYCLE'))")
-            q.execute('SELECT * FROM flow_v3_strategy_master WHERE strategy_id=ANY(%s)', (list(WHITELIST),))
-            masters = q.fetchall()
-            if len(masters) != 15:
-                raise ValueError('FLOW_LIVE_MASTER_COUNT')
-            q.execute("""SELECT max(trade_date) AS day FROM raw_stock_daily WHERE trading_venue='KRX'
-                AND collect_cycle='DAILY' AND data_source='KIS' AND trade_date<%s""", (now.date(),))
-            day = q.fetchone()['day']
-            for m in masters:
-                sid = m['strategy_id']
-                validate_mapping(sid, m['stock_code'], m['direction'], m['execution_code'])
-                q.execute('SELECT 1 FROM flow_v3_live_capital WHERE strategy_id=%s', (sid,))
-                if q.fetchone():
-                    continue  # No reinitialization of previously activated capital.
-                q.execute("""SELECT close_price FROM raw_stock_daily WHERE stock_code=%s AND trade_date=%s
-                    AND trading_venue='KRX' AND collect_cycle='DAILY' AND data_source='KIS'
-                    AND close_price>0 ORDER BY collected_at DESC LIMIT 1""", (m['execution_code'], day))
-                price = q.fetchone()
-                if not price:
-                    raise ValueError('FLOW_LIVE_PREVIOUS_CLOSE_MISSING:' + m['execution_code'])
-                close = price['close_price']; capital = close*Decimal('1.5')
-                q.execute("""UPDATE flow_v3_strategy_operation SET effective_to=%s WHERE strategy_id=%s
-                    AND effective_to IS NULL""", (now,sid))
-                q.execute("""INSERT INTO flow_v3_strategy_operation
-                    (strategy_id,operation_status,allocated_amount,capital_epoch_no,effective_from,change_reason,changed_by,memo)
-                    VALUES(%s,'LIVE',%s,1,%s,'FLOW_V3_USER_APPROVED_15','FLOW_V3_LIVE_ACTIVATION',
-                    'Operation LIVE, physical broker SEND disabled; PAPER tracking independent') RETURNING operation_id""",
-                    (sid,capital,now))
-                operation_id = q.fetchone()['operation_id']
-                q.execute("""INSERT INTO flow_v3_live_capital
-                    (strategy_id,operation_id,initial_price_date,initial_close,initial_capital,current_capital,activated_at)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s)""", (sid,operation_id,day,close,capital,capital,now))
+        raise ValueError('USE_EXPLICIT_OPERATION_REGISTRATION_NO_BULK_ACTIVATION')
+
+    def quote_codes(self):
+        with self.pool.connection() as c,c.cursor() as q:
+            q.execute("""SELECT DISTINCT o.live_execution_code FROM flow_v3_strategy_operation o
+                WHERE o.live_approved AND o.operation_status='LIVE' AND
+                ((o.entry_enabled AND o.effective_to IS NULL) OR EXISTS
+                 (SELECT 1 FROM flow_v3_live_lot l WHERE l.operation_id=o.operation_id
+                   AND l.exposure_status<>'SETTLED'))""")
+            return [r[0] for r in q.fetchall()]
 
     def cycle(self, now, quotes):
-        """Existing fills/costs settle before new entries. No network inside this lock."""
+        """Existing fills/costs settle before new entries; BUY inquiry failures are durable blocks."""
         result = dict(entries=0, exits=0, settlements=0, requests=0, post=0)
         with self.pool.connection() as c, c.transaction(), c.cursor(row_factory=dict_row) as q:
             q.execute("SET LOCAL lock_timeout='3s'")
@@ -84,39 +61,41 @@ class LiveRepository:
     @staticmethod
     def _refresh_quotes(q, quotes, now):
         for code,(price,observed_at) in quotes.items():
-            if code not in ('0193T0','0197X0') or price<=0 or not timedelta(0)<=now-observed_at<=timedelta(seconds=30):
+            price=Decimal(price)
+            if code not in EXECUTION_CODES or not price.is_finite() or price<=0 or not timedelta(0)<=now-observed_at<=timedelta(seconds=30):
                 continue
             q.execute("""UPDATE flow_v3_live_capital c SET reference_price=%s,reference_observed_at=%s,
                 next_quantity=greatest(0,floor(c.current_capital/%s))::bigint,last_error=NULL,updated_at=now()
-                FROM flow_v3_live_preparation p WHERE c.strategy_id=p.strategy_id AND p.execution_code=%s""",
+                FROM flow_v3_strategy_operation p WHERE c.operation_id=p.operation_id AND p.live_execution_code=%s""",
                 (price,observed_at,price,code))
 
     @staticmethod
     def _entries(q, now):
-        q.execute("""SELECT e.* FROM flow_v3_runtime_entry_event e
+        q.execute("""SELECT e.*,c.operation_id,o.execution_route,o.live_execution_code FROM flow_v3_runtime_entry_event e
             JOIN flow_v3_live_capital c USING(strategy_id)
             JOIN flow_v3_strategy_operation o ON o.operation_id=c.operation_id
             WHERE e.entry_signal_time>=c.activated_at AND e.created_at>=c.activated_at
-              AND o.operation_status='LIVE' AND o.effective_to IS NULL
+              AND o.operation_status='LIVE' AND o.effective_to IS NULL AND o.live_approved AND o.entry_enabled
+              AND e.entry_signal_time>=o.entry_resume_at AND e.created_at>=o.entry_resume_at
               AND NOT EXISTS(SELECT 1 FROM flow_v3_live_intent i
-                WHERE i.strategy_id=e.strategy_id AND i.entry_event_key=e.entry_event_key AND i.side='BUY')
-            ORDER BY e.entry_signal_time,e.strategy_id,e.event_id LIMIT 1000""")
+                WHERE i.operation_id=c.operation_id AND i.entry_event_key=e.entry_event_key AND i.side='BUY')
+            ORDER BY e.entry_signal_time,e.strategy_id,c.operation_id,e.event_id LIMIT 1000""")
         events = q.fetchall(); count = 0
         for e in events:
-            validate_mapping(e['strategy_id'],e['stock_code'],e['direction'],e['execution_code'])
+            validate_mapping(e['strategy_id'],e['stock_code'],e['direction'],e['live_execution_code'],e['execution_route'])
             signal = e['entry_signal_time']; reason = None
             if signal.time()>CUTOFF:
                 reason='ENTRY_AFTER_EOD_CUTOFF'
             elif signal.date()!=now.date() or now-signal>timedelta(minutes=3):
                 reason='HISTORICAL_OR_STALE_ENTRY_NO_REPLAY'
-            key=f"ENTRY|{e['strategy_id']}|{e['entry_event_key']}"
+            key=f"ENTRY|OP{e['operation_id']}|{e['strategy_id']}|{e['entry_event_key']}"
             q.execute("""INSERT INTO flow_v3_live_intent
                 (intent_id,strategy_id,event_id,entry_event_key,paper_trade_id,side,lifecycle_key,
-                 signal_time,execution_not_before,execution_code,status,reason)
-                VALUES(%s,%s,%s,%s,%s,'BUY',%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                 signal_time,execution_not_before,execution_code,status,reason,operation_id)
+                VALUES(%s,%s,%s,%s,%s,'BUY',%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
                 (identity(key),e['strategy_id'],e['event_id'],e['entry_event_key'],e['paper_trade_id'],key,
-                 signal,signal+timedelta(minutes=1),e['execution_code'],
-                 'BLOCKED' if reason else 'WAITING_REFERENCE',reason))
+                 signal,signal+timedelta(minutes=1),e['live_execution_code'],
+                 'BLOCKED' if reason else 'WAITING_REFERENCE',reason,e['operation_id']))
             count += q.rowcount
         return count
 
@@ -137,10 +116,10 @@ class LiveRepository:
             key=f"EXIT|{row['live_trade_id']}|{reason}|{signal.isoformat()}"
             q.execute("""INSERT INTO flow_v3_live_intent
                 (intent_id,strategy_id,event_id,entry_event_key,paper_trade_id,live_trade_id,side,lifecycle_key,
-                 signal_time,execution_not_before,exit_reason,execution_code,status)
-                VALUES(%s,%s,%s,%s,%s,%s,'SELL',%s,%s,%s,%s,%s,'WAITING_REFERENCE') ON CONFLICT DO NOTHING""",
+                 signal_time,execution_not_before,exit_reason,execution_code,status,operation_id)
+                VALUES(%s,%s,%s,%s,%s,%s,'SELL',%s,%s,%s,%s,%s,'WAITING_REFERENCE',%s) ON CONFLICT DO NOTHING""",
                 (identity(key),row['strategy_id'],row['event_id'],row['entry_event_key'],row['paper_trade_id'],
-                 row['live_trade_id'],key,signal,signal+timedelta(minutes=1),reason,row['execution_code']))
+                 row['live_trade_id'],key,signal,signal+timedelta(minutes=1),reason,row['execution_code'],row['operation_id']))
 
     def pending_cancellations(self):
         with self.pool.connection() as c,c.cursor(row_factory=dict_row) as q:
@@ -178,7 +157,8 @@ class LiveRepository:
 
     @staticmethod
     def _exit_signals(q, now):
-        q.execute("""SELECT l.*,i.intent_id AS release_entry_id,o.broker_order_id,e.* FROM flow_v3_live_intent i
+        q.execute("""SELECT l.*,i.intent_id AS release_entry_id,o.broker_order_id,e.*,i.operation_id,
+            i.execution_code FROM flow_v3_live_intent i
             JOIN flow_v3_live_order o USING(intent_id)
             LEFT JOIN flow_v3_live_lot l ON i.intent_id=l.entry_intent_id
             JOIN flow_v3_runtime_entry_event e ON e.event_id=i.event_id
@@ -215,10 +195,10 @@ class LiveRepository:
                 key=f"EXIT|{lot['live_trade_id']}|{reason}|{signal.isoformat()}"
                 q.execute("""INSERT INTO flow_v3_live_intent
                     (intent_id,strategy_id,event_id,entry_event_key,paper_trade_id,live_trade_id,side,lifecycle_key,
-                     signal_time,execution_not_before,exit_reason,execution_code,status)
-                    VALUES(%s,%s,%s,%s,%s,%s,'SELL',%s,%s,%s,%s,%s,'WAITING_REFERENCE') ON CONFLICT DO NOTHING""",
+                     signal_time,execution_not_before,exit_reason,execution_code,status,operation_id)
+                    VALUES(%s,%s,%s,%s,%s,%s,'SELL',%s,%s,%s,%s,%s,'WAITING_REFERENCE',%s) ON CONFLICT DO NOTHING""",
                     (identity(key),lot['strategy_id'],lot['event_id'],lot['entry_event_key'],lot['paper_trade_id'],
-                     lot['live_trade_id'],key,signal,signal+timedelta(minutes=1),reason,lot['execution_code']))
+                     lot['live_trade_id'],key,signal,signal+timedelta(minutes=1),reason,lot['execution_code'],lot['operation_id']))
                 count+=q.rowcount
                 q.execute("UPDATE flow_v3_live_lot SET exposure_status='EXIT_PENDING' WHERE live_trade_id=%s",(lot['live_trade_id'],))
             if states and lot['live_trade_id'] is not None:
@@ -241,7 +221,7 @@ class LiveRepository:
             q.execute("""SELECT o.*,i.strategy_id,i.event_id,i.entry_event_key,i.live_trade_id,i.side,
                 i.execution_code,i.quantity,i.signal_time,i.paper_trade_id,c.operation_id
                 FROM flow_v3_live_order o JOIN flow_v3_live_intent i USING(intent_id)
-                JOIN flow_v3_live_capital c USING(strategy_id) WHERE o.broker_order_id=%s FOR UPDATE OF o""",(broker_order_id,))
+                JOIN flow_v3_live_capital c ON c.operation_id=i.operation_id WHERE o.broker_order_id=%s FOR UPDATE OF o""",(broker_order_id,))
             o=q.fetchone()
             if not o or not o['broker_order_number'] or (o['broker_order_number'],o['broker_order_date'])!=(order_number,order_date):
                 raise ValueError('BROKER_ORDER_IDENTITY_NOT_DURABLY_LINKED')
@@ -267,8 +247,8 @@ class LiveRepository:
                         (o['strategy_id'],o['paper_trade_id'],o['operation_id'],o['signal_time'],order_number,
                          Jsonb(dict(entry_event_key=o['entry_event_key'],fill_time_source='UNKNOWN_UNLESS_BROKER_REPORTED'))))
                     tid=q.fetchone()['live_trade_id']
-                    q.execute("INSERT INTO flow_v3_live_lot(live_trade_id,entry_intent_id,strategy_id,entry_event_key) VALUES(%s,%s,%s,%s)",
-                        (tid,o['intent_id'],o['strategy_id'],o['entry_event_key']))
+                    q.execute("INSERT INTO flow_v3_live_lot(live_trade_id,entry_intent_id,strategy_id,entry_event_key,operation_id) VALUES(%s,%s,%s,%s,%s)",
+                        (tid,o['intent_id'],o['strategy_id'],o['entry_event_key'],o['operation_id']))
                     q.execute('UPDATE flow_v3_live_intent SET live_trade_id=%s WHERE intent_id=%s',(tid,o['intent_id']))
                 if tid is None:
                     raise ValueError('SELL_LOT_MISSING')
@@ -354,14 +334,19 @@ class LiveRepository:
                 VALUES('FLOW_V3_NO_SEND',now(),'{}',%s) ON CONFLICT(worker_code) DO UPDATE
                 SET heartbeat_at=now(),last_error=EXCLUDED.last_error""",(reason,))
 
-    @staticmethod
-    def _requests(q, now):
-        q.execute("""SELECT i.*,c.current_capital,c.reference_price AS quote,c.reference_observed_at AS quote_time
-            FROM flow_v3_live_intent i JOIN flow_v3_live_capital c USING(strategy_id)
+    def _requests(self, q, now):
+        q.execute("""SELECT i.*,c.current_capital,c.reference_price AS quote,c.reference_observed_at AS quote_time,
+                op.execution_route,op.entry_enabled,op.effective_to,op.entry_resume_at,op.live_approved
+            FROM flow_v3_live_intent i JOIN flow_v3_live_capital c ON c.operation_id=i.operation_id
+            JOIN flow_v3_strategy_operation op ON op.operation_id=i.operation_id
             WHERE i.status='WAITING_REFERENCE' AND i.execution_not_before<=%s
             ORDER BY i.signal_time,CASE i.side WHEN 'SELL' THEN 0 ELSE 1 END,i.intent_id FOR UPDATE OF i,c""", (now,))
         rows=q.fetchall(); count=0
         for i in rows:
+            if i['side']=='BUY' and (not i['entry_enabled'] or not i['live_approved'] or i['effective_to'] is not None
+                                     or i['signal_time']<i['entry_resume_at']):
+                q.execute("UPDATE flow_v3_live_intent SET status='BLOCKED',reason='OPERATION_ENTRY_STOPPED' WHERE intent_id=%s",(i['intent_id'],))
+                continue
             deadline=time(15,20) if i['side']=='BUY' or i['exit_reason']=='SIGNAL_EOD' else time(15,30)
             if i['signal_time'].date()!=now.date() or now.time()>=deadline:
                 q.execute("UPDATE flow_v3_live_intent SET status='BLOCKED',reason='EXECUTION_WINDOW_CLOSED' WHERE intent_id=%s",(i['intent_id'],))
@@ -388,6 +373,15 @@ class LiveRepository:
             if qty<=0:
                 q.execute("UPDATE flow_v3_live_intent SET status='BLOCKED',reason='QUANTITY_ZERO' WHERE intent_id=%s",(i['intent_id'],))
                 continue
+            if i['side']=='BUY':
+                try:
+                    reason=(self.cash_check(i['execution_code'],i['execution_route'],i['quote'],qty)
+                            if self.cash_check else 'KIS_ORDERABLE_CASH_UNAVAILABLE')
+                except Exception:
+                    reason='KIS_ORDERABLE_CASH_UNAVAILABLE'
+                if reason:
+                    q.execute("UPDATE flow_v3_live_intent SET status='BLOCKED',reason=%s WHERE intent_id=%s",(reason,i['intent_id']))
+                    continue
             payload=request_payload(i['execution_code'],i['side'],qty)
             q.execute("""UPDATE flow_v3_live_intent SET quantity=%s,reference_price=%s,reference_observed_at=%s,
                 capital_at_entry=%s,status='READY_NO_SEND',reason='PHYSICAL_SEND_DISABLED',updated_at=now() WHERE intent_id=%s""",
@@ -413,26 +407,26 @@ class LiveRepository:
             q.execute("""WITH expected AS (SELECT broker_trade_date,side,sum(delta_amount) amount
                 FROM flow_v3_live_fill_checkpoint WHERE live_trade_id=%s GROUP BY 1,2)
                 SELECT e.*,s.status,a.fill_notional,a.buy_fee,a.sell_fee,a.sell_tax,a.other_cost
-                FROM expected e JOIN flow_v3_live_preparation p ON p.strategy_id=%s
-                LEFT JOIN broker_shared_cost_snapshot s ON s.trade_date=e.broker_trade_date AND s.execution_stock_code=p.execution_code
+                FROM expected e JOIN flow_v3_strategy_operation p ON p.operation_id=%s
+                LEFT JOIN broker_shared_cost_snapshot s ON s.trade_date=e.broker_trade_date AND s.execution_stock_code=p.live_execution_code
                 LEFT JOIN broker_shared_cost_allocation a ON a.trade_date=e.broker_trade_date
-                    AND a.execution_stock_code=p.execution_code AND a.family='FLOW' AND a.live_trade_id=%s AND a.side=e.side""",
-                (l['live_trade_id'],l['strategy_id'],l['live_trade_id']))
+                    AND a.execution_stock_code=p.live_execution_code AND a.family='FLOW' AND a.live_trade_id=%s AND a.side=e.side""",
+                (l['live_trade_id'],l['operation_id'],l['live_trade_id']))
             costs=q.fetchall()
             if not costs or any(x['status']!='FINALIZED_BY_STABLE_RECHECK' or x['fill_notional']!=x['amount'] for x in costs):
                 continue
             fees=[sum((x[k] for x in costs),Decimal(0)) for k in ('buy_fee','sell_fee','sell_tax','other_cost')]
             gross=l['sell_amount']-l['buy_amount'];net=gross-sum(fees)
-            q.execute('SELECT current_capital FROM flow_v3_live_capital WHERE strategy_id=%s FOR UPDATE',(l['strategy_id'],))
+            q.execute('SELECT current_capital FROM flow_v3_live_capital WHERE operation_id=%s FOR UPDATE',(l['operation_id'],))
             before=q.fetchone()['current_capital'];after=before+net
             q.execute("""INSERT INTO flow_v3_live_settlement
-                (live_trade_id,strategy_id,gross_pnl,buy_fee,sell_fee,sell_tax,other_cost,net_pnl,capital_before,capital_after)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
-                (l['live_trade_id'],l['strategy_id'],gross,*fees,net,before,after))
+                (live_trade_id,strategy_id,gross_pnl,buy_fee,sell_fee,sell_tax,other_cost,net_pnl,capital_before,capital_after,operation_id)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+                (l['live_trade_id'],l['strategy_id'],gross,*fees,net,before,after,l['operation_id']))
             if q.rowcount!=1:
                 continue
             q.execute("""UPDATE flow_v3_live_capital SET realized_net=realized_net+%s,current_capital=current_capital+%s,
-                version=version+1,updated_at=now() WHERE strategy_id=%s""",(net,net,l['strategy_id']))
+                version=version+1,updated_at=now() WHERE operation_id=%s""",(net,net,l['operation_id']))
             q.execute("""UPDATE flow_v3_live_trade SET buy_fee=%s,sell_fee=%s,sell_tax=%s,other_cost=%s,
                 gross_realized_pnl=%s,net_realized_pnl=%s,net_return_pct=%s,updated_at=CURRENT_TIMESTAMP
                 WHERE live_trade_id=%s""",(*fees,gross,net,net/l['buy_amount']*100,l['live_trade_id']))

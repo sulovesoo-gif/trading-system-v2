@@ -2,11 +2,12 @@
 from .live_contract import validate_mapping, request_payload, cancel_payload
 from .live_broker import kst_now
 from .send_authorization import environment_enabled, send_authorized
+from .preorder import FlowCashCheck
 
 
 def validate_claim(row, cancel):
-    key, payload, sid, stock, direction, code, side, quantity, number, remaining = row
-    validate_mapping(sid, stock, direction, code)
+    key, payload, sid, stock, direction, code, side, quantity, number, remaining = row[:10]
+    validate_mapping(sid, stock, direction, code, row[10] if len(row)>10 else None)
     if side not in ('BUY', 'SELL') or not isinstance(quantity, int) or quantity <= 0:
         raise ValueError('FLOW_SEND_QUANTITY_OR_SIDE_INVALID')
     if cancel:
@@ -22,6 +23,7 @@ def validate_claim(row, cancel):
 class FlowTransport:
     def __init__(self, repository, client, account):
         self.repository, self.client, self.account = repository, client, account
+        self.cash_check=FlowCashCheck(client,account)
 
     def _not_sent(self, key, cancel, reason):
         # Known pre-HTTP denial, never a fabricated broker rejection or retry.
@@ -32,6 +34,8 @@ class FlowTransport:
             else:
                 c.execute("""UPDATE flow_v3_live_order SET status='UNKNOWN',post_attempt_count=0,
                     last_error=%s WHERE broker_order_id=%s""", (reason, key))
+                c.execute("""UPDATE flow_v3_live_intent SET status='BLOCKED',reason=%s
+                    WHERE intent_id=(SELECT intent_id FROM flow_v3_live_order WHERE broker_order_id=%s)""",(reason,key))
 
     def run(self):
         if not environment_enabled():
@@ -45,22 +49,31 @@ class FlowTransport:
                 if cancel:
                     row = c.execute("""SELECT r.entry_intent_id,r.cancel_payload,i.strategy_id,
                         e.stock_code,e.direction,i.execution_code,i.side,i.quantity,
-                        o.broker_order_number,r.cancellable_quantity
+                        o.broker_order_number,r.cancellable_quantity,op.execution_route,i.operation_id,i.reference_price
                         FROM flow_v3_live_entry_release r JOIN flow_v3_live_order o USING(broker_order_id)
                         JOIN flow_v3_live_intent i ON i.intent_id=o.intent_id
                         JOIN flow_v3_runtime_entry_event e ON e.event_id=i.event_id
+                        JOIN flow_v3_strategy_operation op ON op.operation_id=i.operation_id
+                        JOIN flow_v3_strategy_master m ON m.strategy_id=i.strategy_id
                         WHERE o.send_enabled AND r.status='CANCEL_READY_NO_SEND' AND r.post_attempt_count=0
+                          AND op.live_approved AND op.live_execution_code=i.execution_code
+                          AND m.stock_code=e.stock_code AND m.direction=e.direction
                           AND r.history_observed_at>=localtimestamp-interval '30 seconds'
                         ORDER BY r.requested_at FOR UPDATE OF r SKIP LOCKED LIMIT 1""").fetchone()
                 else:
                     row = c.execute("""SELECT o.broker_order_id,o.request_payload,i.strategy_id,
-                        e.stock_code,e.direction,i.execution_code,i.side,i.quantity,NULL,NULL
+                        e.stock_code,e.direction,i.execution_code,i.side,i.quantity,NULL,NULL,
+                        op.execution_route,i.operation_id,i.reference_price
                         FROM flow_v3_live_order o JOIN flow_v3_live_intent i USING(intent_id)
                         JOIN flow_v3_runtime_entry_event e ON e.event_id=i.event_id
-                        JOIN flow_v3_live_capital capital ON capital.strategy_id=i.strategy_id
+                        JOIN flow_v3_live_capital capital ON capital.operation_id=i.operation_id
                         JOIN flow_v3_strategy_operation op ON op.operation_id=capital.operation_id
+                        JOIN flow_v3_strategy_master m ON m.strategy_id=i.strategy_id
                         WHERE o.send_enabled AND o.status='READY_NO_SEND' AND o.post_attempt_count=0
-                          AND op.operation_status='LIVE' AND op.effective_to IS NULL
+                          AND op.operation_status='LIVE' AND op.live_approved AND op.live_execution_code=i.execution_code
+                          AND m.stock_code=e.stock_code AND m.direction=e.direction
+                          AND (i.side='SELL' OR (op.effective_to IS NULL AND op.entry_enabled
+                               AND i.signal_time>=op.entry_resume_at))
                           AND i.signal_time::date=current_date AND i.execution_not_before<=localtimestamp
                           AND i.reference_observed_at>=localtimestamp-interval '30 seconds'
                           AND localtime<CASE WHEN i.side='BUY' OR i.exit_reason='SIGNAL_EOD'
@@ -91,16 +104,33 @@ class FlowTransport:
                         ACNT_PRDT_CD=self.account.account_product_code)
             # Fresh DB read AFTER durable claim, immediately before the HTTP call.
             # Read errors fail closed with the claimed order unretried.
-            with self.repository.pool.connection() as c:
-                allowed = send_authorized(c)
+            with self.repository.pool.connection() as c,c.transaction():
+                # Serialize FLOW cash observation -> HTTP on the real shared account.
+                # Do not pretend independently approved strategy capital is account cash.
+                c.execute("SELECT pg_advisory_xact_lock(hashtext('FLOW_V3_ACCOUNT_POST'),hashtext(%s))",
+                          (self.account.cano+':'+self.account.account_product_code,))
+                op=c.execute("""SELECT live_approved,entry_enabled,effective_to,entry_resume_at,
+                    live_execution_code FROM flow_v3_strategy_operation WHERE operation_id=%s
+                    AND operation_status='LIVE' AND (NOT %s OR EXISTS
+                      (SELECT 1 FROM flow_v3_live_intent i JOIN flow_v3_live_order o USING(intent_id)
+                       WHERE o.broker_order_id=%s AND i.signal_time>=entry_resume_at)) FOR SHARE""",
+                    (row[11],not cancel and row[6]=='BUY',key)).fetchone()
+                allowed=bool(op and op[0] and op[4]==row[5] and send_authorized(c))
+                denial='FLOW_AUTHORIZATION_REVOKED_BEFORE_POST'
+                if not cancel and row[6]=='BUY':
+                    allowed=allowed and op[1] and op[2] is None
+                    if allowed:
+                        denial=self.cash_check(row[5],row[10],row[12],row[7])
+                        allowed=denial is None
+                if allowed:
+                    try:
+                        response = self.client.post_once(path=payload['endpoint'], tr_id=payload['tr_id'],
+                                                         payload=body, custtype='P')
+                    except Exception:
+                        response = {}  # UNKNOWN: never fabricate REJECTED or resend.
             if not allowed:
-                self._not_sent(key, cancel, 'FLOW_AUTHORIZATION_REVOKED_BEFORE_POST')
+                self._not_sent(key,cancel,denial)
                 return sent
-            try:
-                response = self.client.post_once(path=payload['endpoint'], tr_id=payload['tr_id'],
-                                                 payload=body, custtype='P')
-            except Exception:
-                response = {}  # UNKNOWN: never fabricate REJECTED or resend.
             if cancel:
                 self.repository.cancel_response(key, response, kst_now())
             else:

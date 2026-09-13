@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from src.flow_v3.live_contract import WHITELIST, validate_mapping
+from src.flow_v3.live_contract import validate_mapping
 
 UNIT = 'trading-flow-v3-live-nosend.service'  # Retained name: no second worker.
 DROPIN = Path('/etc/systemd/system') / (UNIT + '.d') / 'actual-send.conf'
@@ -41,15 +41,15 @@ def running_gate():
 
 
 def preflight(c):
-    rows=c.execute("""SELECT c.strategy_id,m.stock_code,m.direction,m.execution_code,
-        o.operation_status,o.effective_to,c.initial_capital,c.current_capital,c.realized_net
+    rows=c.execute("""SELECT c.strategy_id,m.stock_code,m.direction,o.live_execution_code,
+        o.operation_status,o.effective_to,c.initial_capital,c.current_capital,c.realized_net,o.execution_route
         FROM flow_v3_live_capital c JOIN flow_v3_strategy_master m USING(strategy_id)
-        JOIN flow_v3_strategy_operation o ON o.operation_id=c.operation_id ORDER BY c.strategy_id""").fetchall()
-    if {r[0] for r in rows} != set(WHITELIST) or len(rows)!=15:
-        raise ValueError('FLOW_APPROVED_15_MISMATCH')
-    for sid,stock,direction,code,status,ended,initial,current,net in rows:
-        validate_mapping(sid,stock,direction,code)
-        if status!='LIVE' or ended is not None or current!=initial+net:
+        JOIN flow_v3_strategy_operation o ON o.operation_id=c.operation_id
+        WHERE o.live_approved ORDER BY c.operation_id""").fetchall()
+    if not rows: raise ValueError('FLOW_NO_APPROVED_OPERATIONS')
+    for sid,stock,direction,code,status,ended,initial,current,net,route in rows:
+        validate_mapping(sid,stock,direction,code,route)
+        if status!='LIVE' or current!=initial+net:
             raise ValueError('FLOW_OPERATION_OR_CAPITAL_INVALID')
     row=c.execute("SELECT enabled FROM flow_v3_send_profile WHERE profile_code='FLOW_V3_LIVE_SEND'").fetchone()
     if row is None or row[0] not in ('Y','N'):

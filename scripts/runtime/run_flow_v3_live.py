@@ -15,6 +15,7 @@ from src.collector.raw.kis_order_account import KISOrderAccount
 from src.flow_v3.live_repository import LiveRepository
 from src.flow_v3.live_broker import FlowBrokerReader,kst_now
 from src.flow_v3.live_transport import FlowTransport
+from src.flow_v3.preorder import FlowCashCheck
 
 
 def main():
@@ -33,14 +34,15 @@ def main():
             repository.activate(kst_now())
         client=KISClient();account=KISOrderAccount.from_environment()
         reader=FlowBrokerReader(client,account)
+        repository.cash_check=FlowCashCheck(client,account)
         transport=FlowTransport(repository,client,account)
         while not stop.is_set():
             try:
                 polled=reader.poll(repository)
-                # Read two quotes once per cycle; no broker order endpoint call.
+                # Active routes plus old OPEN exposures retain their own quote axis.
                 quote_error=None
                 try:
-                    quotes=reader.quotes()
+                    quotes=reader.quotes(repository.quote_codes())
                 except Exception as exc:
                     quotes={}
                     quote_error=type(exc).__name__

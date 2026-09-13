@@ -2,18 +2,31 @@
 from datetime import time
 from decimal import Decimal, ROUND_FLOOR
 
-LONG_IDS = ('FV3008243','FV3008241','FV3009185','FV3009201','FV3009187',
-            'FV3009203','FV3008227','FV3008225','FV3008211','FV3008209','FV3008084')
-SHORT_IDS = ('FV3005688','FV3005672','FV3004728','FV3004712')
-WHITELIST = {**{s: ('LONG','0193T0') for s in LONG_IDS},
-             **{s: ('SHORT','0197X0') for s in SHORT_IDS}}
+ROUTES = {('000660','LONG','UNDERLYING'):'000660',
+          ('000660','LONG','LEVERAGE'):'0193T0',
+          ('000660','SHORT','INVERSE'):'0197X0',
+          ('005930','LONG','UNDERLYING'):'005930',
+          ('005930','LONG','LEVERAGE'):'0193W0',
+          ('005930','SHORT','INVERSE'):'0193L0'}
+EXECUTION_CODES = frozenset(ROUTES.values())
 CUTOFF = time(15,18)
 EOD_EXECUTION = time(15,19)
 
 
-def validate_mapping(strategy_id, stock_code, direction, execution_code):
-    if stock_code != '000660' or WHITELIST.get(strategy_id) != (direction, execution_code):
-        raise ValueError('FLOW_LIVE_WHITELIST_MAPPING_REJECTED')
+def execution_product(stock_code, direction, route):
+    try:
+        return ROUTES[(stock_code,direction,route)]
+    except KeyError:
+        raise ValueError('FLOW_LIVE_ROUTE_REJECTED') from None
+
+
+def validate_mapping(strategy_id, stock_code, direction, execution_code, route=None):
+    # Eligibility/approval comes from an operation joined to the actual master,
+    # never from a hard-coded strategy list. This function validates product only.
+    if not strategy_id or not any(s==stock_code and d==direction and code==execution_code
+                                 and (route is None or r==route)
+                                 for (s,d,r),code in ROUTES.items()):
+        raise ValueError('FLOW_LIVE_ROUTE_MAPPING_REJECTED')
 
 
 def order_quantity(capital, price):
@@ -24,7 +37,7 @@ def order_quantity(capital, price):
 
 
 def request_payload(code, side, quantity):
-    if code not in ('0193T0','0197X0') or side not in ('BUY','SELL') or quantity <= 0:
+    if code not in EXECUTION_CODES or side not in ('BUY','SELL') or type(quantity) is not int or quantity <= 0:
         raise ValueError('FLOW_LIVE_REQUEST_INVALID')
     # Account identity is deliberately not persisted. Market policy matches the
     # existing verified KRX cash-order adapter; it is NOT a PAPER proxy price.

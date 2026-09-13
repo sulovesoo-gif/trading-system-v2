@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 import unittest
 from src.flow_v3.live_contract import *
+from test.flow_v3_legacy_fixture import WHITELIST,LONG_IDS,SHORT_IDS
 from src.flow_v3.live_broker import NoSendBoundary
 
 
@@ -10,8 +11,8 @@ def test_exact_whitelist_and_market_sell_for_both_directions():
     for sid,(direction,code) in WHITELIST.items():
         validate_mapping(sid,'000660',direction,code)
         assert request_payload(code,'SELL',2)['body']==dict(PDNO=code,ORD_DVSN='01',ORD_QTY='2',ORD_UNPR='0',EXCG_ID_DVSN_CD='KRX',SLL_TYPE='01')
-    with unittest.TestCase().assertRaises(ValueError): validate_mapping('FV3000001','000660','LONG','0193T0')
-    with unittest.TestCase().assertRaises(ValueError): validate_mapping(LONG_IDS[0],'000660','LONG','000660')
+    with unittest.TestCase().assertRaises(ValueError): validate_mapping('FV3000001','INVALID','LONG','0193T0')
+    with unittest.TestCase().assertRaises(ValueError): validate_mapping(LONG_IDS[0],'000660','SHORT','000660')
 
 
 def test_variable_quantity_and_only_realized_balance():
@@ -62,9 +63,11 @@ def test_transport_claim_response_with_fake_io_only():
             self.row=None
             if 'SELECT enabled' in sql:
                 self.row=('Y',)
+            if 'SELECT live_approved' in sql:
+                self.row=(True,True,None,datetime(2026,9,1),'000660')
             if 'SELECT o.broker_order_id' in sql and self.available:
-                self.row=('fixture-order',request_payload('0193T0','BUY',2),LONG_IDS[0],
-                          '000660','LONG','0193T0','BUY',2,None,None)
+                self.row=('fixture-order',request_payload('000660','BUY',2),LONG_IDS[0],
+                          '000660','LONG','000660','BUY',2,None,None,'UNDERLYING',1,Decimal(100))
             if "SET status='SUBMITTING'" in sql:
                 self.available=False
             return self
@@ -74,6 +77,7 @@ def test_transport_claim_response_with_fake_io_only():
                          record_response=lambda *args:responses.append(args))
     client=SimpleNamespace(post_once=lambda **kw:(calls.append(kw) or {'rt_cd':'0','output':{'ODNO':'fixture'}}))
     adapter=FlowTransport(repo,client,SimpleNamespace(cano='fixture',account_product_code='00'))
+    adapter.cash_check=lambda *a:None
     with patch.dict('os.environ', {'FLOW_V3_ACTUAL_SEND':'Y'}):
         assert adapter.run()==1
         assert adapter.run()==0
