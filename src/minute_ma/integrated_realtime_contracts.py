@@ -26,6 +26,16 @@ INTEGRATED_EXECUTION_FIELDS = (
     "HOUR_CLS_CODE", "MRKT_TRTM_CLS_CODE", "VI_STND_PRC",
 )
 
+# Operating evidence from 2026-09-14: additive trailing value only.
+# Preserve the 46-field contract without guessing the new value's meaning.
+INTEGRATED_EXECUTION_GATEWAY_47_FIELDS = INTEGRATED_EXECUTION_FIELDS + (
+    "KIS_UNDOCUMENTED_FIELD_47",
+)
+INTEGRATED_EXECUTION_FIELD_VARIANTS = {
+    len(INTEGRATED_EXECUTION_FIELDS): INTEGRATED_EXECUTION_FIELDS,
+    len(INTEGRATED_EXECUTION_GATEWAY_47_FIELDS): INTEGRATED_EXECUTION_GATEWAY_47_FIELDS,
+}
+
 
 class IntegratedRealtimeContractError(ValueError):
     pass
@@ -55,15 +65,17 @@ def split_integrated_execution_frame(frame: str) -> tuple[IntegratedExecutionEve
     except ValueError as error:
         raise IntegratedRealtimeContractError("invalid realtime record count") from error
     values = parts[3].split("^")
-    width = len(INTEGRATED_EXECUTION_FIELDS)
-    if count <= 0 or len(values) != count * width:
+    width = len(values) // count if count > 0 and len(values) % count == 0 else 0
+    names = INTEGRATED_EXECUTION_FIELD_VARIANTS.get(width)
+    if names is None:
         raise IntegratedRealtimeContractError(
             f"{TR_INTEGRATED_EXECUTION} field count mismatch: "
-            f"expected_per_record={width}, records={count}, actual={len(values)}"
+            f"expected_per_record={sorted(INTEGRATED_EXECUTION_FIELD_VARIANTS)}, "
+            f"records={count}, actual={len(values)}"
         )
     return tuple(
         IntegratedExecutionEvent(
-            dict(zip(INTEGRATED_EXECUTION_FIELDS, values[index * width:(index + 1) * width])),
+            dict(zip(names, values[index * width:(index + 1) * width])),
             "^".join(values[index * width:(index + 1) * width]),
             index,
         )
