@@ -120,6 +120,18 @@ class RouteDatabaseTests(unittest.TestCase):
             self.assertEqual(sorted(json.dumps(r[0],sort_keys=True) for r in rows),
                 sorted(json.dumps({k:r[0][k] for k in cols},sort_keys=True) for r in after),table)
         print('MIGRATION: original columns/15 capitals/57 orders/PAPER unchanged; reapply PASS')
+        checkpoint_migration=(ROOT/'database/migrations/20260915_flow_v3_checkpoint_execution_code_check.sql').read_text()
+        checkpoint_before=c.execute('SELECT to_jsonb(t) FROM flow_v3_live_checkpoint_allocation t').fetchall()
+        c.execute(checkpoint_migration);c.execute(checkpoint_migration)
+        self.assertEqual(checkpoint_before,c.execute('SELECT to_jsonb(t) FROM flow_v3_live_checkpoint_allocation t').fetchall())
+        # Copy real CHECKs to a disposable table; no fake broker or LIVE owner
+        # required to test the complete accepted/rejected product domain.
+        c.execute('CREATE TEMP TABLE checkpoint_code_probe (LIKE flow_v3_live_checkpoint_allocation INCLUDING CONSTRAINTS)')
+        for code in ('000660','005930','0193T0','0193W0','0197X0','0193L0'):
+            c.execute("INSERT INTO checkpoint_code_probe(broker_order_id,live_trade_id,stock_code,side,delta_quantity,delta_amount,checkpoint_version) VALUES(%s,1,%s,'BUY',3,5104500,1)",(identity('probe'+code),code))
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            c.execute("INSERT INTO checkpoint_code_probe(broker_order_id,live_trade_id,stock_code,side,delta_quantity,delta_amount,checkpoint_version) VALUES(%s,1,'999999','BUY',3,5104500,1)",(identity('probe-invalid'),))
+        self.assertEqual(c.execute('SELECT count(*) FROM checkpoint_code_probe').fetchone()[0],6)
         c.autocommit=False
         class Pool:
             @contextmanager

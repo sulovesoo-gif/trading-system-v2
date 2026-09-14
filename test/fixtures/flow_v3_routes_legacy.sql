@@ -21,7 +21,7 @@ CREATE TABLE flow_v3_live_trade(live_trade_id bigserial PRIMARY KEY,strategy_id 
  buy_fee numeric,sell_fee numeric,sell_tax numeric,other_cost numeric,gross_realized_pnl numeric,
  net_realized_pnl numeric,net_return_pct numeric,broker_source text,broker_detail jsonb,updated_at timestamp DEFAULT now());
 CREATE TABLE flow_v3_live_checkpoint_allocation(broker_order_id uuid,checkpoint_version bigint,live_trade_id bigint,
- stock_code text,side text,delta_quantity bigint,delta_amount numeric,broker_event_time timestamp NOT NULL,
+ stock_code text CHECK(stock_code IN ('0193T0','0197X0')),side text,delta_quantity bigint,delta_amount numeric,broker_event_time timestamp NOT NULL,
  PRIMARY KEY(broker_order_id,checkpoint_version));
 CREATE TABLE flow_v3_minute_state(stock_code text,bar_time timestamp,is_complete boolean,flow_crosses jsonb,velocity_crosses jsonb);
 CREATE TABLE flow_v3_runtime_cursor(stock_code text,last_bar_time timestamp);
