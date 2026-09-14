@@ -65,6 +65,8 @@ def test_transport_claim_response_with_fake_io_only():
                 self.row=('Y',)
             if 'SELECT live_approved' in sql:
                 self.row=(True,True,None,datetime(2026,9,1),'000660')
+            if 'SELECT (i.signal_time::date=' in sql:
+                self.row=(True,)
             if 'SELECT o.broker_order_id' in sql and self.available:
                 self.row=('fixture-order',request_payload('000660','BUY',2),LONG_IDS[0],
                           '000660','LONG','000660','BUY',2,None,None,'UNDERLYING',1,Decimal(100))

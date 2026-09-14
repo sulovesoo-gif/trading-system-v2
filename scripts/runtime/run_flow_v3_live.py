@@ -16,6 +16,7 @@ from src.flow_v3.live_repository import LiveRepository
 from src.flow_v3.live_broker import FlowBrokerReader,kst_now
 from src.flow_v3.live_transport import FlowTransport
 from src.flow_v3.preorder import FlowCashCheck
+from src.flow_v3.live_scheduler import priority_exits,wait_seconds,eod_priority
 
 
 def main():
@@ -38,7 +39,11 @@ def main():
         transport=FlowTransport(repository,client,account)
         while not stop.is_set():
             try:
-                polled=reader.poll(repository)
+                critical=eod_priority(kst_now())
+                priority=priority_exits(repository,reader,transport,kst_now)
+                # No bulk historical polling or large BUY queue ahead of the
+                # next EOD pass. A bounded BUY still permits the 15:18 entry.
+                polled=0 if critical else reader.poll(repository)
                 # Active routes plus old OPEN exposures retain their own quote axis.
                 quote_error=None
                 try:
@@ -46,8 +51,9 @@ def main():
                 except Exception as exc:
                     quotes={}
                     quote_error=type(exc).__name__
-                result=repository.cycle(kst_now(),quotes)
-                result['post']=transport.run()
+                result=repository.cycle(kst_now(),quotes,buy_budget=1 if critical else None)
+                result['post']=transport.run(max_orders=1 if critical else 32)
+                result.update(priority)
                 if quote_error:
                     repository.record_error('QUOTE:'+quote_error)
                     result['quote_error']=quote_error
@@ -60,7 +66,7 @@ def main():
                     raise
             if args.once:
                 break
-            stop.wait(10 if 9<=kst_now().hour<16 else 300)
+            stop.wait(wait_seconds(kst_now()))
     finally:
         pool.close()
 

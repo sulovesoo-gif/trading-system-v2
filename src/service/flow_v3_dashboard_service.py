@@ -4,10 +4,39 @@ from zoneinfo import ZoneInfo
 from ..flow_v3.engine import PAIR_CODE
 from .minute_ma_dashboard_service import _page, _page_size, _period_window, _dicts
 
-LIVE_CANDIDATES = (
- 'FV3008243','FV3008241','FV3009185','FV3009201','FV3009187','FV3009203',
- 'FV3008227','FV3008225','FV3008211','FV3008209','FV3008084',
- 'FV3005688','FV3005672','FV3004728','FV3004712')
+def _live_operations(cur,strategy_id):
+    """Current operations, each with its own settled equity path and exposure.
+
+    Cost-pending fills are NOT realized NET. MDD is realized-capital MDD, not MTM.
+    No route-specific synthetic PAPER and no strategy-level pooling of LIVE capital.
+    """
+    cur.execute("""SELECT o.operation_id,o.operation_status,o.execution_route,o.live_execution_code,
+        o.allocated_amount,o.entry_enabled,o.live_approved,o.entry_resume_at,
+        c.initial_capital,c.current_capital,c.realized_net,c.next_quantity,c.reference_observed_at,
+        100*c.realized_net/NULLIF(c.initial_capital,0) AS compound_return_pct,
+        s.closed_count,s.win_count,s.loss_count,
+        c.realized_net/NULLIF(s.closed_count,0) AS profit_per_trade,
+        100.0*s.win_count/NULLIF(s.closed_count,0) AS win_rate_pct,s.max_drawdown_pct,
+        l.open_quantity,l.cost_pending_count
+        FROM flow_v3_strategy_operation o JOIN flow_v3_live_capital c USING(operation_id)
+        LEFT JOIN LATERAL (
+          SELECT count(*) AS closed_count,count(*) FILTER(WHERE net_pnl>0) AS win_count,
+            count(*) FILTER(WHERE net_pnl<0) AS loss_count,
+            COALESCE(max(100*(peak-capital_after)/NULLIF(peak,0)),0) AS max_drawdown_pct
+          FROM (SELECT net_pnl,capital_after,
+            greatest(c.initial_capital,max(capital_after) OVER(ORDER BY settled_at,live_trade_id
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)) AS peak
+            FROM flow_v3_live_settlement WHERE operation_id=o.operation_id) path
+        ) s ON true
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(sum(bought_quantity-sold_quantity),0) AS open_quantity,
+            count(*) FILTER(WHERE exposure_status='FILLED_COST_PENDING') AS cost_pending_count
+          FROM flow_v3_live_lot WHERE operation_id=o.operation_id
+        ) l ON true
+        WHERE o.strategy_id=%s AND o.operation_status='LIVE' AND o.effective_to IS NULL
+        ORDER BY CASE o.execution_route WHEN 'UNDERLYING' THEN 0 WHEN 'LEVERAGE' THEN 1
+          WHEN 'INVERSE' THEN 2 ELSE 3 END,o.operation_id""",(strategy_id,))
+    return _dicts(cur)
 
 
 def dashboard_payload(pool, query):
@@ -21,16 +50,21 @@ def dashboard_payload(pool, query):
         if value:
             where.append(f'm.{col}=%s');params.append(value)
     if get('scope','CANDIDATES') == 'CANDIDATES':
-        where.append('m.strategy_id=ANY(%s)');params.append(list(LIVE_CANDIDATES))
+        where.append("""EXISTS (SELECT 1 FROM flow_v3_strategy_operation op
+            WHERE op.strategy_id=m.strategy_id AND op.operation_status='LIVE' AND op.effective_to IS NULL)""")
     if get('search',''):
         where.append('(m.strategy_id ILIKE %s OR m.stock_code ILIKE %s)')
         params.extend(['%'+get('search','')+'%']*2)
     if get('lifecycle','') == 'OPEN':
         where.append("COALESCE((c.metrics->>'open_count')::integer,0)>0")
+    per_trade="((c.metrics->>'net_pnl')::numeric / NULLIF((c.metrics->>'closed_count')::numeric,0))"
     sorts = {'strategy':'m.strategy_id', 'capital':"(c.metrics->>'current_capital')::numeric DESC NULLS LAST,m.strategy_id",
-             'return':"(c.metrics->>'compound_return_pct')::numeric DESC NULLS LAST,m.strategy_id",
-             'per_trade':"((c.metrics->>'net_pnl')::numeric / NULLIF((c.metrics->>'closed_count')::numeric,0)) DESC NULLS LAST,m.strategy_id"}
-    order = sorts.get(get('sort','strategy'),sorts['strategy'])
+             'return':"(c.metrics->>'compound_return_pct')::numeric DESC NULLS LAST,"+per_trade+" DESC NULLS LAST,(c.metrics->>'current_capital')::numeric DESC NULLS LAST,m.strategy_id",
+             'per_trade':per_trade+" DESC NULLS LAST,m.strategy_id",
+             'profit':"(c.metrics->>'net_pnl')::numeric DESC NULLS LAST,m.strategy_id",
+             'trades':"(c.metrics->>'closed_count')::integer DESC NULLS LAST,m.strategy_id",
+             'mdd':"(c.metrics->>'max_drawdown_pct')::numeric ASC NULLS LAST,m.strategy_id"}
+    order = sorts.get(get('sort','return'),sorts['return'])
     condition = ' AND '.join(where)
     joins = 'FROM flow_v3_strategy_master m LEFT JOIN flow_v3_paper_accounting_capital c USING(strategy_id)'
     with pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
@@ -51,6 +85,7 @@ def dashboard_payload(pool, query):
         cur.execute("SELECT to_regclass('public.flow_v3_live_capital')")
         live_pipeline_available=cur.fetchone()[0] is not None
         for row in rows:
+            row['live_operations']=_live_operations(cur,row['strategy_id']) if live_pipeline_available else []
             row['live_capital']=None
             row['live_orders']=[]
             row['live_lots']=[]
@@ -91,10 +126,6 @@ def dashboard_payload(pool, query):
                 FROM flow_v3_live_trade WHERE strategy_id=%s
                   AND entry_signal_time<%s GROUP BY trade_status""",(row['strategy_id'],end))
             row['live_actual'] = _dicts(cur)
-            cur.execute("""SELECT operation_status,allocated_amount FROM flow_v3_strategy_operation
-                WHERE strategy_id=%s AND effective_to IS NULL ORDER BY effective_from DESC,operation_id DESC LIMIT 1""",(row['strategy_id'],))
-            op = _dicts(cur)
-            row['operation'] = op[0] if op else None
         cur.execute("SELECT count(*),count(*) FILTER(WHERE is_enabled='Y') FROM flow_v3_strategy_master")
         master,enabled=cur.fetchone()
         cur.execute('SELECT count(*),count(*) FILTER(WHERE last_error IS NOT NULL) FROM flow_v3_paper_accounting_queue')
@@ -102,7 +133,7 @@ def dashboard_payload(pool, query):
     return dict(status='OK',items=rows,page=page,page_size=size,total_count=total,
                 total_pages=max(1,(total+size-1)//size),period=period,period_from=start,period_to=end,
                 strategy_master=master,paper_enabled=enabled,accounting_pending=pending,
-                accounting_blocked=blocked,live_send_status='NOT_ACTIVATED_BY_THIS_RELEASE',
+                accounting_blocked=blocked,live_send_status='NOT_CONTROLLED_BY_DASHBOARD',
                 shared_account_status='NOT_IMPLEMENTED', cumulative_scope='ALL_AVAILABLE_PAPER_HISTORY')
 
 

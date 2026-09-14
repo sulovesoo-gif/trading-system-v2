@@ -26,6 +26,8 @@ class Connection:
             self.row=('N' if self.revoke and self.claimed else self.db,)
         elif 'SELECT live_approved' in sql:
             self.row=(True,True,None,None,self.candidate[5])
+        elif 'SELECT (i.signal_time::date=' in sql:
+            self.row=(True,)
         elif ('SELECT r.entry_intent_id' if self.cancel else 'SELECT o.broker_order_id') in sql and not self.claimed:
             self.row=self.candidate
         if 'UPDATE flow_v3_live_' in sql and "status='UNKNOWN'" in sql or "SET status='SUBMITTING'" in sql:

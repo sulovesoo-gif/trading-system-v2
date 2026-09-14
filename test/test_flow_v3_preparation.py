@@ -1,16 +1,15 @@
 import unittest
 from pathlib import Path
 from src.flow_v3.accounting import quantity
-from src.service.flow_v3_dashboard_service import LIVE_CANDIDATES
 
 ROOT=Path(__file__).resolve().parents[1]
 
 
 class PreparationTest(unittest.TestCase):
-    def test_whitelist_unique(self):
-        self.assertEqual(len(LIVE_CANDIDATES),15)
-        self.assertEqual(len(set(LIVE_CANDIDATES)),15)
-        self.assertEqual(len(LIVE_CANDIDATES[:11]),11)
+    def test_dashboard_candidates_follow_current_operations(self):
+        code=(ROOT/'src/service/flow_v3_dashboard_service.py').read_text(encoding='utf-8')
+        self.assertNotIn('LIVE_CANDIDATES',code)
+        self.assertIn("op.operation_status='LIVE' AND op.effective_to IS NULL",code)
 
     def test_variable_share_not_fixed_one(self):
         self.assertEqual([quantity(x,100) for x in (150,200,350)],[1,2,3])

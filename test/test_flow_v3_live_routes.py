@@ -262,7 +262,7 @@ class RouteDatabaseTests(unittest.TestCase):
             class ClockConnection:
                 def transaction(self): return c.transaction()
                 def execute(self,sql,args=None):
-                    return c.execute(sql.replace('localtimestamp',"timestamp '2026-09-13 13:00:00'")
+                    return c.execute(sql.replace("clock_timestamp() AT TIME ZONE 'Asia/Seoul'","timestamp '2026-09-13 13:00:00'").replace('localtimestamp',"timestamp '2026-09-13 13:00:00'")
                         .replace('current_date',"date '2026-09-13'").replace('localtime',"time '13:00:00'"),args)
             class ClockPool:
                 @contextmanager
@@ -287,6 +287,8 @@ class RouteDatabaseTests(unittest.TestCase):
         c.execute((ROOT/'scripts/ops/verify_flow_v3_live_routes_readonly.sql').read_text());c.commit()
         from src.flow_v3.live_preparation import record_preparations
         record_preparations(pool)  # SQL planning against migrated schema, never an order.
+        from test.flow_v3_operating_fixture import verify
+        verify(self,c,pool,event,quotes)
         print('ROUTES: rollback/fanout/lot ownership/profit+loss/ended EXIT/restart/no replay/57 preservation PASS')
 
 

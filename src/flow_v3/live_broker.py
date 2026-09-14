@@ -27,13 +27,13 @@ class FlowBrokerReader:
             result[code]=(price,self.clock())
         return result
 
-    def poll(self, repository):
+    def poll(self, repository, *, exits_only=False):
         # Existing history parser is read-only and remains unmodified. Never
         # match unknown orders by quantity/time: independent strategies can be identical.
         from src.daily_ma_v03.kis_order_history import DailyMaKISOrderHistoryLookup
         history=DailyMaKISOrderHistoryLookup(client=self.client,account=self.account)
         count=0
-        for o in repository.orders_to_poll():
+        for o in repository.orders_to_poll(exits_only=True) if exits_only else repository.orders_to_poll():
             records=history.orders_for_day(order_date=o['broker_order_date'],stock_code=o['execution_code'],
                 side=o['side'],order_number=o['broker_order_number'])
             records=[r for r in records if r.order_number==o['broker_order_number']

@@ -37,12 +37,12 @@ class FlowTransport:
                 c.execute("""UPDATE flow_v3_live_intent SET status='BLOCKED',reason=%s
                     WHERE intent_id=(SELECT intent_id FROM flow_v3_live_order WHERE broker_order_id=%s)""",(reason,key))
 
-    def run(self):
+    def run(self, *, exits_only=False, max_orders=32):
         if not environment_enabled():
             return 0
         sent = 0
         # Claim commits before HTTP. Crashes/timeouts are never retryable READY.
-        for cancel in ([True]*16 + [False]*32):
+        for cancel in ([True]*16 + [False]*max_orders):
             with self.repository.pool.connection() as c, c.transaction():
                 if not send_authorized(c):
                     return sent
@@ -73,13 +73,14 @@ class FlowTransport:
                           AND op.operation_status='LIVE' AND op.live_approved AND op.live_execution_code=i.execution_code
                           AND m.stock_code=e.stock_code AND m.direction=e.direction
                           AND (i.side='SELL' OR (op.effective_to IS NULL AND op.entry_enabled
-                               AND i.signal_time>=op.entry_resume_at))
+                               AND op.allocated_amount>0 AND i.signal_time>=op.entry_resume_at))
+                          AND (NOT %s OR i.side='SELL')
                           AND i.signal_time::date=current_date AND i.execution_not_before<=localtimestamp
                           AND i.reference_observed_at>=localtimestamp-interval '30 seconds'
                           AND localtime<CASE WHEN i.side='BUY' OR i.exit_reason='SIGNAL_EOD'
                               THEN time '15:20' ELSE time '15:30' END
                         ORDER BY CASE i.side WHEN 'SELL' THEN 0 ELSE 1 END,o.created_at
-                        FOR UPDATE OF o SKIP LOCKED LIMIT 1""").fetchone()
+                        FOR UPDATE OF o SKIP LOCKED LIMIT 1""",(exits_only,)).fetchone()
                 if row is None:
                     continue
                 try:
@@ -113,7 +114,8 @@ class FlowTransport:
                     live_execution_code FROM flow_v3_strategy_operation WHERE operation_id=%s
                     AND operation_status='LIVE' AND (NOT %s OR EXISTS
                       (SELECT 1 FROM flow_v3_live_intent i JOIN flow_v3_live_order o USING(intent_id)
-                       WHERE o.broker_order_id=%s AND i.signal_time>=entry_resume_at)) FOR SHARE""",
+                       WHERE o.broker_order_id=%s AND i.signal_time>=entry_resume_at
+                         AND allocated_amount>0)) FOR SHARE""",
                     (row[11],not cancel and row[6]=='BUY',key)).fetchone()
                 allowed=bool(op and op[0] and op[4]==row[5] and send_authorized(c))
                 denial='FLOW_AUTHORIZATION_REVOKED_BEFORE_POST'
@@ -122,6 +124,18 @@ class FlowTransport:
                     if allowed:
                         denial=self.cash_check(row[5],row[10],row[12],row[7])
                         allowed=denial is None
+                if allowed and not cancel:
+                    # clock_timestamp, not transaction-start localtime: account lock /
+                    # cash inquiry can cross 15:20 after the durable claim.
+                    window=c.execute("""SELECT (i.signal_time::date=(clock_timestamp() AT TIME ZONE 'Asia/Seoul')::date
+                        AND i.execution_not_before<=clock_timestamp() AT TIME ZONE 'Asia/Seoul'
+                        AND i.reference_observed_at>=(clock_timestamp() AT TIME ZONE 'Asia/Seoul')-interval '30 seconds'
+                        AND (clock_timestamp() AT TIME ZONE 'Asia/Seoul')::time<CASE
+                          WHEN i.side='BUY' OR i.exit_reason='SIGNAL_EOD' THEN time '15:20' ELSE time '15:30' END)
+                        FROM flow_v3_live_intent i JOIN flow_v3_live_order o USING(intent_id)
+                        WHERE o.broker_order_id=%s""",(key,)).fetchone()
+                    allowed=bool(window and window[0])
+                    if not allowed: denial='EXECUTION_WINDOW_CLOSED_OR_REFERENCE_STALE'
                 if allowed:
                     try:
                         response = self.client.post_once(path=payload['endpoint'], tr_id=payload['tr_id'],

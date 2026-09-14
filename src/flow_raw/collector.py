@@ -26,7 +26,8 @@ LOGGER = logging.getLogger(__name__)
 RECEIVE_TIMEOUT_SECONDS = 1.0
 MARKET_DATA_SILENCE_SECONDS = 60.0
 MARKET_LIVENESS_START = time(9, 0)
-MARKET_LIVENESS_END = time(15, 31)
+MARKET_LIVENESS_END = time(20, 0)
+MARKET_LIVENESS_GRACE_SECONDS = 60
 
 
 class FlowCollectorError(RuntimeError):
@@ -40,7 +41,9 @@ def liveness_reconnect_reason(
     if now.date() != connected_at.date():
         return "KST_TRADING_DATE_ROLLOVER"
     if (
-        MARKET_LIVENESS_START <= now.time() < MARKET_LIVENESS_END
+        datetime.combine(now.date(), MARKET_LIVENESS_START, now.tzinfo) <= now
+        < datetime.combine(now.date(), MARKET_LIVENESS_END, now.tzinfo)
+          + timedelta(seconds=MARKET_LIVENESS_GRACE_SECONDS)
         and (now - last_data_frame_at).total_seconds() >= MARKET_DATA_SILENCE_SECONDS
     ):
         return f"MARKET_DATA_SILENCE_{int(MARKET_DATA_SILENCE_SECONDS)}S"

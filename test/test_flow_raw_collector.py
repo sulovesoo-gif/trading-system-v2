@@ -151,7 +151,7 @@ class FlowContractTest(unittest.TestCase):
         self.assertIsNone(reason)
 
     def test_market_silence_outside_collection_window_does_not_reconnect(self):
-        connected = datetime(2026, 9, 8, 15, 31)
+        connected = datetime(2026, 9, 8, 20, 1)
         reason = liveness_reconnect_reason(
             connected_at=connected,
             last_data_frame_at=connected,

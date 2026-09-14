@@ -30,7 +30,7 @@ class LiveRepository:
                    AND l.exposure_status<>'SETTLED'))""")
             return [r[0] for r in q.fetchall()]
 
-    def cycle(self, now, quotes):
+    def cycle(self, now, quotes, *, exits_only=False, buy_budget=None):
         """Existing fills/costs settle before new entries; BUY inquiry failures are durable blocks."""
         result = dict(entries=0, exits=0, settlements=0, requests=0, post=0)
         with self.pool.connection() as c, c.transaction(), c.cursor(row_factory=dict_row) as q:
@@ -39,12 +39,14 @@ class LiveRepository:
             q.execute("SELECT pg_try_advisory_xact_lock(hashtext('FLOW_V3_LIVE_CYCLE')) AS acquired")
             if not q.fetchone()['acquired']:
                 return dict(busy=True, post=0)
-            result['settlements'] = self._settle(q)
+            if not exits_only:
+                result['settlements'] = self._settle(q)
             self._refresh_quotes(q, quotes, now)
             result['exits'] = self._exit_signals(q, now)
             self._release_exits(q)
-            result['entries'] = self._entries(q, now)
-            result['requests'] = self._requests(q, now)
+            if not exits_only:
+                result['entries'] = self._entries(q, now)
+            result['requests'] = self._requests(q, now, exits_only=exits_only,buy_budget=buy_budget)
             q.execute("""UPDATE flow_v3_live_intent i SET paper_trade_id=e.paper_trade_id
                 FROM flow_v3_runtime_entry_event e WHERE i.event_id=e.event_id
                 AND i.paper_trade_id IS NULL AND e.paper_trade_id IS NOT NULL""")
@@ -76,6 +78,7 @@ class LiveRepository:
             JOIN flow_v3_strategy_operation o ON o.operation_id=c.operation_id
             WHERE e.entry_signal_time>=c.activated_at AND e.created_at>=c.activated_at
               AND o.operation_status='LIVE' AND o.effective_to IS NULL AND o.live_approved AND o.entry_enabled
+              AND o.allocated_amount>0
               AND e.entry_signal_time>=o.entry_resume_at AND e.created_at>=o.entry_resume_at
               AND NOT EXISTS(SELECT 1 FROM flow_v3_live_intent i
                 WHERE i.operation_id=c.operation_id AND i.entry_event_key=e.entry_event_key AND i.side='BUY')
@@ -293,13 +296,18 @@ class LiveRepository:
                     (filled_quantity,observed_at,o['intent_id'],observed_at,observed_at))
             return dict(delta=dq,live_trade_id=tid,duplicate=dq==0)
 
-    def orders_to_poll(self):
+    def orders_to_poll(self, *, exits_only=False):
         with self.pool.connection() as c,c.cursor(row_factory=dict_row) as q:
             q.execute("""SELECT o.*,i.execution_code,i.side,i.quantity FROM flow_v3_live_order o
                 JOIN flow_v3_live_intent i USING(intent_id) WHERE o.broker_order_number IS NOT NULL
                 AND (o.status IN ('SUBMITTING','ACK','PARTIAL','UNKNOWN') OR EXISTS
                   (SELECT 1 FROM flow_v3_live_entry_release r WHERE r.broker_order_id=o.broker_order_id
-                   AND r.status<>'CONFIRMED')) ORDER BY o.created_at LIMIT 100""")
+                   AND r.status<>'CONFIRMED'))
+                AND (NOT %s OR i.side='SELL' OR EXISTS (SELECT 1 FROM flow_v3_live_entry_release r
+                     WHERE r.broker_order_id=o.broker_order_id AND r.status<>'CONFIRMED'))
+                ORDER BY CASE WHEN EXISTS (SELECT 1 FROM flow_v3_live_entry_release r
+                     WHERE r.broker_order_id=o.broker_order_id AND r.status<>'CONFIRMED')
+                     THEN 0 ELSE 1 END,o.created_at LIMIT 100""",(exits_only,))
             return q.fetchall()
 
     def record_response(self, broker_order_id, response, observed_at):
@@ -334,16 +342,20 @@ class LiveRepository:
                 VALUES('FLOW_V3_NO_SEND',now(),'{}',%s) ON CONFLICT(worker_code) DO UPDATE
                 SET heartbeat_at=now(),last_error=EXCLUDED.last_error""",(reason,))
 
-    def _requests(self, q, now):
+    def _requests(self, q, now, *, exits_only=False, buy_budget=None):
         q.execute("""SELECT i.*,c.current_capital,c.reference_price AS quote,c.reference_observed_at AS quote_time,
-                op.execution_route,op.entry_enabled,op.effective_to,op.entry_resume_at,op.live_approved
+                op.execution_route,op.entry_enabled,op.effective_to,op.entry_resume_at,op.live_approved,op.allocated_amount
             FROM flow_v3_live_intent i JOIN flow_v3_live_capital c ON c.operation_id=i.operation_id
             JOIN flow_v3_strategy_operation op ON op.operation_id=i.operation_id
             WHERE i.status='WAITING_REFERENCE' AND i.execution_not_before<=%s
-            ORDER BY i.signal_time,CASE i.side WHEN 'SELL' THEN 0 ELSE 1 END,i.intent_id FOR UPDATE OF i,c""", (now,))
-        rows=q.fetchall(); count=0
+              AND (NOT %s OR i.side='SELL')
+            ORDER BY CASE i.side WHEN 'SELL' THEN 0 ELSE 1 END,i.signal_time,i.intent_id FOR UPDATE OF i,c""", (now,exits_only))
+        rows=q.fetchall(); count=0; buys=0
         for i in rows:
-            if i['side']=='BUY' and (not i['entry_enabled'] or not i['live_approved'] or i['effective_to'] is not None
+            if i['side']=='BUY':
+                if buy_budget is not None and buys>=buy_budget: continue
+                buys+=1
+            if i['side']=='BUY' and (i['allocated_amount']<=0 or not i['entry_enabled'] or not i['live_approved'] or i['effective_to'] is not None
                                      or i['signal_time']<i['entry_resume_at']):
                 q.execute("UPDATE flow_v3_live_intent SET status='BLOCKED',reason='OPERATION_ENTRY_STOPPED' WHERE intent_id=%s",(i['intent_id'],))
                 continue

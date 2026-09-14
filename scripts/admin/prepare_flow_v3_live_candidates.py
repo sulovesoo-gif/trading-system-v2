@@ -23,6 +23,11 @@ def main():
     add.add_argument('--route',choices=('UNDERLYING','LEVERAGE','INVERSE'),required=True)
     add.add_argument('--capital',required=True)
     add.add_argument('--approval-reference',required=True)
+    capital=sub.add_parser('set-capital',help='Amount 0 stops BUY only; positive changes use independent capital epochs')
+    capital.add_argument('--strategy',required=True)
+    capital.add_argument('--route',choices=('UNDERLYING','LEVERAGE','INVERSE'),required=True)
+    capital.add_argument('--capital',required=True)
+    capital.add_argument('--reference',required=True)
     for name in ('start-entry','stop-entry','close'):
         cmd=sub.add_parser(name)
         cmd.add_argument('--operation',type=int,required=True)
@@ -34,6 +39,8 @@ def main():
         if args.command=='register':
             result={'operation_id':ops.register(args.strategy,args.route,args.capital,args.approval_reference,kst_now()),
                     'entry_enabled':False,'global_send_changed':False}
+        elif args.command=='set-capital':
+            result=ops.set_capital(args.strategy,args.route,args.capital,args.reference,kst_now())
         elif args.command in ('start-entry','stop-entry','close'):
             ops.set_entry(args.operation,args.command=='start-entry',kst_now(),end=args.command=='close')
             result={'operation_id':args.operation,'action':args.command,'global_send_changed':False}
