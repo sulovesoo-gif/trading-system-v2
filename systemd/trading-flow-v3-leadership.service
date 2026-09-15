@@ -1,0 +1,23 @@
+[Unit]
+Description=Independent FLOW Leadership offline research snapshot
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/trading-system-v2
+EnvironmentFile=/etc/trading-flow-leadership.env
+Environment=TZ=Asia/Seoul
+ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/research/run_flow_v3_leadership.py --write-snapshot
+Nice=15
+CPUWeight=10
+CPUQuota=50%
+IOWeight=10
+MemoryMax=2G
+TimeoutStartSec=6h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/ubuntu/projects/trading-system-v2
+# No trading unit dependencies, restart commands, OnFailure handlers or broker credentials.

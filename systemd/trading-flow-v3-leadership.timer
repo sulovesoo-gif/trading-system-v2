@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily FLOW Leadership snapshot after extended RAW collection
+
+[Timer]
+OnCalendar=*-*-* 21:15:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=120
+Unit=trading-flow-v3-leadership.service
+
+[Install]
+WantedBy=timers.target

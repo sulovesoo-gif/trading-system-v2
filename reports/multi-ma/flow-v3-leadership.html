@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FLOW V3 Leadership · 본주 연구</title>
+<style>
+:root{color-scheme:light;--ink:#17273e;--blue:#155de9;--border:#d6deea;--muted:#526278}*{box-sizing:border-box}body{margin:0;background:#f0f4f9;color:var(--ink);font:16px/1.5 system-ui,sans-serif}header{background:#102640;color:white;padding:22px 4vw;display:flex;justify-content:space-between;align-items:center;gap:15px}h1{font-size:24px;letter-spacing:-.5px;margin:0}header small{color:#bbd1ed}main{max-width:1700px;margin:auto;padding:24px 3vw}section{background:white;border:1px solid var(--border);border-radius:8px;margin-bottom:20px;padding:20px}h2{font-size:19px;margin:0 0 12px}.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}label{font-size:14px;color:var(--muted);display:flex;flex-direction:column;gap:5px}select,input,button{font:inherit;border:1px solid #b9c7d9;border-radius:5px;min-height:42px;padding:7px 10px;background:white;color:var(--ink);min-width:0}button{cursor:pointer;background:var(--blue);color:white;border-color:var(--blue)}button:disabled{opacity:.5}input:focus,select:focus,button:focus{outline:3px solid #9ac1ff;outline-offset:2px}.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin:15px 0}.note{font-size:14px;color:var(--muted);margin:8px 0}.notice{padding:12px;background:#fff4d7;border-left:4px solid #d08c00;font-size:14px;white-space:pre-line}.scroll{overflow:auto;max-height:65vh}table{border-collapse:collapse;width:100%;white-space:nowrap;font-size:14px}th,td{text-align:right;border-bottom:1px solid #e3e9f1;padding:11px 13px}th{position:sticky;top:0;background:#edf3fc;z-index:1;color:#314964}th:first-child,td:first-child{text-align:left}tbody tr:hover{background:#f0f6ff}.idbutton{background:none;color:#155de9;padding:0;border:0;min-height:30px;font-weight:600}.selected{background:#e7f0ff}.up{color:#007b60}.down{color:#b13945}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:20px}.chartbox{min-width:0}canvas{width:100%;height:270px;display:block}.legend{font-size:13px;display:flex;flex-wrap:wrap;gap:12px}.legend span{border-left:4px solid;padding-left:6px}.empty{text-align:center;padding:35px;color:var(--muted)}#error{display:none}footer{padding:5px 0 25px;color:var(--muted);font-size:14px}#detail{font-size:14px;overflow-wrap:anywhere}.toggle{flex-direction:row;align-items:center}.toggle input{min-height:24px}@media(max-width:600px){header{align-items:flex-start;flex-direction:column;padding:17px}main{padding:12px}section{padding:12px}h1{font-size:22px}.filters{grid-template-columns:repeat(2,minmax(0,1fr))}.charts{grid-template-columns:minmax(0,1fr)}th,td{padding:9px}header small{font-size:14px}}
+</style></head><body>
+<header><div><small>독립 연구 / UNDERLYING</small><h1>FLOW V3 Leadership</h1></div><small>실제 주문·운용 설정과 연결되지 않는 일별 Snapshot</small></header>
+<main><section><div class="filters">
+<label>기준일<select id="date"></select></label><label>기준자본<select id="capital"></select></label>
+<label>기간<select id="period"><option value="daily">Daily · 일간</option><option value="weekly">Weekly · 주간 누적</option><option value="monthly">Monthly · 월간 누적</option></select></label>
+<label>표시<select id="top"><option value="50">Top 50</option><option value="100">Top 100</option></select></label>
+<label>시간정책<select id="policy"><option>REGULAR</option><option>EXTENDED_EXIT</option><option>EXTENDED_FULL</option><option>AFTER</option></select></label>
+<label>정렬<select id="sort"><option value="compound_return">복리수익률</option><option value="final_capital">최종자본</option><option value="net_profit">순이익</option></select></label>
+<label>본주<select id="stock_code"><option value="">전체</option><option>000660</option><option>005930</option></select></label>
+<label>방향<select id="direction"><option value="">전체</option><option>LONG</option><option>SHORT</option></select></label>
+<label>청산정책<select id="exit_policy"><option value="">전체</option><option>SIGNAL_EOD</option><option>SIGNAL_HOLD</option></select></label>
+<label>전략 검색<input id="search" placeholder="FV3…" maxlength="40"></label><button id="load">조회</button>
+</div><p class="note">본주 매수 연구 대상은 LONG입니다. SHORT 필터에는 결과가 없습니다. 기준자본은 공통코드 활성값을 사용합니다.</p>
+<div id="error" class="notice" role="alert"></div><div id="status" class="note" aria-live="polite">Snapshot 정보를 읽는 중입니다.</div></section>
+<section><div class="toolbar"><h2>Leadership Ranking</h2><label class="toggle"><input type="checkbox" id="compare">4개 시간정책 비교</label></div>
+<p class="note">순위는 전체 본주 Universe 기준입니다. 상승 ▲ / 하락 ▼ / 이전 순위 없음 NEW. 데이터 미산출은 0%가 아닙니다.</p>
+<div class="scroll"><table id="ranking"></table></div><p id="detail"></p></section>
+<section><h2>Rank History</h2><p class="note">현재 조회 전략의 최근 31일 Snapshot 순위. 빈칸은 Snapshot 또는 산출값이 없는 날짜입니다.</p><div class="scroll"><table id="history"></table></div></section>
+<section><div class="toolbar"><h2>성과와 순위 흐름</h2><label>누적자본 차트 표시<select id="chartTop"><option value="5">상위 5개</option><option value="10">상위 10개</option><option value="1">선택 전략만</option></select></label></div>
+<div class="charts"><div class="chartbox"><h2>누적 복리자본</h2><canvas id="capitalChart" aria-label="전략별 Snapshot 최종자본 추이" role="img"></canvas><div class="legend" id="capitalLegend"></div></div>
+<div class="chartbox"><h2>선택 전략 Rank Movement</h2><canvas id="rankChart" aria-label="선택 전략 순위 추이" role="img"></canvas></div>
+<div class="chartbox"><h2>선택 전략 시간정책 비교</h2><canvas id="policyChart" aria-label="선택 전략 시간정책별 수익률" role="img"></canvas><div class="legend" id="policyLegend"></div></div></div>
+<p class="note">누적자본은 각 Snapshot의 실제 독립 재생 결과입니다. 일간 수익률을 단순 합산하지 않습니다. MDD는 확정 실현자본 기준이며 미실현 평가손익은 포함하지 않습니다.</p></section>
+<footer>연구 전용 · KIS 주문 호출 없음 · 기존 FLOW 운영 Dashboard와 독립</footer></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), axes=['REGULAR','EXTENDED_EXIT','EXTENDED_FULL','AFTER'];
+const colors=['#155de9','#008571','#9b42b4','#cc6e00','#d04456','#56791c','#5946c6','#008597','#854c37','#66768b'];
+let rows=[],hist=[],selected='',generation=0;
+const fmt=(v,d=0)=>v===null||v===undefined?'—':Number(v).toLocaleString('ko-KR',{maximumFractionDigits:d});
+const params=()=>new URLSearchParams(['date','capital','period','top','policy','sort','stock_code','direction','exit_policy','search'].map(k=>[k,$(k).value]));
+function textCell(tr,v,tag='td'){const e=document.createElement(tag);e.textContent=v;tr.append(e);return e;}
+function header(table,labels){table.replaceChildren();let h=document.createElement('thead'),r=document.createElement('tr');labels.forEach(x=>textCell(r,x,'th'));h.append(r);table.append(h);const b=document.createElement('tbody');table.append(b);return b;}
+async function api(path,query){const response=await fetch('/leadership/api/'+path+(query?'?'+query:''));if(!response.ok)throw Error('연구 데이터 조회 실패 ('+response.status+'). 전용 migration·공통코드·Snapshot 준비 상태를 확인하세요.');return response.json();}
+function render(){const compare=$('compare').checked;
+ const labels=['순위','전략ID','본주','방향','ENTRY / EXIT','초기자본','최종자본','순이익','복리수익률 %','거래수','승률 %','MDD %','순위변화','산출상태'];
+ if(compare)axes.forEach(p=>labels.push(p+' % / 순위'));
+ const b=header($('ranking'),labels);
+ rows.forEach(r=>{let tr=document.createElement('tr'),m=r.metrics,d=r.strategy_definition;if(r.strategy_id===selected)tr.className='selected';
+ textCell(tr,fmt(m.rank));const cell=textCell(tr,'');const button=document.createElement('button');button.className='idbutton';button.textContent=r.strategy_id;button.onclick=()=>{selected=r.strategy_id;render();charts();};cell.append(button);
+ [r.stock_code,r.direction,`${d.entry_family_code} ${d.entry_fast_period}/${d.entry_slow_period} ${d.program_condition_code} → ${d.exit_fast_period}/${d.exit_slow_period} ${d.exit_policy_code}`,fmt(m.initial_capital),fmt(m.final_capital),fmt(m.net_profit,2),fmt(m.compound_return,3),fmt(m.trade_count),fmt(m.win_rate,2),fmt(m.mdd,3)].forEach(x=>textCell(tr,x));
+ let c=textCell(tr,r.rank_change===null?r.rank_label:(r.rank_change>0?'▲':r.rank_change<0?'▼':'—')+Math.abs(r.rank_change));c.className=r.rank_change>0?'up':r.rank_change<0?'down':'';textCell(tr,m.status);
+ if(compare)axes.forEach(p=>{let v=r[p.toLowerCase()];textCell(tr,fmt(v.compound_return,3)+' / '+fmt(v.rank));});b.append(tr);});
+ if(!rows.length){let tr=document.createElement('tr');textCell(tr,'조회 조건에 해당하는 결과가 없습니다.').colSpan=labels.length;b.append(tr);}
+ $('detail').textContent=selected?'선택 전략: '+selected:'';
+ const dates=[...new Set(hist.map(r=>r.snapshot_date))].sort(), hb=header($('history'),['전략',...dates,'변화']);
+ rows.forEach(r=>{let tr=document.createElement('tr');textCell(tr,r.strategy_id);const values=dates.map(d=>hist.find(x=>x.strategy_id===r.strategy_id&&x.snapshot_date===d)?.metrics.rank??null);values.forEach(v=>textCell(tr,fmt(v)));const actual=values.filter(v=>v!==null);let change=actual.length>1?Number(actual[0])-Number(actual.at(-1)):null;textCell(tr,change===null?'NEW':(change>0?'▲':change<0?'▼':'—')+Math.abs(change));hb.append(tr);});}
+function plot(id,labels,series,reverse=false){const canvas=$(id),w=Math.max(canvas.clientWidth,260),h=270,scale=devicePixelRatio||1;canvas.width=w*scale;canvas.height=h*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.clearRect(0,0,w,h);c.font='12px system-ui';
+ const values=series.flatMap(s=>s.values).filter(v=>v!==null&&v!==undefined).map(Number);if(!values.length){c.fillStyle='#526278';c.fillText('산출 가능한 Snapshot이 없습니다.',25,120);return;}
+ let min=Math.min(...values),max=Math.max(...values);if(min===max){min-=1;max+=1;}const x=i=>55+i*(w-75)/Math.max(labels.length-1,1),y=v=>reverse?25+(Number(v)-min)/(max-min)*205:230-(Number(v)-min)/(max-min)*205;
+ c.strokeStyle='#d6deea';for(let i=0;i<4;i++){let v=min+(max-min)*i/3;c.beginPath();c.moveTo(55,y(v));c.lineTo(w-15,y(v));c.stroke();c.fillStyle='#526278';c.fillText(Math.abs(v)>99999?fmt(v/10000,1)+'만':fmt(v,1),1,y(v)+4);}
+ c.fillText(labels[0]||'',55,258);if(labels.length>1)c.fillText(labels.at(-1),Math.max(55,w-100),258);
+ series.forEach((s,i)=>{c.strokeStyle=colors[i%colors.length];c.fillStyle=c.strokeStyle;c.lineWidth=2;c.beginPath();let active=false;s.values.forEach((v,j)=>{if(v===null||v===undefined){active=false;return;}if(active)c.lineTo(x(j),y(v));else c.moveTo(x(j),y(v));active=true;});c.stroke();s.values.forEach((v,j)=>{if(v!==null&&v!==undefined){c.beginPath();c.arc(x(j),y(v),3,0,Math.PI*2);c.fill();}});});}
+function legend(id,series){$(id).replaceChildren();series.forEach((s,i)=>{const span=document.createElement('span');span.textContent=s.name;span.style.borderColor=colors[i%colors.length];$(id).append(span);});}
+function charts(){const dates=[...new Set(hist.map(r=>r.snapshot_date))].sort(),n=Number($('chartTop').value),ids=n===1?[selected]:rows.slice(0,n).map(r=>r.strategy_id);
+ const series=ids.filter(Boolean).map(id=>({name:id,values:dates.map(d=>hist.find(r=>r.strategy_id===id&&r.snapshot_date===d)?.metrics.final_capital??null)}));plot('capitalChart',dates,series);legend('capitalLegend',series);
+ plot('rankChart',dates,[{name:selected,values:dates.map(d=>hist.find(r=>r.strategy_id===selected&&r.snapshot_date===d)?.metrics.rank??null)}],true);
+ const p=axes.map(a=>({name:a,values:dates.map(d=>hist.find(r=>r.strategy_id===selected&&r.snapshot_date===d)?.[a.toLowerCase()]?.compound_return??null)}));plot('policyChart',dates,p);legend('policyLegend',p);}
+async function load(){const mine=++generation;$('load').disabled=true;$('error').style.display='none';try{const q=params(),data=await api('ranking',q);if(mine!==generation)return;rows=data.rows;selected=rows.some(r=>r.strategy_id===selected)?selected:rows[0]?.strategy_id||'';
+ hist=[];if(rows.length){q.set('strategies',rows.map(r=>r.strategy_id).join(','));const h=await api('history',q);if(mine!==generation)return;hist=h.rows;}
+ $('status').textContent=data.metadata?`${data.snapshot_date} · 본주 ${fmt(data.metadata.universe_count)} 전략 · 전체 Snapshot ${fmt(data.metadata.row_count)}행 · ${data.rank_contract}`:'Snapshot이 없습니다.';
+ const issues=data.metadata?.source_audit?.stocks;const notes=issues?Object.entries(issues).filter(([,v])=>v.issues?.length).map(([k,v])=>k+': '+v.issues.join(', ')):[];if(notes.length){$('error').style.display='block';$('error').textContent='연장 연구 미산출 / RAW·가격 범위 확인\n'+notes.join('\n');}render();charts();
+ }catch(e){$('error').style.display='block';$('error').textContent=e.message;}finally{if(mine===generation)$('load').disabled=false;}}
+$('load').onclick=load;$('compare').onchange=render;$('chartTop').onchange=charts;window.addEventListener('resize',charts);$('search').addEventListener('keydown',e=>{if(e.key==='Enter')load();});
+(async()=>{try{const o=await api('options');o.capitals.forEach(r=>{let option=new Option(r.name,r.amount);option.selected=r.is_default;$('capital').append(option);});o.dates.forEach(d=>$('date').append(new Option(d,d)));if(!o.dates.length){$('status').textContent='완료된 Leadership Snapshot이 없습니다. 일배치 결과를 기다립니다.';$('load').disabled=true;render();charts();return;}await load();}catch(e){$('error').style.display='block';$('error').textContent=e.message;$('status').textContent='연구 전용 데이터 준비 전';$('load').disabled=true;}})();
+</script></body></html>
