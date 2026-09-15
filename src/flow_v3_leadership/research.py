@@ -1,7 +1,7 @@
 """Pure, deterministic Leadership calculations; never writes source records.
 
 Signal math reuses the unmodified FLOW engine. Research costs use the STOCK_LONG
-contract in 09A V0.8: 0.000140527 on each side's notional (no invented tax).
+contract: 0.000140527 on each side's notional, plus 0.002 on SELL only.
 Capital follows independent PAPER lots, not a shared cash/slot simulation.
 """
 from bisect import bisect_right
@@ -14,9 +14,23 @@ from src.flow_v3.engine import FlowV3SignalEngine, PAIR_CODE
 
 D = Decimal
 STOCK_COST = D('0.000140527')
+STOCK_SELL_TAX = D('0.002')
+COST_CONTRACT = 'STOCK_LONG fee 0.000140527 each-side notional; sell tax 0.002 sell-side notional'
 POLICIES = ('REGULAR', 'EXTENDED_EXIT', 'EXTENDED_FULL', 'AFTER')
 PERIODS = ('daily', 'weekly', 'monthly')
-VERSION = 'LEADERSHIP_V1_STOCK_COST_09A08'
+VERSION = 'LEADERSHIP_V2_STOCK_SELL_TAX_002'
+
+
+def stock_costs(quantity, entry_price, exit_price):
+    """Exact Decimal research costs; no new rounding/slippage contract."""
+    buy_notional = quantity * D(entry_price)
+    sell_notional = quantity * D(exit_price)
+    gross = sell_notional - buy_notional
+    buy_fee = buy_notional * STOCK_COST
+    sell_fee = sell_notional * STOCK_COST
+    sell_tax = sell_notional * STOCK_SELL_TAX
+    return dict(gross=gross, buy_fee=buy_fee, sell_fee=sell_fee, sell_tax=sell_tax,
+                net=gross-buy_fee-sell_fee-sell_tax)
 
 
 @dataclass(frozen=True)
@@ -217,7 +231,7 @@ def replay(trades, capital_base, asof):
             qty,entry = lots.pop(tid)
             exit_price = D(t['actual_exit_price'])
             if not exit_price.is_finite() or exit_price<=0: raise ValueError('INVALID_PRICE')
-            net = qty*(exit_price-entry)-qty*(entry+exit_price)*STOCK_COST
+            net = stock_costs(qty, entry, exit_price)['net']
             capital += net
             for p in periods:
                 m=metrics[p]

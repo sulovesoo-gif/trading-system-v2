@@ -12,7 +12,7 @@ from pathlib import Path
 from src.flow_v3.models import MinuteBase,StrategyContract
 from src.flow_v3.engine import FlowV3SignalEngine,PAIR_CODE
 from src.flow_v3_leadership.research import (Session,Prices,build_states,entry_matches,extended_trades,
-    replay,unavailable,rank_rows,POLICIES,PERIODS,STOCK_COST)
+    replay,unavailable,rank_rows,POLICIES,PERIODS,STOCK_COST,STOCK_SELL_TAX)
 from src.flow_v3_leadership.source import regular_prices
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -80,7 +80,7 @@ class LeadershipTests(unittest.TestCase):
     def test_six_million_and_cost(self):
         m=replay([trade(1,at(10,1),at(11,1),250000,260000)],6000000,DAY)['daily']
         self.assertEqual(m['maximum_quantity'],24)
-        self.assertEqual(m['net_profit'],24*(D(10000)-D(510000)*STOCK_COST))
+        self.assertEqual(m['net_profit'],24*(D(10000)-D(510000)*STOCK_COST-D(260000)*STOCK_SELL_TAX))
 
     def test_independent_capital_axes_integer_rounding(self):
         t=[trade(1,at(10,1),at(11,1),400000,410000)]
@@ -202,6 +202,7 @@ class LeadershipDatabaseTests(unittest.TestCase):
         from psycopg.conninfo import conninfo_to_dict
         from src.flow_v3_leadership.source import capitals,universe,bases,prices,session
         from src.flow_v3_leadership.snapshot import publish
+        from scripts.research.backfill_flow_v3_leadership import TOP5,plan,ranking_report
         from src.service.flow_v3_leadership_dashboard_service import ranking,history,options
         dsn=os.environ['LEADERSHIP_TEST_DSN'];cfg=conninfo_to_dict(dsn)
         self.assertEqual(cfg.get('host'),'127.0.0.1');self.assertEqual(cfg.get('dbname'),'flow_leadership_test')
@@ -225,7 +226,7 @@ class LeadershipDatabaseTests(unittest.TestCase):
         conn.execute("UPDATE common_code SET use_yn='Y' WHERE group_cd='FLOW_LEADERSHIP_CAPITAL' AND code='6000000'")
         rows=[]
         for i in range(105):
-            sid='FV3'+str(i).zfill(6)
+            sid=TOP5[i] if i<len(TOP5) else 'FV3'+str(i).zfill(6)
             row=dict(snapshot_date=DAY,strategy_id=sid,capital_base=D(6000000),stock_code='000660',direction='LONG',
                      strategy_definition=asdict(strategy(sid,exit_policy='SIGNAL_HOLD')))
             for p in POLICIES:
@@ -235,6 +236,13 @@ class LeadershipDatabaseTests(unittest.TestCase):
         self.assertEqual(publish(conn,rows,audit,DAY)['status'],'INSERTED')
         self.assertEqual(publish(conn,rows,audit,DAY)['status'],'UNCHANGED')
         self.assertRaises(ValueError,publish,conn,rows,{'changed':True},DAY)
+        from unittest.mock import patch
+        with patch('src.flow_v3_leadership.snapshot.VERSION','LEADERSHIP_V1_STOCK_COST_09A08'):
+            self.assertRaisesRegex(ValueError,'IMMUTABLE_SNAPSHOT_CONFLICT',publish,conn,rows,audit,DAY)
+        report=ranking_report(conn,DAY)
+        for period in PERIODS:
+            self.assertEqual(len(report['periods'][period]['top50']),50)
+            self.assertEqual(len(report['periods'][period]['live_top5']),5)
         q={'date':[str(DAY)],'capital':['6000000']}
         self.assertEqual(len(ranking(conn,q)['rows']),50)
         self.assertEqual(len(ranking(conn,{**q,'top':['100']})['rows']),100)
@@ -254,6 +262,9 @@ class LeadershipDatabaseTests(unittest.TestCase):
         self.assertEqual(conn.execute('SELECT count(*) FROM common_code').fetchone()[0],12)
         conn.execute((ROOT/'test/fixtures/flow_v3_leadership_source.sql').read_text(encoding='utf-8'))
         self.assertEqual(len(universe(conn)),1)
+        work=plan(conn,DAY)
+        self.assertEqual(work['research_start'],DAY)
+        self.assertEqual(work['dates'],[DAY]);self.assertFalse(work['blockers'])
         self.assertEqual(session(conn).extended_end,time(20))
         begin,finish=at(9,0),at(20,1)
         p=prices(conn,'000660',begin,finish)
@@ -270,6 +281,8 @@ class LeadershipDatabaseTests(unittest.TestCase):
         m=next(r for r in computed if r['capital_base']==6000000)
         self.assertEqual(m['regular_daily']['maximum_quantity'],24)
         self.assertEqual(m['regular_daily']['trade_count'],1)
+        self.assertEqual(m['regular_daily']['status'],'COMPLETE')
+        self.assertIn('0.002 sell-side',audit['cost_contract'])
         self.assertEqual(m['extended_full_daily']['status'],'EXTENDED_PRICE_UNAVAILABLE')
         self.assertIsNone(m['extended_full_daily']['compound_return'])
         self.assertEqual(conn.execute('SELECT * FROM flow_v3_paper_trade').fetchall(),before)

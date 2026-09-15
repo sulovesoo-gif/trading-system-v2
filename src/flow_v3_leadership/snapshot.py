@@ -7,7 +7,7 @@ from datetime import datetime, time, timedelta
 from psycopg.types.json import Jsonb
 
 from . import source
-from .research import POLICIES, PERIODS, VERSION, build_states, extended_trades, replay, unavailable, rank_rows
+from .research import POLICIES, PERIODS, VERSION, COST_CONTRACT, build_states, extended_trades, replay, unavailable, rank_rows
 
 COLUMNS = tuple(p.lower()+'_'+w for p in POLICIES for w in PERIODS)
 
@@ -71,7 +71,7 @@ def compute(conn, asof, research_start):
                 for period in PERIODS: row[policy.lower()+'_'+period]=metrics[period]
             output.append(row)
     audit=dict(stocks=audits,session=asdict(session),capital_axes=axes,source_first_date=first,
-        cost_contract='09A V0.8 STOCK_LONG 0.000140527 each-side notional',
+        cost_contract=COST_CONTRACT,
         capital_contract='independent PAPER lots; no cash/slot/D+2 simulation',
         period_contract='continuous replay; realized capital at each period boundary; HOLD carried',
         raw_coverage_contract='extended metrics unavailable unless every source trading day has RAW warmup and extended price')

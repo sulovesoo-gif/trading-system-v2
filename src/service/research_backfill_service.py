@@ -20,7 +20,7 @@ class ResearchCostPolicy:
     version: str = "KIS_BanKIS_2026_08"
     stock_fee_rate: Decimal = Decimal("0.000140527")
     etf_etn_fee_rate: Decimal = Decimal("0.000146527")
-    stock_sell_tax_rate: Decimal = Decimal("0")
+    stock_sell_tax_rate: Decimal = Decimal("0.002")
     etf_etn_sell_tax_rate: Decimal = Decimal("0")
     slippage_rate: Decimal = Decimal("0")
 
