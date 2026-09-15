@@ -1,0 +1,23 @@
+[Unit]
+Description=Fail-closed INTEGRATED L0 RAW retention (independent maintenance)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/trading-system-v2
+EnvironmentFile=/etc/trading-minute-ma-integrated-retention.env
+Environment=TZ=Asia/Seoul
+ExecStart=/home/ubuntu/projects/trading-system-v2/venv/bin/python scripts/maintenance/purge_minute_ma_integrated_raw.py --env-file /etc/trading-minute-ma-integrated-retention.env --apply
+Nice=15
+CPUWeight=10
+CPUQuota=50%
+IOWeight=10
+MemoryMax=512M
+TimeoutStartSec=45min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/home/ubuntu/projects/trading-system-v2
+# No Requires/BindsTo/PartOf/OnFailure/Restart or trading unit actions.

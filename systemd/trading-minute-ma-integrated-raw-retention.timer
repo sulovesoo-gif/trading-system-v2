@@ -1,0 +1,11 @@
+[Unit]
+Description=INTEGRATED RAW retention after 20:00 collection and completed-bar checks
+
+[Timer]
+OnCalendar=*-*-* 21:30:00 Asia/Seoul
+RandomizedDelaySec=120
+Persistent=false
+Unit=trading-minute-ma-integrated-raw-retention.service
+
+[Install]
+WantedBy=timers.target
