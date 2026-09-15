@@ -67,13 +67,18 @@ class LiveRepository:
             if code not in EXECUTION_CODES or not price.is_finite() or price<=0 or not timedelta(0)<=now-observed_at<=timedelta(seconds=30):
                 continue
             q.execute("""UPDATE flow_v3_live_capital c SET reference_price=%s,reference_observed_at=%s,
-                next_quantity=greatest(0,floor(c.current_capital/%s))::bigint,last_error=NULL,updated_at=now()
+                next_quantity=CASE WHEN p.allocated_amount>0 AND p.allocated_amount=c.initial_capital
+                    AND p.entry_enabled AND p.effective_to IS NULL
+                    THEN greatest(0,floor(c.current_capital/%s))::bigint ELSE 0 END,
+                last_error=CASE WHEN p.allocated_amount>0 AND p.allocated_amount<>c.initial_capital
+                    THEN 'CAPITAL_REBASE_REQUIRED' ELSE NULL END,updated_at=now()
                 FROM flow_v3_strategy_operation p WHERE c.operation_id=p.operation_id AND p.live_execution_code=%s""",
                 (price,observed_at,price,code))
 
     @staticmethod
     def _entries(q, now):
-        q.execute("""SELECT e.*,c.operation_id,o.execution_route,o.live_execution_code FROM flow_v3_runtime_entry_event e
+        q.execute("""SELECT e.*,c.operation_id,c.initial_capital,o.allocated_amount,
+                o.execution_route,o.live_execution_code FROM flow_v3_runtime_entry_event e
             JOIN flow_v3_live_capital c USING(strategy_id)
             JOIN flow_v3_strategy_operation o ON o.operation_id=c.operation_id
             WHERE e.entry_signal_time>=c.activated_at AND e.created_at>=c.activated_at
@@ -91,6 +96,10 @@ class LiveRepository:
                 reason='ENTRY_AFTER_EOD_CUTOFF'
             elif signal.date()!=now.date() or now-signal>timedelta(minutes=3):
                 reason='HISTORICAL_OR_STALE_ENTRY_NO_REPLAY'
+            elif e['allocated_amount']!=e['initial_capital']:
+                # A raw SQL edit is not permission to overwrite an epoch or move
+                # OPEN ownership. Require the existing audited set-capital path.
+                reason='CAPITAL_REBASE_REQUIRED'
             key=f"ENTRY|OP{e['operation_id']}|{e['strategy_id']}|{e['entry_event_key']}"
             q.execute("""INSERT INTO flow_v3_live_intent
                 (intent_id,strategy_id,event_id,entry_event_key,paper_trade_id,side,lifecycle_key,
@@ -343,13 +352,13 @@ class LiveRepository:
                 SET heartbeat_at=now(),last_error=EXCLUDED.last_error""",(reason,))
 
     def _requests(self, q, now, *, exits_only=False, buy_budget=None):
-        q.execute("""SELECT i.*,c.current_capital,c.reference_price AS quote,c.reference_observed_at AS quote_time,
+        q.execute("""SELECT i.*,c.initial_capital,c.current_capital,c.reference_price AS quote,c.reference_observed_at AS quote_time,
                 op.execution_route,op.entry_enabled,op.effective_to,op.entry_resume_at,op.live_approved,op.allocated_amount
             FROM flow_v3_live_intent i JOIN flow_v3_live_capital c ON c.operation_id=i.operation_id
             JOIN flow_v3_strategy_operation op ON op.operation_id=i.operation_id
             WHERE i.status='WAITING_REFERENCE' AND i.execution_not_before<=%s
               AND (NOT %s OR i.side='SELL')
-            ORDER BY CASE i.side WHEN 'SELL' THEN 0 ELSE 1 END,i.signal_time,i.intent_id FOR UPDATE OF i,c""", (now,exits_only))
+            ORDER BY CASE i.side WHEN 'SELL' THEN 0 ELSE 1 END,i.signal_time,i.intent_id FOR UPDATE OF i,c,op""", (now,exits_only))
         rows=q.fetchall(); count=0; buys=0
         for i in rows:
             if i['side']=='BUY':
@@ -358,6 +367,9 @@ class LiveRepository:
             if i['side']=='BUY' and (i['allocated_amount']<=0 or not i['entry_enabled'] or not i['live_approved'] or i['effective_to'] is not None
                                      or i['signal_time']<i['entry_resume_at']):
                 q.execute("UPDATE flow_v3_live_intent SET status='BLOCKED',reason='OPERATION_ENTRY_STOPPED' WHERE intent_id=%s",(i['intent_id'],))
+                continue
+            if i['side']=='BUY' and i['allocated_amount']!=i['initial_capital']:
+                q.execute("UPDATE flow_v3_live_intent SET status='BLOCKED',reason='CAPITAL_REBASE_REQUIRED' WHERE intent_id=%s",(i['intent_id'],))
                 continue
             deadline=time(15,20) if i['side']=='BUY' or i['exit_reason']=='SIGNAL_EOD' else time(15,30)
             if i['signal_time'].date()!=now.date() or now.time()>=deadline:

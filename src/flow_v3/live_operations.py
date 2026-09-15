@@ -63,7 +63,7 @@ class LiveOperations:
                 if prior['approved_amount']!=amount: raise ValueError('CAPITAL_REFERENCE_REUSED')
                 return dict(operation_id=prior['replacement_operation_id'] or prior['operation_id'],
                             capital_change_id=prior['capital_change_id'],replayed=False,unchanged=True)
-            q.execute("""SELECT o.*,c.current_capital,c.realized_net
+            q.execute("""SELECT o.*,c.initial_capital,c.current_capital,c.realized_net
                 FROM flow_v3_strategy_operation o JOIN flow_v3_live_capital c USING(operation_id)
                 WHERE o.strategy_id=%s AND o.execution_route=%s AND o.effective_to IS NULL
                 FOR UPDATE OF o,c""",(strategy_id,route))
@@ -71,22 +71,24 @@ class LiveOperations:
             if old and (not old['live_approved'] or old['operation_status']!='LIVE'):
                 raise ValueError('LIVE_OPERATION_NOT_APPROVED')
             before=old['allocated_amount'] if old else Decimal(0)
+            # Capital edits are not a kill-switch start/stop command. A new
+            # registration retains the existing explicit set-capital behavior.
+            entry_enabled=old['entry_enabled'] if old else True
             replacement=None
             if amount==0:
                 if not old: raise ValueError('CURRENT_ROUTE_NOT_FOUND')
                 op=old['operation_id']
-                q.execute('UPDATE flow_v3_strategy_operation SET allocated_amount=0,entry_enabled=false WHERE operation_id=%s',(op,))
+                q.execute('UPDATE flow_v3_strategy_operation SET allocated_amount=0 WHERE operation_id=%s',(op,))
+                q.execute('UPDATE flow_v3_live_capital SET next_quantity=0 WHERE operation_id=%s',(op,))
                 reason='PAUSE_NEW_ENTRY_ONLY'
-            elif old and before==amount:
+            elif old and before==amount and old['initial_capital']==amount:
                 op=old['operation_id']
-                if not old['entry_enabled']:
-                    q.execute('UPDATE flow_v3_strategy_operation SET entry_enabled=true,entry_resume_at=%s WHERE operation_id=%s',(now,op))
-                reason='RESUME_OR_KEEP_CURRENT_CAPITAL'
+                reason='KEEP_CURRENT_COMPOUND_CAPITAL'
             else:
                 if old:
                     if now<=old['effective_from']: raise ValueError('END_TIME_INVALID')
                     q.execute('UPDATE flow_v3_strategy_operation SET entry_enabled=false,effective_to=%s WHERE operation_id=%s',(now,old['operation_id']))
-                new=self._register(q,strategy_id,route,amount,reference,now,True)
+                new=self._register(q,strategy_id,route,amount,reference,now,entry_enabled)
                 op=old['operation_id'] if old else new
                 replacement=new if old else None
                 reason='NEW_APPROVED_CAPITAL_EPOCH'
@@ -97,7 +99,7 @@ class LiveOperations:
                 (op,replacement,strategy_id,route,before,amount,old['current_capital'] if old else None,
                  old['realized_net'] if old else None,now,reference,reason))
             return dict(operation_id=replacement or op,capital_change_id=q.fetchone()['capital_change_id'],
-                        approved_amount=amount,entry_enabled=amount>0,global_send_changed=False)
+                        approved_amount=amount,entry_enabled=entry_enabled,global_send_changed=False)
 
     def set_entry(self,operation_id,enabled,now,*,end=False):
         with self.pool.connection() as c,c.transaction(),c.cursor(row_factory=dict_row) as q:

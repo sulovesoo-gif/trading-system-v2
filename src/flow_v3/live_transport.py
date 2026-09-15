@@ -111,11 +111,14 @@ class FlowTransport:
                 c.execute("SELECT pg_advisory_xact_lock(hashtext('FLOW_V3_ACCOUNT_POST'),hashtext(%s))",
                           (self.account.cano+':'+self.account.account_product_code,))
                 op=c.execute("""SELECT live_approved,entry_enabled,effective_to,entry_resume_at,
-                    live_execution_code FROM flow_v3_strategy_operation WHERE operation_id=%s
+                    live_execution_code FROM flow_v3_strategy_operation op
+                    JOIN flow_v3_live_capital capital USING(operation_id) WHERE operation_id=%s
                     AND operation_status='LIVE' AND (NOT %s OR EXISTS
                       (SELECT 1 FROM flow_v3_live_intent i JOIN flow_v3_live_order o USING(intent_id)
                        WHERE o.broker_order_id=%s AND i.signal_time>=entry_resume_at
-                         AND allocated_amount>0)) FOR SHARE""",
+                         AND allocated_amount>0 AND allocated_amount=capital.initial_capital
+                         AND i.capital_at_entry=capital.current_capital
+                         AND i.quantity=floor(capital.current_capital/i.reference_price))) FOR SHARE OF op,capital""",
                     (row[11],not cancel and row[6]=='BUY',key)).fetchone()
                 allowed=bool(op and op[0] and op[4]==row[5] and send_authorized(c))
                 denial='FLOW_AUTHORIZATION_REVOKED_BEFORE_POST'

@@ -13,11 +13,20 @@ venv/bin/python scripts/admin/prepare_flow_v3_live_candidates.py set-capital \
 
 이 명령은 **다음 별도 운영 단계에서만** 사용한다. 예시를 배포 절차에 자동 포함하지 않는다.
 양수 신규 등록은 ENTRY 허용; 전역 SEND Y/Y이면 이후 자연 신규 신호가 실제 주문으로 이어질 수 있다.
-0원은 allocated_amount=0 / entry_enabled=false일 뿐, 기존 initial/current capital, NET,
+0원은 allocated_amount=0으로 신규 BUY만 막고 entry_enabled는 유지한다. 기존 initial/current capital, NET,
 lot/order/fill/settlement를 변경하지 않는다. 기존 SELL 책임은 유지한다.
 0→양수 또는 다른 양수로 변경하면 이전 operation을 종료하고 새 승인금액의 capital epoch를 만든다.
 이전 epoch의 자본/실현손익은 새 epoch로 이전하지 않는다. 이전 OPEN 청산손익은 이전 epoch에 귀속된다.
-같은 양수 금액은 current_capital을 초기화하지 않는다. 저수준 pause 상태라면 현재 epoch를 재개한다.
+같은 양수 금액이며 initial_capital도 일치하면 current_capital을 초기화하거나 ENTRY를 자동 재개하지 않는다.
+양수 변경으로 만든 새 epoch도 이전 entry_enabled kill switch를 계승한다.
+종료된 이전 epoch의 entry_enabled=false 처리는 종료 제약을 위한 것이며 새 epoch를 활성화하는 승인이 아니다.
+allocated_amount는 기준자본, current_capital은 initial_capital + 확정 realized_net이다.
+주문수량은 current_capital / 현재 기준가격의 FLOOR이며 기준자본으로 복리수익을 cap하지 않는다.
+직접 SQL로 양수 allocated_amount만 변경해 initial_capital과 달라지면 신규 BUY는
+CAPITAL_REBASE_REQUIRED로 차단한다. 자동 자본 보정/활성화하지 않으며 위 set-capital을 새 reference로
+명시적으로 실행해야 한다. 같은 금액이라도 epoch 기준자본 불일치 시 새 epoch로 rebase한다.
+ENTRY/주문 준비/POST 직전 모두 자본 기준을 검사한다. POST 직전에는 intent에 확정한 자본과
+현재 자본 및 수량도 재검사하고 operation/capital 잠금을 유지한다. 불일치 주문은 재전송하지 않는다.
 재개/신규 epoch의 entry_resume_at 이후 신호만 허용한다. 동일 reference 재실행은 audit 결과만 반환하고
 resume 시각을 움직이거나 다시 활성화하지 않는다. 다른 의도는 새 reference를 사용한다.
 
