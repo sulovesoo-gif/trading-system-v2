@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import http.client
 import json
 import logging
 import os
@@ -1001,6 +1002,8 @@ def research_cycle_payload(pool, query: dict[str, list[str]]) -> dict:
 class DashboardHandler(SimpleHTTPRequestHandler):
     pool = None
     sql_runner = None
+    leadership_host = "127.0.0.1"
+    leadership_port = 8094
 
     def _send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False, default=_json_default).encode("utf-8")
@@ -1021,6 +1024,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return False
         return True
 
+    def _proxy_leadership_get(self):
+        """Expose the loopback-only Leadership GET API through the dashboard origin."""
+        upstream = http.client.HTTPConnection(self.leadership_host, self.leadership_port, timeout=15)
+        try:
+            upstream.request("GET", self.path, headers={"Accept": "application/json"})
+            response = upstream.getresponse()
+            body = response.read()
+            self.send_response(response.status)
+            self.send_header("Content-Type", response.getheader("Content-Type") or "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
+        except (OSError, http.client.HTTPException):
+            logging.exception("Leadership API upstream failed")
+            self._send_json({"error": "LEADERSHIP_API_UNAVAILABLE"}, 502)
+        finally:
+            upstream.close()
+
     def end_headers(self):
         # The dashboard shell changes independently from the JSON payload.
         # Never let a browser retain a malformed or stale index.html after a
@@ -1040,6 +1063,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path in ("/leadership/api/options", "/leadership/api/ranking", "/leadership/api/history"):
+            return self._proxy_leadership_get()
         if parsed.path.startswith("/sql-analysis/api/"):
             if not self._analysis_authorized():
                 return
