@@ -16,27 +16,46 @@ KST = ZoneInfo("Asia/Seoul")
 
 
 class DynamicExecutionRegistry:
-    """In-process desired H0STCNT0 symbols for the one existing websocket."""
+    """Owner-scoped H0STCNT0 demand for the one existing websocket."""
 
     def __init__(self) -> None:
-        self._symbols: set[str] = set()
+        self._owners_by_symbol: dict[str, set[str]] = {}
         self._lock = RLock()
 
-    def add(self, stock_code: str) -> None:
+    def add(self, stock_code: str, *, owner: str) -> None:
         with self._lock:
-            self._symbols.add(stock_code)
+            self._owners_by_symbol.setdefault(stock_code, set()).add(owner)
 
-    def discard(self, stock_code: str) -> None:
+    def discard(self, stock_code: str, *, owner: str) -> None:
         with self._lock:
-            self._symbols.discard(stock_code)
+            owners = self._owners_by_symbol.get(stock_code)
+            if owners is None:
+                return
+            owners.discard(owner)
+            if not owners:
+                self._owners_by_symbol.pop(stock_code, None)
 
-    def symbols(self) -> set[str]:
+    def symbols(self, *, owner: str | None = None) -> set[str]:
         with self._lock:
-            return set(self._symbols)
+            if owner is None:
+                return set(self._owners_by_symbol)
+            return {
+                stock_code for stock_code, owners in self._owners_by_symbol.items()
+                if owner in owners
+            }
+
+    def discard_owner(self, owner: str) -> None:
+        with self._lock:
+            for stock_code in list(self._owners_by_symbol):
+                owners = self._owners_by_symbol[stock_code]
+                owners.discard(owner)
+                if not owners:
+                    self._owners_by_symbol.pop(stock_code, None)
 
 
 class FirstRiseBreakoutRuntime:
     CONDITION_NAME = "TSV2_오전1차상승후돌파_후보_V1"
+    SUBSCRIPTION_OWNER = "first_rise_breakout"
     SEARCH_START = time(9, 1)
     SEARCH_END = time(10, 0)
 
@@ -64,9 +83,10 @@ class FirstRiseBreakoutRuntime:
         with self._state_lock:
             self._states = restored
             self._restored_date = at.date()
+        self.subscriptions.discard_owner(self.SUBSCRIPTION_OWNER)
         for state in restored.values():
             if state.state not in TERMINAL_STATES:
-                self.subscriptions.add(state.stock_code)
+                self.subscriptions.add(state.stock_code, owner=self.SUBSCRIPTION_OWNER)
 
     def _resolve_seq(self, at: datetime) -> str:
         if self._condition_date != at.date() or not self._condition_seq:
@@ -88,7 +108,7 @@ class FirstRiseBreakoutRuntime:
             )
             with self._state_lock:
                 self._states[candidate.stock_code] = state
-            self.subscriptions.add(candidate.stock_code)
+            self.subscriptions.add(candidate.stock_code, owner=self.SUBSCRIPTION_OWNER)
             if not created:
                 continue
             created_count += 1
@@ -120,7 +140,7 @@ class FirstRiseBreakoutRuntime:
             with self._state_lock:
                 self._states[stock_code] = state
             if state.state in {ResearchState.REJECTED, ResearchState.EXPIRED, ResearchState.PAPER_EXITED}:
-                self.subscriptions.discard(stock_code)
+                self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
 
     def expire_once(self, *, at: datetime) -> int:
         if at.time() <= self.SEARCH_END or self._expired_date == at.date():
@@ -134,7 +154,7 @@ class FirstRiseBreakoutRuntime:
                 updated = self.repository.apply(decision, Observation(at, state.last_observed_price or Decimal("0"), "CLOCK"))
                 with self._state_lock:
                     self._states[stock_code] = updated
-                self.subscriptions.discard(stock_code)
+                self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
                 count += 1
         self._expired_date = at.date()
         return count
@@ -150,7 +170,7 @@ class FirstRiseBreakoutRuntime:
             return False
         with self._state_lock:
             self._states[stock_code] = self.repository.apply(decision, observation)
-        self.subscriptions.discard(stock_code)
+        self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
         return True
 
     async def run_forever(self) -> None:

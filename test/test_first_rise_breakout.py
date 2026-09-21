@@ -136,8 +136,8 @@ class FakeRawRepository:
 class DynamicSubscriptionTest(unittest.TestCase):
     def test_existing_socket_subscription_set_adds_only_dynamic_execution(self):
         registry = DynamicExecutionRegistry()
-        registry.add("123456")
-        registry.add("000660")
+        registry.add("123456", owner="first_rise_breakout")
+        registry.add("000660", owner="first_rise_breakout")
         collector = FlowRawCollector(
             FakeRawRepository(), ws_url="ws://unused", approval_provider=lambda: "unused",
             dynamic_execution_registry=registry,
@@ -146,6 +146,55 @@ class DynamicSubscriptionTest(unittest.TestCase):
         base = [row for row in collector.subscriptions if row == {"tr_id": TR_EXECUTION, "tr_key": "000660"}]
         self.assertEqual(len(dynamic), 1)
         self.assertEqual(len(base), 1)
+
+    def test_first_rise_release_keeps_another_owner_subscription(self):
+        registry = DynamicExecutionRegistry()
+        registry.add("123456", owner="existing_v2_feature")
+        registry.add("123456", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
+        collector = FlowRawCollector(
+            FakeRawRepository(), ws_url="ws://unused", approval_provider=lambda: "unused",
+            dynamic_execution_registry=registry,
+        )
+
+        registry.discard("123456", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
+
+        self.assertEqual(registry.symbols(), {"123456"})
+        self.assertEqual(
+            collector.dynamic_subscriptions,
+            [{"tr_id": TR_EXECUTION, "tr_key": "123456"}],
+        )
+
+    def test_first_rise_release_never_removes_base_subscription(self):
+        registry = DynamicExecutionRegistry()
+        registry.add("000660", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
+        collector = FlowRawCollector(
+            FakeRawRepository(), ws_url="ws://unused", approval_provider=lambda: "unused",
+            dynamic_execution_registry=registry,
+        )
+
+        registry.discard("000660", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
+
+        self.assertIn({"tr_id": TR_EXECUTION, "tr_key": "000660"}, collector.subscriptions)
+        self.assertEqual(collector.dynamic_subscriptions, [])
+
+    def test_daily_restore_clears_only_first_rise_owner(self):
+        class Repo:
+            def active_states(self, **kwargs):
+                return []
+
+        registry = DynamicExecutionRegistry()
+        registry.add("123456", owner="existing_v2_feature")
+        registry.add("123456", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
+        registry.add("654321", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
+        runtime = FirstRiseBreakoutRuntime(
+            repository=Repo(), strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
+            minute_source=object(), subscriptions=registry,
+        )
+
+        runtime.restore(at=AT)
+
+        self.assertEqual(registry.symbols(), {"123456"})
+        self.assertEqual(registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER), set())
 
     def test_subscription_and_unsubscription_use_existing_socket_protocol(self):
         class Socket:
@@ -206,13 +255,19 @@ class RuntimePersistencePathTest(unittest.TestCase):
         runtime.observe("123456", observed_at=AT + timedelta(minutes=2), price=Decimal("98.5"))
         runtime.observe("123456", observed_at=AT + timedelta(minutes=9), price=Decimal("100.1"))
         self.assertEqual(repo.entries, 1)
-        self.assertIn("123456", registry.symbols())
+        self.assertIn(
+            "123456",
+            registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER),
+        )
         self.assertTrue(runtime.record_exit(
             "123456", observed_at=AT + timedelta(minutes=10), price=Decimal("101"), reason="RESEARCH_EXIT"
         ))
         self.assertEqual(repo.exits, 1)
         self.assertEqual(repo.state.state, ResearchState.PAPER_EXITED)
-        self.assertNotIn("123456", registry.symbols())
+        self.assertNotIn(
+            "123456",
+            registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER),
+        )
 
 
 class MigrationScopeTest(unittest.TestCase):
