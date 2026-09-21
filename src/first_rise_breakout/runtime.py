@@ -7,10 +7,12 @@ import logging
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from threading import RLock
+from zoneinfo import ZoneInfo
 
 from .models import CandidateState, Observation, ResearchState, TERMINAL_STATES
 
 LOGGER = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
 
 
 class DynamicExecutionRegistry:
@@ -48,7 +50,7 @@ class FirstRiseBreakoutRuntime:
         self.condition_search = condition_search
         self.minute_source = minute_source
         self.subscriptions = subscriptions
-        self.now = now_provider or datetime.now
+        self.now = now_provider or (lambda: datetime.now(KST).replace(tzinfo=None))
         self.scan_interval_seconds = scan_interval_seconds
         self._states: dict[str, CandidateState] = {}
         self._condition_date = None

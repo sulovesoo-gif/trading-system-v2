@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from src.first_rise_breakout.condition_search import SavedConditionError, SavedConditionSearch
 from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
@@ -165,6 +166,16 @@ class DynamicSubscriptionTest(unittest.TestCase):
 
 
 class RuntimePersistencePathTest(unittest.TestCase):
+    def test_default_runtime_clock_is_naive_kst(self):
+        runtime = FirstRiseBreakoutRuntime(
+            repository=object(), strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
+            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+        )
+        actual = runtime.now()
+        expected = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None)
+        self.assertIsNone(actual.tzinfo)
+        self.assertLess(abs((actual - expected).total_seconds()), 2)
+
     def test_candidate_transition_entry_and_exit_paths_are_independent(self):
         class Repo:
             def __init__(self):
