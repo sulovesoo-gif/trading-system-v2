@@ -28,6 +28,30 @@ class FirstRiseBreakoutRepository:
             last_observed_price=row[9], entry_event_key=row[10], version=row[11],
         )
 
+    def record_condition_hits(
+        self, *, poll_time: datetime, business_date: date, condition_name: str,
+        condition_seq: str, candidates,
+    ) -> int:
+        inserted = 0
+        with self.pool.connection() as connection, connection.transaction(), connection.cursor() as cursor:
+            for candidate in candidates:
+                hit_key = (
+                    f"FRB_CONDITION_HIT|{poll_time.isoformat()}|{condition_name}|"
+                    f"{condition_seq}|{candidate.stock_code}"
+                )
+                cursor.execute(
+                    """INSERT INTO first_rise_breakout_condition_hit
+                       (condition_hit_id,poll_time,business_date,condition_name,condition_seq,
+                        stock_code,stock_name,result_rank,raw_payload)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT(poll_time,condition_name,condition_seq,stock_code) DO NOTHING""",
+                    (stable_id(hit_key), poll_time, business_date, condition_name, condition_seq,
+                     candidate.stock_code, candidate.stock_name, candidate.result_rank,
+                     Jsonb(candidate.raw_payload)),
+                )
+                inserted += cursor.rowcount
+        return inserted
+
     def record_candidate(
         self, *, business_date: date, condition_name: str, condition_seq: str,
         stock_code: str, stock_name: str | None, discovered_at: datetime, raw_payload: dict,

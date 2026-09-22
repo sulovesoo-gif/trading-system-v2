@@ -143,6 +143,17 @@ class FirstRiseBreakoutRuntime:
             len(candidates), str(not candidates).lower(), elapsed_ms,
         )
         self._poll_discovered.update(candidate.stock_code for candidate in candidates)
+        try:
+            self.repository.record_condition_hits(
+                poll_time=at,
+                business_date=at.date(),
+                condition_name=self.CONDITION_NAME,
+                condition_seq=seq,
+                candidates=candidates,
+            )
+        except Exception:
+            self._poll_errors += 1
+            raise
         created_count = 0
         try:
             for candidate in candidates:

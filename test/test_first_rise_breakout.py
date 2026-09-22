@@ -48,7 +48,9 @@ class SavedConditionSearchTest(unittest.TestCase):
         ])
         search = SavedConditionSearch(client, user_id="tester")
         self.assertEqual(search.resolve_seq("TSV2_오전1차상승후돌파_후보_V1"), "37")
-        self.assertEqual([row.stock_code for row in search.candidates("37")], ["123456", "654321"])
+        candidates = search.candidates("37")
+        self.assertEqual([row.stock_code for row in candidates], ["123456", "654321"])
+        self.assertEqual([row.result_rank for row in candidates], [1, 3])
         self.assertEqual(client.calls[0]["params"], {"user_id": "tester"})
         self.assertEqual(client.calls[1]["params"], {"user_id": "tester", "seq": "37"})
 
@@ -220,15 +222,20 @@ class DynamicSubscriptionTest(unittest.TestCase):
 class RuntimePersistencePathTest(unittest.TestCase):
     def test_empty_poll_and_end_of_window_summary_are_logged(self):
         class Repo:
+            def __init__(self): self.hit_rows = 0
             def active_states(self, **kwargs): return []
+            def record_condition_hits(self, **kwargs):
+                self.hit_rows += len(kwargs["candidates"])
+                return len(kwargs["candidates"])
         class Search:
             last_http_status = 200
             last_kis_code = "MCA05918"
             def resolve_seq(self, name): return "7"
             def candidates(self, seq): return []
 
+        repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
-            repository=Repo(), strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
+            repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
             minute_source=object(), subscriptions=DynamicExecutionRegistry(),
         )
         with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
@@ -243,6 +250,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         self.assertIn("kis_code=MCA05918", output)
         self.assertIn("result_count=0 empty_result=true", output)
         self.assertIn("FIRST_RISE_POLL_SUMMARY date=2026-09-22 poll_count=1 discovered_unique=0 errors=0", output)
+        self.assertEqual(repo.hit_rows, 0)
 
     def test_failed_poll_is_logged_and_counted_once(self):
         class Search:
@@ -274,6 +282,58 @@ class RuntimePersistencePathTest(unittest.TestCase):
         self.assertIsNone(actual.tzinfo)
         self.assertLess(abs((actual - expected).total_seconds()), 2)
 
+    def test_each_poll_persists_a_separate_hit_batch(self):
+        candidates = [
+            ConditionCandidate("111111", "A", {"code": "111111"}, 1),
+            ConditionCandidate("222222", "B", {"code": "222222"}, 2),
+            ConditionCandidate("333333", "C", {"code": "333333"}, 3),
+        ]
+        class Repo:
+            def __init__(self): self.hits = []
+            def record_condition_hits(self, **kwargs):
+                self.hits.extend((kwargs["poll_time"], row.stock_code) for row in kwargs["candidates"])
+                return len(kwargs["candidates"])
+            def record_candidate(self, **kwargs): return state(), False
+        class Search:
+            def resolve_seq(self, name): return "7"
+            def candidates(self, seq): return candidates
+
+        repo = Repo()
+        runtime = FirstRiseBreakoutRuntime(
+            repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
+            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+        )
+        runtime.scan_once(at=AT)
+        runtime.scan_once(at=AT + timedelta(minutes=1))
+
+        self.assertEqual(len(repo.hits), 6)
+        self.assertEqual(len(set(repo.hits)), 6)
+
+    def test_hit_persistence_precedes_subscription_failure(self):
+        candidate = ConditionCandidate("111111", "A", {"code": "111111"}, 1)
+        class Repo:
+            def __init__(self): self.hits = []
+            def record_condition_hits(self, **kwargs):
+                self.hits.extend(kwargs["candidates"])
+                return len(kwargs["candidates"])
+            def record_candidate(self, **kwargs): return state(), False
+        class Search:
+            def resolve_seq(self, name): return "7"
+            def candidates(self, seq): return [candidate]
+        class FailingRegistry(DynamicExecutionRegistry):
+            def add(self, stock_code, *, owner):
+                raise RuntimeError("subscribe unavailable")
+
+        repo = Repo()
+        runtime = FirstRiseBreakoutRuntime(
+            repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
+            minute_source=object(), subscriptions=FailingRegistry(),
+        )
+        with self.assertRaises(RuntimeError):
+            runtime.scan_once(at=AT)
+
+        self.assertEqual([row.stock_code for row in repo.hits], ["111111"])
+
     def test_candidate_transition_entry_and_exit_paths_are_independent(self):
         class Repo:
             def __init__(self):
@@ -282,6 +342,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
                 self.entries = 0
                 self.exits = 0
             def active_states(self, **kwargs): return []
+            def record_condition_hits(self, **kwargs): return len(kwargs["candidates"])
             def record_candidate(self, **kwargs): return self.state, True
             def apply(self, decision, observation, **kwargs):
                 self.state = decision.after
@@ -291,7 +352,8 @@ class RuntimePersistencePathTest(unittest.TestCase):
                 return self.state
         class Search:
             def resolve_seq(self, name): return "37"
-            def candidates(self, seq): return [ConditionCandidate("123456", "A", {"code": "123456"})]
+            def candidates(self, seq):
+                return [ConditionCandidate("123456", "A", {"code": "123456"}, 1)]
         class Peak:
             def peak(self, **kwargs): return Decimal("100"), AT, Decimal("100")
         repo, registry = Repo(), DynamicExecutionRegistry()
@@ -331,6 +393,15 @@ class MigrationScopeTest(unittest.TestCase):
         self.assertNotIn("DELETE FROM RAW_", upper)
         self.assertNotIn("LIVE_ENABLED", upper)
         self.assertNotIn("ACTUAL_ENABLED", upper)
+
+    def test_condition_hit_migration_is_additive_and_poll_idempotent(self):
+        sql = (Path(__file__).parents[1] / "database/migrations/20260922_first_rise_breakout_condition_hit.sql").read_text(encoding="utf-8")
+        upper = sql.upper()
+        self.assertIn("CREATE TABLE IF NOT EXISTS FIRST_RISE_BREAKOUT_CONDITION_HIT", upper)
+        self.assertIn("UNIQUE (POLL_TIME, CONDITION_NAME, CONDITION_SEQ, STOCK_CODE)", upper)
+        self.assertNotIn("ALTER TABLE RAW_", upper)
+        self.assertNotIn("UPDATE RAW_", upper)
+        self.assertNotIn("DELETE FROM RAW_", upper)
 
 
 if __name__ == "__main__":

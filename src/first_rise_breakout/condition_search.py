@@ -23,6 +23,7 @@ class ConditionCandidate:
     stock_code: str
     stock_name: str | None
     raw_payload: dict[str, Any]
+    result_rank: int
 
 
 class SavedConditionSearch:
@@ -77,10 +78,15 @@ class SavedConditionSearch:
         self.last_kis_code = str(payload.get("msg_cd") or payload.get("rt_cd") or "0")
         result: list[ConditionCandidate] = []
         seen: set[str] = set()
-        for row in self._rows(payload):
+        for result_rank, row in enumerate(self._rows(payload), start=1):
             code = str(row.get("code", "")).strip()
             if not code or code in seen:
                 continue
             seen.add(code)
-            result.append(ConditionCandidate(code, str(row.get("name") or "").strip() or None, row))
+            result.append(ConditionCandidate(
+                stock_code=code,
+                stock_name=str(row.get("name") or "").strip() or None,
+                raw_payload=row,
+                result_rank=result_rank,
+            ))
         return result
