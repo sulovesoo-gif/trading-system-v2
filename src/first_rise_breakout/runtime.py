@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import perf_counter
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from threading import RLock
@@ -77,8 +78,23 @@ class FirstRiseBreakoutRuntime:
         self._expired_date = None
         self._state_lock = RLock()
         self._restored_date = None
+        self._poll_date = None
+        self._poll_count = 0
+        self._poll_errors = 0
+        self._poll_discovered: set[str] = set()
+        self._poll_summary_date = None
+
+    def _ensure_poll_date(self, at: datetime) -> None:
+        if self._poll_date == at.date():
+            return
+        self._poll_date = at.date()
+        self._poll_count = 0
+        self._poll_errors = 0
+        self._poll_discovered = set()
+        self._poll_summary_date = None
 
     def restore(self, *, at: datetime) -> None:
+        self._ensure_poll_date(at)
         restored = {state.stock_code: state for state in self.repository.active_states(business_date=at.date())}
         with self._state_lock:
             self._states = restored
@@ -98,35 +114,81 @@ class FirstRiseBreakoutRuntime:
     def scan_once(self, *, at: datetime) -> int:
         if not (self.SEARCH_START <= at.time() <= self.SEARCH_END):
             return 0
-        seq = self._resolve_seq(at)
+        self._ensure_poll_date(at)
+        self._poll_count += 1
+        started = perf_counter()
+        seq = self._condition_seq or "UNRESOLVED"
+        try:
+            seq = self._resolve_seq(at)
+            candidates = self.condition_search.candidates(seq)
+        except Exception:
+            self._poll_errors += 1
+            elapsed_ms = round((perf_counter() - started) * 1000)
+            LOGGER.info(
+                "FIRST_RISE_POLL time=%s condition=%s seq=%s http_status=%s "
+                "kis_code=%s result_count=ERROR empty_result=false elapsed_ms=%d",
+                at.isoformat(), self.CONDITION_NAME, seq,
+                getattr(self.condition_search, "last_http_status", None) or "UNKNOWN",
+                getattr(self.condition_search, "last_kis_code", None) or "UNKNOWN",
+                elapsed_ms,
+            )
+            raise
+        elapsed_ms = round((perf_counter() - started) * 1000)
+        LOGGER.info(
+            "FIRST_RISE_POLL time=%s condition=%s seq=%s http_status=%s "
+            "kis_code=%s result_count=%d empty_result=%s elapsed_ms=%d",
+            at.isoformat(), self.CONDITION_NAME, seq,
+            getattr(self.condition_search, "last_http_status", None) or "UNKNOWN",
+            getattr(self.condition_search, "last_kis_code", None) or "UNKNOWN",
+            len(candidates), str(not candidates).lower(), elapsed_ms,
+        )
+        self._poll_discovered.update(candidate.stock_code for candidate in candidates)
         created_count = 0
-        for candidate in self.condition_search.candidates(seq):
-            state, created = self.repository.record_candidate(
-                business_date=at.date(), condition_name=self.CONDITION_NAME, condition_seq=seq,
-                stock_code=candidate.stock_code, stock_name=candidate.stock_name,
-                discovered_at=at, raw_payload=candidate.raw_payload,
-            )
-            with self._state_lock:
-                self._states[candidate.stock_code] = state
-            self.subscriptions.add(candidate.stock_code, owner=self.SUBSCRIPTION_OWNER)
-            if not created:
-                continue
-            created_count += 1
-            peak = self.minute_source.peak(stock_code=candidate.stock_code, until=at)
-            if peak is None:
-                LOGGER.warning("first-rise peak seed unavailable stock_code=%s", candidate.stock_code)
-                continue
-            peak_price, peak_time, latest_close = peak
-            decision = self.strategy.seed_peak(state, peak_price=peak_price, peak_time=peak_time)
-            state = self.repository.apply(
-                decision, Observation(peak_time, peak_price, "KIS_1MIN_HIGH"),
-                evidence={"source": "KIS_1MIN", "seeded_at": at.isoformat()},
-            )
-            with self._state_lock:
-                self._states[candidate.stock_code] = state
-            if latest_close < peak_price:
-                self.observe(candidate.stock_code, observed_at=at, price=latest_close, source="KIS_1MIN_CLOSE")
+        try:
+            for candidate in candidates:
+                state, created = self.repository.record_candidate(
+                    business_date=at.date(), condition_name=self.CONDITION_NAME, condition_seq=seq,
+                    stock_code=candidate.stock_code, stock_name=candidate.stock_name,
+                    discovered_at=at, raw_payload=candidate.raw_payload,
+                )
+                with self._state_lock:
+                    self._states[candidate.stock_code] = state
+                self.subscriptions.add(candidate.stock_code, owner=self.SUBSCRIPTION_OWNER)
+                if not created:
+                    continue
+                created_count += 1
+                LOGGER.info(
+                    "FIRST_RISE_DISCOVERED stock_code=%s stock_name=%s discovered_at=%s",
+                    candidate.stock_code, candidate.stock_name or "", at.isoformat(),
+                )
+                peak = self.minute_source.peak(stock_code=candidate.stock_code, until=at)
+                if peak is None:
+                    LOGGER.warning("first-rise peak seed unavailable stock_code=%s", candidate.stock_code)
+                    continue
+                peak_price, peak_time, latest_close = peak
+                decision = self.strategy.seed_peak(state, peak_price=peak_price, peak_time=peak_time)
+                state = self.repository.apply(
+                    decision, Observation(peak_time, peak_price, "KIS_1MIN_HIGH"),
+                    evidence={"source": "KIS_1MIN", "seeded_at": at.isoformat()},
+                )
+                with self._state_lock:
+                    self._states[candidate.stock_code] = state
+                if latest_close < peak_price:
+                    self.observe(candidate.stock_code, observed_at=at, price=latest_close, source="KIS_1MIN_CLOSE")
+        except Exception:
+            self._poll_errors += 1
+            raise
         return created_count
+
+    def _log_poll_summary_once(self, at: datetime) -> None:
+        self._ensure_poll_date(at)
+        if at.time() <= self.SEARCH_END or self._poll_summary_date == at.date():
+            return
+        LOGGER.info(
+            "FIRST_RISE_POLL_SUMMARY date=%s poll_count=%d discovered_unique=%d errors=%d",
+            at.date().isoformat(), self._poll_count, len(self._poll_discovered), self._poll_errors,
+        )
+        self._poll_summary_date = at.date()
 
     def observe(self, stock_code: str, *, observed_at: datetime, price: Decimal, source: str = "H0STCNT0") -> None:
         with self._state_lock:
@@ -143,7 +205,10 @@ class FirstRiseBreakoutRuntime:
                 self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
 
     def expire_once(self, *, at: datetime) -> int:
-        if at.time() <= self.SEARCH_END or self._expired_date == at.date():
+        if at.time() <= self.SEARCH_END:
+            return 0
+        if self._expired_date == at.date():
+            self._log_poll_summary_once(at)
             return 0
         count = 0
         with self._state_lock:
@@ -157,6 +222,7 @@ class FirstRiseBreakoutRuntime:
                 self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
                 count += 1
         self._expired_date = at.date()
+        self._log_poll_summary_once(at)
         return count
 
     def record_exit(self, stock_code: str, *, observed_at: datetime, price: Decimal, reason: str) -> bool:

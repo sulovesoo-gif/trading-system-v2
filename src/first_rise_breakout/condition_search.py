@@ -31,6 +31,8 @@ class SavedConditionSearch:
             raise SavedConditionError("KIS_USER is required for saved-condition lookup")
         self.client = client
         self.user_id = user_id.strip()
+        self.last_http_status: int | None = None
+        self.last_kis_code: str | None = None
 
     @staticmethod
     def _rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -54,6 +56,8 @@ class SavedConditionSearch:
         return seq
 
     def candidates(self, seq: str) -> list[ConditionCandidate]:
+        self.last_http_status = None
+        self.last_kis_code = None
         try:
             payload = self.client.get(
                 path=CONDITION_RESULT_PATH,
@@ -63,9 +67,14 @@ class SavedConditionSearch:
         except KISClientError:
             # KIS documents MCA05918 for this API as the empty-result response.
             last_payload = getattr(self.client, "last_payload", None)
+            self.last_http_status = getattr(self.client, "last_http_status", None)
+            if isinstance(last_payload, dict):
+                self.last_kis_code = str(last_payload.get("msg_cd") or last_payload.get("rt_cd") or "UNKNOWN")
             if isinstance(last_payload, dict) and last_payload.get("msg_cd") == "MCA05918":
                 return []
             raise
+        self.last_http_status = getattr(self.client, "last_http_status", None)
+        self.last_kis_code = str(payload.get("msg_cd") or payload.get("rt_cd") or "0")
         result: list[ConditionCandidate] = []
         seen: set[str] = set()
         for row in self._rows(payload):

@@ -59,12 +59,15 @@ class SavedConditionSearchTest(unittest.TestCase):
     def test_kis_documented_zero_result_code_is_an_empty_candidate_list(self):
         class EmptyResultClient:
             last_payload = {"rt_cd": "1", "msg_cd": "MCA05918", "msg1": "종목코드 오류입니다."}
+            last_http_status = 200
 
             def get(self, **kwargs):
                 raise KISClientError("KIS 업무 오류: MCA05918 종목코드 오류입니다.")
 
         search = SavedConditionSearch(EmptyResultClient(), user_id="tester")
         self.assertEqual(search.candidates("7"), [])
+        self.assertEqual(search.last_http_status, 200)
+        self.assertEqual(search.last_kis_code, "MCA05918")
 
 
 class StrategyTest(unittest.TestCase):
@@ -215,6 +218,52 @@ class DynamicSubscriptionTest(unittest.TestCase):
 
 
 class RuntimePersistencePathTest(unittest.TestCase):
+    def test_empty_poll_and_end_of_window_summary_are_logged(self):
+        class Repo:
+            def active_states(self, **kwargs): return []
+        class Search:
+            last_http_status = 200
+            last_kis_code = "MCA05918"
+            def resolve_seq(self, name): return "7"
+            def candidates(self, seq): return []
+
+        runtime = FirstRiseBreakoutRuntime(
+            repository=Repo(), strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
+            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+        )
+        with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
+            runtime.scan_once(at=AT)
+            runtime.expire_once(at=datetime(2026, 9, 22, 10, 0, 1))
+
+        output = "\n".join(captured.output)
+        self.assertIn("FIRST_RISE_POLL time=2026-09-22T09:10:00", output)
+        self.assertIn("condition=TSV2_오전1차상승후돌파_후보_V1", output)
+        self.assertIn("seq=7", output)
+        self.assertIn("http_status=200", output)
+        self.assertIn("kis_code=MCA05918", output)
+        self.assertIn("result_count=0 empty_result=true", output)
+        self.assertIn("FIRST_RISE_POLL_SUMMARY date=2026-09-22 poll_count=1 discovered_unique=0 errors=0", output)
+
+    def test_failed_poll_is_logged_and_counted_once(self):
+        class Search:
+            last_http_status = 500
+            last_kis_code = "KIS_FAILURE"
+            def resolve_seq(self, name): return "7"
+            def candidates(self, seq): raise KISClientError("failed")
+
+        runtime = FirstRiseBreakoutRuntime(
+            repository=object(), strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
+            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+        )
+        with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
+            with self.assertRaises(KISClientError):
+                runtime.scan_once(at=AT)
+            runtime.expire_once(at=datetime(2026, 9, 22, 10, 0, 1))
+
+        output = "\n".join(captured.output)
+        self.assertIn("kis_code=KIS_FAILURE result_count=ERROR", output)
+        self.assertIn("poll_count=1 discovered_unique=0 errors=1", output)
+
     def test_default_runtime_clock_is_naive_kst(self):
         runtime = FirstRiseBreakoutRuntime(
             repository=object(), strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
@@ -250,7 +299,9 @@ class RuntimePersistencePathTest(unittest.TestCase):
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
             minute_source=Peak(), subscriptions=registry,
         )
-        runtime.scan_once(at=AT)
+        with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
+            runtime.scan_once(at=AT)
+        self.assertIn("FIRST_RISE_DISCOVERED stock_code=123456 stock_name=A", "\n".join(captured.output))
         runtime.observe("123456", observed_at=AT + timedelta(minutes=1), price=Decimal("99"))
         runtime.observe("123456", observed_at=AT + timedelta(minutes=2), price=Decimal("98.5"))
         runtime.observe("123456", observed_at=AT + timedelta(minutes=9), price=Decimal("100.1"))
