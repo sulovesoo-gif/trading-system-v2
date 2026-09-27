@@ -41,7 +41,7 @@ from src.service.minute_ma_dashboard_service import path_detail as minute_ma_pat
 from src.service.flow_v3_dashboard_service import dashboard_payload as flow_v3_dashboard_payload
 from src.service.flow_v3_dashboard_service import strategy_detail_payload, trade_detail_payload
 from src.service.flow_v3_dashboard_service import capital_efficiency_payload
-from src.service.sql_analysis_runner_service import SqlAnalysisRunner, SqlAnalysisSettings
+from src.service.sql_analysis_runner_service import SqlAnalysisRunner, SqlAnalysisSettings, excel_content_disposition
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -1082,7 +1082,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     body = path.read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                    self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{filename}")
+                    self.send_header("Content-Disposition", excel_content_disposition(filename))
                     self.send_header("Content-Length", str(len(body)))
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers(); self.wfile.write(body); return

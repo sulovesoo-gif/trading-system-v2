@@ -23,11 +23,27 @@ from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from xml.sax.saxutils import escape, quoteattr
 
 
 MAX_EXCEL_ROWS = 1_048_576
 MAX_EXCEL_CELL_CHARS = 32_767
+
+
+def excel_download_filename(source_type: str, original_filename: str | None, fallback: str) -> str:
+    """Keep an uploaded SQL basename attached to its own execution result."""
+    if source_type == "UPLOAD" and original_filename:
+        basename = original_filename.replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if re.search(r"\.sql$", basename, flags=re.IGNORECASE):
+            return re.sub(r"\.sql$", ".xlsx", basename, flags=re.IGNORECASE)
+    return fallback
+
+
+def excel_content_disposition(filename: str) -> str:
+    """Return a browser-safe UTF-8 attachment header for an Excel artifact."""
+    encoded_filename = quote(filename, safe="")
+    return f"attachment; filename=\"SQL_ANALYSIS.xlsx\"; filename*=UTF-8''{encoded_filename}"
 
 
 @dataclass(frozen=True)
@@ -285,7 +301,11 @@ class SqlAnalysisRunner:
                 total_rows = 1
             writer.close()
             duration = round((time.monotonic() - started) * 1000)
-            filename = f"SQL_ANALYSIS_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(execution_id)[:8]}.xlsx"
+            fallback_filename = f"SQL_ANALYSIS_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(execution_id)[:8]}.xlsx"
+            with self.history_pool.connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT source_type,original_filename FROM sql_analysis_execution_history WHERE execution_id=%s", (execution_id,))
+                source_type, original_filename = cur.fetchone()
+            filename = excel_download_filename(source_type, original_filename, fallback_filename)
             # Serialize final success with cancel acceptance. Cancellation that
             # wins this lock can never be overwritten by SUCCEEDED.
             with self._lock, self.history_pool.connection() as conn, conn.cursor() as cur:
