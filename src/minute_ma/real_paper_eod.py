@@ -48,6 +48,12 @@ class MinuteMaRealPaperEod:
 
     def refresh(self,snapshot_date:date) -> tuple[int,int]:
         with self.pool.connection() as connection,connection.cursor() as cursor:
+            cursor.execute("""SELECT EXISTS(SELECT 1 FROM raw_stock_minute
+              WHERE stock_code IN ('000660','005930') AND data_source='KIS'
+                AND trading_venue='KRX' AND collect_cycle='1MIN'
+                AND bar_time::date=%s)""",(snapshot_date,))
+            if not cursor.fetchone()[0]:
+                return 0,0
             cursor.execute("""SELECT v.real_variant_id,v.strategy_id,v.signal_code,v.filter_code,
               v.initial_capital,c.current_realized_capital
               FROM minute_ma_real_variant v JOIN minute_ma_real_capital_epoch c

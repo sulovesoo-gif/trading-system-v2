@@ -2,7 +2,7 @@
 Description=Run Minute MA REAL PAPER EOD snapshot
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 15:40:00
+OnCalendar=Mon..Fri *-*-* 15:40:00 Asia/Seoul
 Persistent=true
 Unit=trading-minute-ma-real-paper-eod.service
 

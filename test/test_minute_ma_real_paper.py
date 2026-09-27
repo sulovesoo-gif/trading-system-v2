@@ -88,6 +88,12 @@ def test_runtime_has_no_live_or_broker_dependency():
     assert "close_eod" not in source
 
 
+def test_eod_skips_dates_without_real_market_bars():
+    source=open("src/minute_ma/real_paper_eod.py",encoding="utf-8").read()
+    assert "SELECT EXISTS(SELECT 1 FROM raw_stock_minute" in source
+    assert "if not cursor.fetchone()[0]" in source
+
+
 def test_ranks_and_candidate_union_use_compound_only_and_strategy_identity():
     records=[]; variant=0
     for filter_code in ("REAL_F1","REAL_F2","REAL_F3"):
