@@ -8,7 +8,11 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from src.service.sql_analysis_runner_service import StreamingXlsxWriter
+from src.service.sql_analysis_runner_service import (
+    StreamingXlsxWriter,
+    excel_content_disposition,
+    excel_download_filename,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +37,28 @@ class SqlAnalysisXlsxTest(unittest.TestCase):
 
 
 class SqlAnalysisContractTest(unittest.TestCase):
+    def test_upload_filename_is_execution_scoped_and_replaces_sql_extension(self):
+        fallback = "SQL_ANALYSIS_20260927_deadbeef.xlsx"
+        cases = {
+            "ABC_READONLY.sql": "ABC_READONLY.xlsx",
+            "Trading_System_V2_Minute_MA_P1_REAL_동일기간_10M_RESET_KMODE_AB_READONLY_V1.0_20260927.sql":
+                "Trading_System_V2_Minute_MA_P1_REAL_동일기간_10M_RESET_KMODE_AB_READONLY_V1.0_20260927.xlsx",
+            "분봉전략 테스트 READONLY.sql": "분봉전략 테스트 READONLY.xlsx",
+            r"C:\upload\TEST.SQL": "TEST.xlsx",
+        }
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(expected, excel_download_filename("UPLOAD", original, fallback))
+        self.assertEqual("A.xlsx", excel_download_filename("UPLOAD", "A.sql", fallback))
+        self.assertEqual("B.xlsx", excel_download_filename("UPLOAD", "B.sql", fallback))
+        self.assertEqual(fallback, excel_download_filename("PASTE", None, fallback))
+
+    def test_download_header_uses_utf8_filename_star(self):
+        header = excel_content_disposition("분봉전략 테스트 READONLY.xlsx")
+        self.assertTrue(header.startswith('attachment; filename="SQL_ANALYSIS.xlsx"; filename*=UTF-8\'\''))
+        self.assertIn("%EB%B6%84%EB%B4%89%EC%A0%84%EB%9E%B5%20", header)
+        self.assertNotIn("분봉전략", header)
+
     def test_migration_and_dashboard_are_fail_closed(self):
         migration = (ROOT / "database/migrations/20260828_sql_analysis_runner_additive.sql").read_text(encoding="utf-8")
         server = (ROOT / "scripts/dashboard/serve_multi_ma_dashboard.py").read_text(encoding="utf-8")
