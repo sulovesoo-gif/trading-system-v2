@@ -109,27 +109,31 @@ class MinuteMaRealPaperRuntime:
                     if entry_bar is None:
                         continue
                     common_entries += 1
-                    snapshot=real_by_time.get(entry.source_bar_time)
-                    if snapshot is None:
-                        continue
                     candidate=CandidateTrade(
                         self._trade_key(str(strategy.minute_path_id),entry.source_bar_time),
                         entry.source_bar_time.date(),entry_execution,
                         exit_execution if exit_bar is not None else None,
                         Decimal(str(entry_bar.open_price)),
                         Decimal(str(exit_bar.open_price)) if exit_bar is not None else None)
-                    for filter_code in passing_filters(snapshot):
-                        result[(strategy.minute_path_id,filter_code)].append((candidate,snapshot))
+                    base_snapshot=RealSnapshot(None,None,None,None,None,False)
+                    result[(strategy.minute_path_id,RealFilter.BASE)].append((candidate,base_snapshot))
+                    snapshot=real_by_time.get(entry.source_bar_time)
+                    if snapshot is not None:
+                        for filter_code in passing_filters(snapshot):
+                            result[(strategy.minute_path_id,filter_code)].append((candidate,snapshot))
         return strategies, result, common_entries
 
-    def backfill(self, start: date, end: date, *, dry_run: bool = False) -> HistoricalResult:
+    def backfill(self, start: date, end: date, *, dry_run: bool = False,
+                 filter_codes: tuple[RealFilter,...] | None = None) -> HistoricalResult:
         strategies,candidates,common_entries=self.build_candidates(start,end)
+        selected=filter_codes or tuple(RealFilter)
         if dry_run:
-            return HistoricalResult(len(strategies),len(strategies)*3,common_entries,
-                                    sum(len(rows) for rows in candidates.values()))
+            return HistoricalResult(len(strategies),len(strategies)*len(selected),common_entries,
+                                    sum(len(candidates.get((strategy.minute_path_id,code),()))
+                                        for strategy in strategies for code in selected))
         with self.pool.connection() as connection, connection.cursor() as cursor:
             for strategy in strategies:
-                for filter_code in RealFilter:
+                for filter_code in selected:
                     cursor.execute("""INSERT INTO minute_ma_real_variant(
                       minute_strategy_id,strategy_id,signal_code,filter_code,paper_epoch,
                       initial_capital,effective_from)
@@ -145,7 +149,7 @@ class MinuteMaRealPaperRuntime:
                     cursor.execute("""INSERT INTO minute_ma_real_capital_epoch(
                       real_variant_id,paper_epoch,initial_capital,current_realized_capital,
                       effective_from,reset_reason)
-                      VALUES(%s,1,%s,%s,%s,'INITIAL_V1_3')
+                      VALUES(%s,1,%s,%s,%s,'INITIAL_V1_5_BASE')
                       ON CONFLICT(real_variant_id,paper_epoch) DO UPDATE SET
                         current_realized_capital=EXCLUDED.current_realized_capital,
                         version=minute_ma_real_capital_epoch.version+1,
@@ -214,8 +218,9 @@ class MinuteMaRealPaperRuntime:
                            snap.velocity_avg_3,snap.velocity_avg_10,snap.flow_avg_5,snap.flow_avg_20,
                            snap.is_complete))
             connection.commit()
-        return HistoricalResult(len(strategies),len(strategies)*3,common_entries,
-                                sum(len(rows) for rows in candidates.values()))
+        return HistoricalResult(len(strategies),len(strategies)*len(selected),common_entries,
+                                sum(len(candidates.get((strategy.minute_path_id,code),()))
+                                    for strategy in strategies for code in selected))
 
     def process_day(self, trading_date: date) -> tuple[int, int]:
         strategies=self._strategies(); by_stock: dict[str,list[MinuteMaPath]]=defaultdict(list)
@@ -238,13 +243,12 @@ class MinuteMaRealPaperRuntime:
                     closed+=self._close_incremental(strategy,event,bar_by_time[execution_time])
                 elif eligible_entry_time(event.source_bar_time):
                     snapshot=real_by_time.get(event.source_bar_time)
-                    if snapshot is not None:
-                        opened+=self._open_incremental(strategy,event,bar_by_time[execution_time],snapshot)
+                    opened+=self._open_incremental(strategy,event,bar_by_time[execution_time],snapshot)
         return opened,closed
 
-    def _open_incremental(self,strategy,event,execution_bar,snapshot:RealSnapshot) -> int:
-        inserted=0; filters=passing_filters(snapshot)
-        if not filters: return 0
+    def _open_incremental(self,strategy,event,execution_bar,snapshot:RealSnapshot|None) -> int:
+        inserted=0
+        filters=(RealFilter.BASE,)+(() if snapshot is None else passing_filters(snapshot))
         key=self._trade_key(str(strategy.minute_path_id),event.source_bar_time)
         with self.pool.connection() as connection,connection.cursor() as cursor:
             for filter_code in filters:
@@ -264,12 +268,17 @@ class MinuteMaRealPaperRuntime:
                   lifecycle_status,entry_signal_key,entry_signal_time,entry_execution_time,entry_price,
                   compound_quantity,fixed_quantity,entry_realized_capital,velocity_value,velocity_avg_3,
                   velocity_avg_10,flow_avg_5,flow_avg_20,real_is_complete)
-                  VALUES(%s,%s,%s,%s,%s,%s,'OPEN',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)
+                  VALUES(%s,%s,%s,%s,%s,%s,'OPEN',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                   ON CONFLICT(real_variant_id,entry_signal_key) DO NOTHING""",
                   (variant_id,strategy.minute_path_id,str(strategy.minute_path_id),strategy.signal_code,
                    filter_code.value,epoch,key,event.source_bar_time,execution_bar.bar_time,price,
-                   compound_qty,fixed_qty,capital,snapshot.velocity_value,snapshot.velocity_avg_3,
-                   snapshot.velocity_avg_10,snapshot.flow_avg_5,snapshot.flow_avg_20))
+                    compound_qty,fixed_qty,capital,
+                    None if snapshot is None else snapshot.velocity_value,
+                    None if snapshot is None else snapshot.velocity_avg_3,
+                    None if snapshot is None else snapshot.velocity_avg_10,
+                    None if snapshot is None else snapshot.flow_avg_5,
+                    None if snapshot is None else snapshot.flow_avg_20,
+                    False if snapshot is None else snapshot.is_complete))
                 inserted+=cursor.rowcount
             connection.commit()
         return inserted

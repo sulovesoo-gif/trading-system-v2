@@ -3,14 +3,12 @@ import json
 from decimal import Decimal,ROUND_FLOOR
 from hashlib import sha256
 from uuid import NAMESPACE_URL,uuid5
+from .real_paper import BUY_FEE_RATE
 
 def digest(x):return sha256(x.encode()).hexdigest()
 
 class PostgresMinuteMaLivePlanner:
     def __init__(self,connection_factory):self.connection_factory=connection_factory
-    def _profile(self,q):
-        q.execute("SELECT send_enabled FROM minute_ma_send_profile WHERE profile_code='MINUTE_MA_LIVE_SEND'")
-        if q.fetchone()!=("Y",):raise PermissionError('MINUTE_MA_SEND_LOCKED')
     @staticmethod
     def _reconciled(q,stock):
         q.execute("SELECT status,unattributed_quantity FROM execution_reconciliation_audit WHERE stock_code=%s ORDER BY checked_at DESC,reconciliation_id DESC LIMIT 1",(stock,));r=q.fetchone()
@@ -21,7 +19,6 @@ class PostgresMinuteMaLivePlanner:
         key=digest(f'MINUTE_MA_V1|ENTRY|{policy_path_id or path.minute_path_id}|{event.signal_event_key}')
         intent_id=str(uuid5(NAMESPACE_URL,'minute-ma-intent|'+key));request_id=str(uuid5(NAMESPACE_URL,'minute-ma-request|'+key))
         with self.connection_factory() as c,c.cursor() as q:
-            self._profile(q)
             if policy_path_id is not None:
                 q.execute("""SELECT o.minute_policy_operation_id,o.capital_epoch_no,
                   cc.strategy_compound_capital FROM minute_ma_policy_operation o
@@ -45,8 +42,9 @@ class PostgresMinuteMaLivePlanner:
                     else Decimal(underlying_entry_reference_price))
             threshold=None if policy is None or anchor is None else policy.threshold(anchor)
             stop_policy=None if policy is None else ('UNDERLYING_1PCT' if policy.direction=='SHORT' else 'UNDERLYING_5PCT')
-            qty=int((Decimal(capital)/price).to_integral_value(rounding=ROUND_FLOOR));notional=price*qty
-            if qty<=0 or notional>Decimal(available_cash):
+            qty=int((Decimal(capital)/(price*(Decimal(1)+BUY_FEE_RATE))).to_integral_value(rounding=ROUND_FLOOR));notional=price*qty
+            cash_required=notional*(Decimal(1)+BUY_FEE_RATE)
+            if qty<=0 or cash_required>Decimal(available_cash):
                 reason='ZERO_QUANTITY' if qty<=0 else 'INSUFFICIENT_AVAILABLE_CASH'
                 q.execute("""INSERT INTO minute_ma_live_entry_skip(skip_id,minute_path_id,minute_paper_trade_id,
                   signal_event_key,capital_epoch_no,capital_at_signal,planned_quantity,planned_notional,skip_reason,
@@ -91,7 +89,6 @@ class PostgresMinuteMaLivePlanner:
         policy_path_id=getattr(path,'minute_policy_path_id',None)
         event_id=str(uuid5(NAMESPACE_URL,'minute-ma-live-event|'+event.signal_event_key+'|'+str(policy_path_id or path.minute_path_id)))
         with self.connection_factory() as c,c.cursor() as q:
-            self._profile(q)
             q.execute("""INSERT INTO minute_ma_live_signal_event(minute_live_signal_event_id,minute_path_id,signal_event_key,event_type,
               source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason,
               signal_source,source_bar_finalized_at,evaluated_at)
@@ -117,7 +114,6 @@ class PostgresMinuteMaLivePlanner:
         policy_path_id=getattr(path,'minute_policy_path_id',None)
         event_id=str(uuid5(NAMESPACE_URL,'minute-ma-live-event|'+event.signal_event_key+'|'+str(policy_path_id or path.minute_path_id)))
         with self.connection_factory() as c,c.cursor() as q:
-            self._profile(q)
             q.execute("""INSERT INTO minute_ma_live_signal_event(minute_live_signal_event_id,minute_path_id,
               signal_event_key,event_type,source_bar_time,confirmed_at,source_snapshot,minute_policy_path_id,event_reason,
               signal_source,source_bar_finalized_at,evaluated_at)

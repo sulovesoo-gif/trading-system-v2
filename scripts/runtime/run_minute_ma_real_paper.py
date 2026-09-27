@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 from dotenv import load_dotenv
 
 from src.minute_ma.real_paper_eod import MinuteMaRealPaperEod
+from src.minute_ma.real_paper import RealFilter
 from src.minute_ma.real_paper_runtime import MinuteMaRealPaperRuntime
 from src.repository.database import DatabaseSettings,create_connection_pool
 
@@ -24,12 +25,15 @@ def main() -> int:
     parser.add_argument("--to-date",type=date.fromisoformat,default=date(2026,9,23))
     parser.add_argument("--date",type=date.fromisoformat,default=date.today())
     parser.add_argument("--dry-run",action="store_true")
+    parser.add_argument("--base-only",action="store_true")
     args=parser.parse_args()
     load_dotenv(ROOT/".env")
     pool=create_connection_pool(DatabaseSettings.from_environment())
     try:
         if args.mode=="backfill":
-            result=MinuteMaRealPaperRuntime(pool).backfill(args.from_date,args.to_date,dry_run=args.dry_run)
+            filters=(RealFilter.BASE,) if args.base_only else None
+            result=MinuteMaRealPaperRuntime(pool).backfill(
+                args.from_date,args.to_date,dry_run=args.dry_run,filter_codes=filters)
             print(f"strategies={result.strategy_count} variants={result.variant_count} "
                   f"common_entries={result.common_entry_count} paper_trades={result.paper_trade_count}")
         elif args.mode=="incremental":

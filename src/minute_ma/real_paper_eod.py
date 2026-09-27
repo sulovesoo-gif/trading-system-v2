@@ -16,7 +16,7 @@ def rank_records(records, model: str = "compound"):
     ranks={period:{} for period in PERIODS}
     profits_key=f"{model}_profits"
     for period in PERIODS:
-        for filter_code in ("REAL_F1","REAL_F2","REAL_F3"):
+        for filter_code in ("BASE","REAL_F1","REAL_F2","REAL_F3"):
             group=[row for row in records if row["filter"]==filter_code]
             group.sort(key=lambda row:(-_return(row[profits_key][period],row["initial"]),
                                        row["strategy"]))

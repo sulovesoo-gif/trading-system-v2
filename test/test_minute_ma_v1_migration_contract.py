@@ -25,10 +25,9 @@ class MinuteMaV1MigrationContractTest(unittest.TestCase):
         self.assertNotIn("INSERT INTO minute_ma_operation(",self.sql)
         self.assertNotIn("INSERT INTO minute_ma_compound_capital(",self.sql)
 
-    def test_systemd_actual_send_default_off(self):
+    def test_systemd_uses_route_allocation_without_duplicate_send_gate(self):
         unit=(ROOT/'systemd/trading-minute-ma-live.service').read_text(encoding='utf-8')
-        self.assertIn('MINUTE_MA_ACTUAL_SEND=N',unit)
-        self.assertNotIn('MINUTE_MA_ACTUAL_SEND=Y',unit)
+        self.assertNotIn('MINUTE_MA_ACTUAL_SEND=',unit)
 
     def test_policy_operation_capital_and_selection_are_independent(self):
         for token in ('minute_ma_policy_operation','minute_ma_policy_compound_capital',
@@ -47,8 +46,9 @@ class MinuteMaV1MigrationContractTest(unittest.TestCase):
     def test_actual_entrypoint_is_v1_and_has_no_eod(self):
         source=(ROOT/'scripts/runtime/run_minute_ma_actual.py').read_text(encoding='utf-8')
         self.assertIn('MinuteMaV1LiveRuntime',source)
-        self.assertIn('MinuteMaV1LiveNoSendRuntime',source)
-        self.assertIn("'mode':'V1_LIVE_NOSEND'",source)
+        self.assertIn('MinuteMaRealLiveRuntime',source)
+        self.assertNotIn('MinuteMaV1LiveNoSendRuntime',source)
+        self.assertNotIn('MINUTE_MA_SEND_AUTHORIZATION_MISMATCH',source)
         for forbidden in ('plan_eod(', 'close_eod(', 'EOD_1519'):
             self.assertNotIn(forbidden,source)
 

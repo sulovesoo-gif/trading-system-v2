@@ -27,26 +27,31 @@ class PostgresMinuteMaFillCheckpointStore:
             q.execute("""SELECT i.intent_type,i.minute_live_trade_id,i.minute_path_id,i.capital_at_signal,
               o.operation_id,COALESCE(po.capital_epoch_no,o.capital_epoch_no),i.minute_policy_path_id,
               i.minute_policy_operation_id,
-              i.underlying_entry_reference_price,i.stop_threshold_price,i.stop_policy
+              i.underlying_entry_reference_price,i.stop_threshold_price,i.stop_policy,
+              i.real_variant_id,i.real_live_route_id,i.real_capital_epoch_no
               FROM minute_ma_live_intent i
               JOIN minute_ma_live_order_link l USING(intent_id)
               LEFT JOIN minute_ma_operation o ON i.minute_policy_path_id IS NULL
                 AND o.minute_path_id=i.minute_path_id AND o.effective_to IS NULL
               LEFT JOIN minute_ma_policy_operation po
                 ON po.minute_policy_operation_id=i.minute_policy_operation_id
-              WHERE l.broker_order_id=%s FOR UPDATE""",(order.broker_order_id,));intent=q.fetchone()
+              WHERE l.broker_order_id=%s FOR UPDATE OF i,l""",(order.broker_order_id,));intent=q.fetchone()
             if intent is None:raise ValueError('MINUTE_MA_INTENT_REQUIRED')
-            intent_type,trade_id,path_id,capital,operation_id,epoch,policy_path_id,policy_operation_id,anchor,threshold,stop_policy=intent
+            (intent_type,trade_id,path_id,capital,operation_id,legacy_epoch,policy_path_id,
+             policy_operation_id,anchor,threshold,stop_policy,real_variant_id,
+             real_live_route_id,real_epoch)=intent
+            epoch=real_epoch or legacy_epoch
             if epoch is None:raise ValueError('MINUTE_MA_OPERATION_REQUIRED')
             if intent_type=='ENTRY' and trade_id is None:
                 ownership=f'MINUTE_MA_TRADE:{order.intent_id}'
                 q.execute("""INSERT INTO minute_ma_live_trade(minute_path_id,operation_id,capital_epoch_no,ownership_id,
                   trade_status,capital_at_signal,minute_policy_path_id,underlying_entry_reference_price,
-                  stop_threshold_price,stop_policy,minute_policy_operation_id)
-                  VALUES(%s,%s,%s,%s,'OPEN',%s,%s,%s,%s,%s,%s)
+                  stop_threshold_price,stop_policy,minute_policy_operation_id,real_variant_id,
+                  real_live_route_id,real_capital_epoch_no)
+                  VALUES(%s,%s,%s,%s,'OPEN',%s,%s,%s,%s,%s,%s,%s,%s,%s)
                   RETURNING minute_live_trade_id""",
                   (path_id,operation_id,epoch,ownership,capital,policy_path_id,anchor,threshold,stop_policy,
-                   policy_operation_id));trade_id=q.fetchone()[0]
+                   policy_operation_id,real_variant_id,real_live_route_id,real_epoch));trade_id=q.fetchone()[0]
                 q.execute("UPDATE minute_ma_live_intent SET minute_live_trade_id=%s WHERE intent_id=%s",(trade_id,order.intent_id))
             else:
                 q.execute("SELECT ownership_id FROM minute_ma_live_trade WHERE minute_live_trade_id=%s FOR UPDATE",(trade_id,));x=q.fetchone()

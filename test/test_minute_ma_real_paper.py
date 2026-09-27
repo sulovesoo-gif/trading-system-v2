@@ -19,6 +19,7 @@ def trade(key,entry,exit_,entry_price=100,exit_price=110):
 
 
 def test_filter_contract_is_nested_and_null_fail_closed():
+    assert tuple(RealFilter)==(RealFilter.BASE,RealFilter.F1,RealFilter.F2,RealFilter.F3)
     assert passing_filters(snap())==(RealFilter.F1,RealFilter.F2,RealFilter.F3)
     assert passing_filters(snap(f5=-1))==(RealFilter.F1,RealFilter.F2)
     assert passing_filters(snap(a3=-1))==(RealFilter.F1,)
@@ -80,6 +81,20 @@ def test_followup_migration_removes_slot_gate_and_keeps_normal_exit_only():
     assert "NORMAL_EXIT" in sql
 
 
+def test_v15_migration_is_additive_base_and_exact_live_route_contract():
+    sql=open("database/migrations/20260928_minute_ma_real_base_live_routes.sql",encoding="utf-8").read()
+    assert "('BASE','REAL_F1','REAL_F2','REAL_F3')" in sql
+    assert "V1_5_TOP50_FIXED_ONE" in sql
+    assert "V1_5_UNDERLYING_INITIAL" in sql
+    assert sql.count("'V1_5_TOP50_FIXED_ONE'")==1
+    assert "('2161','REAL_F1',2000000::numeric)" in sql
+    assert "('2163','REAL_F1',0::numeric)" in sql
+    assert "('2186','REAL_F2',0::numeric)" in sql
+    assert "('1934','REAL_F1',0::numeric)" in sql
+    assert "('2185','REAL_F2',0::numeric)" in sql
+    assert "DELETE FROM minute_ma_real" not in sql
+
+
 def test_runtime_has_no_live_or_broker_dependency():
     source=open("src/minute_ma/real_paper_runtime.py",encoding="utf-8").read()
     assert "live_transport" not in source
@@ -96,7 +111,7 @@ def test_eod_skips_dates_without_real_market_bars():
 
 def test_ranks_and_candidate_union_use_compound_only_and_strategy_identity():
     records=[]; variant=0
-    for filter_code in ("REAL_F1","REAL_F2","REAL_F3"):
+    for filter_code in ("BASE","REAL_F1","REAL_F2","REAL_F3"):
         for index in range(101):
             variant+=1; profit=Decimal(101-index)
             records.append({"variant":variant,"strategy":f"S{index:03d}",
@@ -107,4 +122,4 @@ def test_ranks_and_candidate_union_use_compound_only_and_strategy_identity():
     by_strategy,by_variant=candidate_reasons(records,ranks)
     assert len(by_strategy)==100 and "S100" not in by_strategy
     s0=[row["variant"] for row in records if row["strategy"]=="S000"]
-    assert all(len(by_variant[v])==9 for v in s0)
+    assert all(len(by_variant[v])==12 for v in s0)

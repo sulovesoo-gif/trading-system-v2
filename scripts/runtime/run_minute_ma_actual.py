@@ -20,8 +20,6 @@ from src.service.kis_trading_calendar import KisTradingCalendar
 from src.minute_ma.repository import PostgresMinuteMaRepository
 from src.minute_ma.live_planner import PostgresMinuteMaLivePlanner
 from src.minute_ma.v1_live_runtime import MinuteMaV1LiveRuntime
-from src.minute_ma.v1_live_nosend import MinuteMaV1LiveNoSendRuntime
-from src.minute_ma.live_nosend import PostgresMinuteMaNoSendAdapter
 from src.minute_ma.reference_price import MinuteMaKISReferencePriceLookup
 from src.minute_ma.send_authorization import MinuteMaSendProfile
 from src.minute_ma.kis_order_transport import MinuteMaKISOrderTransport,MinuteMaKISOrderTransportConfig
@@ -29,22 +27,21 @@ from src.minute_ma.actual_submit_repository import PostgresMinuteMaActualSubmitS
 from src.minute_ma.fill_checkpoint import PostgresMinuteMaFillCheckpointStore
 from src.minute_ma.production_polling import MinuteMaCheckpointPoller
 from src.minute_ma.cost_finalizer import MinuteMaCostFinalizer
+from src.minute_ma.real_live import MinuteMaRealLiveRuntime,PostgresMinuteMaRealLivePlanner
 
 def main():
-    load_dotenv(ROOT/'.env');profile=MinuteMaSendProfile.from_environment()
-    if profile.environment_value not in (None,'N','Y'):
-        raise SystemExit('MINUTE_MA_SEND_INVALID_FAIL_CLOSED')
+    load_dotenv(ROOT/'.env')
+    # V1.5 uses route allocation/fixed quantity as the sole ENTRY activation.
+    # Durable claim/idempotency and broker validation remain unchanged.
+    profile=MinuteMaSendProfile(enabled=True,environment_value=None)
     settings=DatabaseSettings.from_environment();factory=lambda:psycopg.connect(**settings.connection_kwargs())
     with factory() as c,c.cursor() as q:
-        q.execute("SELECT send_enabled FROM minute_ma_send_profile WHERE profile_code='MINUTE_MA_LIVE_SEND'")
-        db_send=q.fetchone()
-        if db_send not in (("Y",),("N",)):raise SystemExit('MINUTE_MA_DB_SEND_PROFILE_INVALID')
-        if (profile.enabled and db_send!=("Y",)) or (not profile.enabled and db_send!=("N",)):
-            raise SystemExit('MINUTE_MA_SEND_AUTHORIZATION_MISMATCH')
         q.execute("""SELECT DISTINCT s.execution_code FROM minute_ma_policy_operation o
           JOIN minute_ma_policy_path pp USING(minute_policy_path_id)
           JOIN minute_ma_path p USING(minute_path_id) JOIN minute_ma_strategy_master s USING(minute_strategy_id)
-          WHERE o.effective_to IS NULL AND o.operation_status='LIVE'""")
+          WHERE o.effective_to IS NULL AND o.operation_status='LIVE'
+          UNION SELECT execution_stock_code FROM minute_ma_real_live_route
+          WHERE effective_to IS NULL""")
         whitelist=frozenset(str(x[0]) for x in q.fetchall())
     client=KISClient();account=KISOrderAccount.from_environment();pool=create_connection_pool(settings)
     now=datetime.now(ZoneInfo('Asia/Seoul'));today=now.date()
@@ -53,17 +50,12 @@ def main():
         repository=PostgresMinuteMaRepository(pool,write_enabled=True)
         price_lookup=MinuteMaKISReferencePriceLookup(client)
         cash_lookup=KISBrokerAvailableCashLookup(client=client,account=account)
-        if not profile.enabled:
-            signals=MinuteMaV1LiveNoSendRuntime(repository=repository,
-              adapter=PostgresMinuteMaNoSendAdapter(factory),execution_price_lookup=price_lookup,
-              underlying_price_lookup=price_lookup,cash_lookup=cash_lookup)
-            signal_result=signals.run_day(trading_date=today)
-            print(json.dumps({'mode':'V1_LIVE_NOSEND','signals':signal_result,
-                              'actual_post_count':0},default=str,sort_keys=True))
-            return 0
         signals=MinuteMaV1LiveRuntime(repository=repository,planner=planner,
           price_lookup=price_lookup,cash_lookup=cash_lookup)
-        signal_result=signals.run_day(trading_date=today)
+        signal_result={'legacy':signals.run_day(trading_date=today)}
+        signal_result['real']=MinuteMaRealLiveRuntime(pool=pool,
+          planner=PostgresMinuteMaRealLivePlanner(factory),price_lookup=price_lookup,
+          cash_lookup=cash_lookup).run_day(trading_date=today)
         store=PostgresMinuteMaActualSubmitStore(factory)
         transport=MinuteMaKISOrderTransport(client=client,
           config=MinuteMaKISOrderTransportConfig.from_environment(whitelist=whitelist),
