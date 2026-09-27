@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Minute MA REAL PAPER EOD snapshot
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:40:00
+Persistent=true
+Unit=trading-minute-ma-real-paper-eod.service
+
+[Install]
+WantedBy=timers.target

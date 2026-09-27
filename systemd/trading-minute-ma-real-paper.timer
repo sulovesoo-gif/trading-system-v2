@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Minute MA REAL PAPER after every completed minute
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09..14:*:20
+OnCalendar=Mon..Fri *-*-* 15:00..30:20
+Persistent=false
+Unit=trading-minute-ma-real-paper.service
+
+[Install]
+WantedBy=timers.target
