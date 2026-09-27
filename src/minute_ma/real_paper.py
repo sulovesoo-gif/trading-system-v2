@@ -21,6 +21,7 @@ ENTRY_END = time(15, 18)
 
 
 class RealFilter(str, Enum):
+    BASE = "BASE"
     F1 = "REAL_F1"
     F2 = "REAL_F2"
     F3 = "REAL_F3"

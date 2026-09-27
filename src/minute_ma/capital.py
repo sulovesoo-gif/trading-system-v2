@@ -28,32 +28,45 @@ class PostgresMinuteMaCapitalStore:
         settlement_id=str(uuid5(NAMESPACE_URL,f"minute-ma-settlement|{minute_live_trade_id}"))
         with self.connection_factory() as connection,connection.cursor() as cursor:
             cursor.execute("""SELECT minute_path_id,capital_epoch_no,trade_status,capital_applied_yn,
-                                      minute_policy_path_id,minute_policy_operation_id
+                                      minute_policy_path_id,minute_policy_operation_id,
+                                      real_variant_id,real_live_route_id,real_capital_epoch_no
                                FROM minute_ma_live_trade WHERE minute_live_trade_id=%s FOR UPDATE""",
                            (minute_live_trade_id,));trade=cursor.fetchone()
             if trade is None or trade[2]!='CLOSED':raise ValueError('CLOSED_LIVE_TRADE_REQUIRED')
             path_id,epoch_no,policy_path_id,policy_operation_id=trade[0],trade[1],trade[4],trade[5]
+            real_variant_id,real_route_id,real_epoch=trade[6],trade[7],trade[8]
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
-                           (f"minute-ma-capital|{policy_path_id or path_id}|{epoch_no}",))
+                           (f"minute-ma-capital|{real_route_id or policy_path_id or path_id}|{real_epoch or epoch_no}",))
             cursor.execute("""INSERT INTO minute_ma_live_capital_settlement(
               settlement_id,minute_live_trade_id,minute_path_id,capital_epoch_no,entry_filled_amount,
               exit_filled_amount,gross_realized_pnl,buy_fee,sell_fee,sell_tax,other_cost,net_realized_pnl,settled_at,
-              minute_policy_path_id,minute_policy_operation_id)
-              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              minute_policy_path_id,minute_policy_operation_id,real_variant_id,real_live_route_id,
+              real_capital_epoch_no)
+              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
               ON CONFLICT(minute_live_trade_id) DO NOTHING RETURNING settlement_id""",
               (settlement_id,minute_live_trade_id,path_id,epoch_no,amounts.entry_filled_amount,
                amounts.exit_filled_amount,amounts.gross_realized_pnl,amounts.buy_fee,amounts.sell_fee,
                amounts.sell_tax,amounts.other_cost,amounts.net_realized_pnl,settled_at,
-               policy_path_id,policy_operation_id))
+               policy_path_id,policy_operation_id,real_variant_id,real_route_id,real_epoch))
             created=cursor.fetchone() is not None
             if created:
-                capital_table=('minute_ma_policy_compound_capital' if policy_path_id is not None
-                               else 'minute_ma_compound_capital')
-                identity_column=('minute_policy_path_id' if policy_path_id is not None else 'minute_path_id')
-                identity_value=policy_path_id if policy_path_id is not None else path_id
+                if real_route_id is not None:
+                    capital_table='minute_ma_real_live_capital'
+                    identity_column='real_live_route_id'
+                    identity_value=real_route_id
+                    epoch_no=real_epoch
+                    initial_column='initial_capital'
+                    current_column='current_capital'
+                else:
+                    capital_table=('minute_ma_policy_compound_capital' if policy_path_id is not None
+                                   else 'minute_ma_compound_capital')
+                    identity_column=('minute_policy_path_id' if policy_path_id is not None else 'minute_path_id')
+                    identity_value=policy_path_id if policy_path_id is not None else path_id
+                    initial_column='epoch_initial_capital'
+                    current_column='strategy_compound_capital'
                 cursor.execute(f"""UPDATE {capital_table}
                   SET cumulative_net_realized_pnl=cumulative_net_realized_pnl+%s,
-                      strategy_compound_capital=epoch_initial_capital+cumulative_net_realized_pnl+%s,
+                      {current_column}={initial_column}+cumulative_net_realized_pnl+%s,
                       version=version+1,updated_at=%s
                   WHERE {identity_column}=%s AND capital_epoch_no=%s""",
                   (amounts.net_realized_pnl,amounts.net_realized_pnl,settled_at,identity_value,epoch_no))
