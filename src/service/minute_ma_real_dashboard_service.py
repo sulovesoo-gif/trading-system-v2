@@ -7,10 +7,12 @@ LEGACY9={"2282","2259","2286","2116","2284","2357","2046","2117","2382"}
 
 
 def list_rows(pool, *, snapshot_date: date | None = None, filter_code: str | None = None,
-              sort: str = "cumulative_rank", limit: int = 100, offset: int = 0) -> dict:
-    allowed_sort={"cumulative_rank","recent20_rank","month_rank","week_rank","day_rank",
-                  "cumulative_return","cumulative_profit","current_capital"}
-    if sort not in allowed_sort: sort="cumulative_rank"
+              sort: str = "compound_cumulative_rank", limit: int = 100, offset: int = 0) -> dict:
+    allowed_sort={f"{model}_{metric}" for model in ("compound","fixed")
+                  for metric in ("cumulative_rank","recent20_rank","month_rank","week_rank",
+                                 "day_rank","cumulative_return","cumulative_profit")}
+    allowed_sort.add("compound_current_capital")
+    if sort not in allowed_sort: sort="compound_cumulative_rank"
     limit=max(1,min(int(limit),500)); offset=max(0,int(offset))
     with pool.connection() as connection,connection.cursor() as cursor:
         if snapshot_date is None:

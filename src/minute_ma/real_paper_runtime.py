@@ -1,18 +1,19 @@
-"""Separated historical/incremental runtime for Minute-MA + REAL PAPER."""
+"""Isolated historical/incremental runtime for Minute-MA + REAL PAPER V1.3."""
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
-from typing import Iterable
 
 from .contracts import Axis, MinuteBar, MinuteMaPath
 from .engine import MinuteMaSignalEngine, SignalType
-from .real_paper import (INITIAL_CAPITAL, CandidateTrade, RealFilter,
-                         RealSnapshot, eligible_entry_time, k_mode,
-                         passing_filters, replay_slots)
+from .real_paper import (
+    INITIAL_CAPITAL, CandidateTrade, RealFilter, RealSnapshot, account_costs,
+    eligible_entry_time, passing_filters, purchasable_quantity,
+    replay_parallel_capital,
+)
 
 
 @dataclass(frozen=True)
@@ -28,11 +29,7 @@ def _decimal(value) -> Decimal | None:
 
 
 class MinuteMaRealPaperRuntime:
-    """Produces only the new five-table REAL PAPER model.
-
-    Existing Minute V1, LIVE and broker repositories are intentionally not
-    imported, which makes STOP/EOD/SEND paths unreachable from this runtime.
-    """
+    """Uses only RAW, completed REAL state and the additive research tables."""
 
     def __init__(self, pool) -> None:
         self.pool = pool
@@ -87,16 +84,14 @@ class MinuteMaRealPaperRuntime:
     def build_candidates(self, start: date, end: date):
         strategies = self._strategies()
         by_stock: dict[str,list[MinuteMaPath]] = defaultdict(list)
-        for strategy in strategies: by_stock[strategy.signal_code].append(strategy)
+        for strategy in strategies:
+            by_stock[strategy.signal_code].append(strategy)
         result: dict[tuple[int,RealFilter],list[tuple[CandidateTrade,RealSnapshot]]] = defaultdict(list)
         common_entries = 0
-        market_dates: set[date] = set()
         for stock_code, group in by_stock.items():
             bars = self._bars(stock_code,start,end)
             bar_by_time = {bar.bar_time:bar for bar in bars}
-            market_dates.update(bar.bar_time.date() for bar in bars)
             real_by_time = self._real(stock_code,start,end)
-            # MA values are prepared exactly once per stock, not per REAL filter.
             points = self.engine.prepare(path=group[0], bars=bars)
             for strategy in group:
                 events = self.engine.evaluate_prepared(path=strategy,points=points)
@@ -110,15 +105,12 @@ class MinuteMaRealPaperRuntime:
                     exit_execution=(exit_event.source_bar_time+timedelta(minutes=1)
                                     if exit_event is not None else None)
                     entry_bar=bar_by_time.get(entry_execution)
-                    exit_bar=bar_by_time.get(exit_execution) if exit_execution is not None else None
+                    exit_bar=bar_by_time.get(exit_execution) if exit_execution else None
                     if entry_bar is None:
                         continue
                     common_entries += 1
                     snapshot=real_by_time.get(entry.source_bar_time)
                     if snapshot is None:
-                        continue
-                    filters=passing_filters(snapshot)
-                    if not filters:
                         continue
                     candidate=CandidateTrade(
                         self._trade_key(str(strategy.minute_path_id),entry.source_bar_time),
@@ -126,207 +118,207 @@ class MinuteMaRealPaperRuntime:
                         exit_execution if exit_bar is not None else None,
                         Decimal(str(entry_bar.open_price)),
                         Decimal(str(exit_bar.open_price)) if exit_bar is not None else None)
-                    for filter_code in filters:
+                    for filter_code in passing_filters(snapshot):
                         result[(strategy.minute_path_id,filter_code)].append((candidate,snapshot))
-        return strategies, result, tuple(sorted(market_dates)), common_entries
+        return strategies, result, common_entries
 
     def backfill(self, start: date, end: date, *, dry_run: bool = False) -> HistoricalResult:
-        strategies,candidates,market_dates,common_entries=self.build_candidates(start,end)
-        strategy_by_id={row.minute_path_id:row for row in strategies}
+        strategies,candidates,common_entries=self.build_candidates(start,end)
         if dry_run:
             return HistoricalResult(len(strategies),len(strategies)*3,common_entries,
                                     sum(len(rows) for rows in candidates.values()))
         with self.pool.connection() as connection, connection.cursor() as cursor:
             for strategy in strategies:
                 for filter_code in RealFilter:
-                    rows=candidates.get((strategy.minute_path_id,filter_code),[])
-                    slots=k_mode((row[0] for row in rows),market_dates=market_dates)
                     cursor.execute("""INSERT INTO minute_ma_real_variant(
-                      minute_strategy_id,strategy_id,signal_code,filter_code,paper_epoch,k_mode,
+                      minute_strategy_id,strategy_id,signal_code,filter_code,paper_epoch,
                       initial_capital,effective_from)
-                      VALUES(%s,%s,%s,%s,1,%s,%s,%s)
+                      VALUES(%s,%s,%s,%s,1,%s,%s)
                       ON CONFLICT(minute_strategy_id,filter_code,paper_epoch) DO UPDATE
-                      SET updated_at=CURRENT_TIMESTAMP
-                      WHERE minute_ma_real_variant.k_mode=EXCLUDED.k_mode
-                      RETURNING real_variant_id""",
+                      SET updated_at=CURRENT_TIMESTAMP RETURNING real_variant_id""",
                       (strategy.minute_path_id,str(strategy.minute_path_id),strategy.signal_code,
-                       filter_code.value,slots,INITIAL_CAPITAL,start))
-                    returned=cursor.fetchone()
-                    if returned is None:
-                        raise RuntimeError(
-                            f"K_MODE epoch mismatch strategy={strategy.minute_path_id} "
-                            f"filter={filter_code.value}; create a new epoch")
-                    variant_id=int(returned[0])
-                    slot_initial=INITIAL_CAPITAL/slots
-                    for slot_no in range(1,slots+1):
-                        cursor.execute("""INSERT INTO minute_ma_real_paper_slot(
-                          real_variant_id,paper_epoch,slot_no,current_capital,occupancy_status)
-                          VALUES(%s,1,%s,%s,'FREE') ON CONFLICT DO NOTHING""",
-                          (variant_id,slot_no,slot_initial))
+                       filter_code.value,INITIAL_CAPITAL,start))
+                    variant_id=int(cursor.fetchone()[0])
+                    rows=candidates.get((strategy.minute_path_id,filter_code),[])
                     snapshots={row[0].key:row[1] for row in rows}
-                    replayed=replay_slots((row[0] for row in rows),slot_count=slots)
-                    trade_ids={}
-                    for accounted in replayed:
+                    replay=replay_parallel_capital((row[0] for row in rows))
+                    cursor.execute("""INSERT INTO minute_ma_real_capital_epoch(
+                      real_variant_id,paper_epoch,initial_capital,current_realized_capital,
+                      effective_from,reset_reason)
+                      VALUES(%s,1,%s,%s,%s,'INITIAL_V1_3')
+                      ON CONFLICT(real_variant_id,paper_epoch) DO UPDATE SET
+                        current_realized_capital=EXCLUDED.current_realized_capital,
+                        version=minute_ma_real_capital_epoch.version+1,
+                        updated_at=CURRENT_TIMESTAMP
+                      WHERE minute_ma_real_capital_epoch.current_realized_capital
+                            IS DISTINCT FROM EXCLUDED.current_realized_capital""",
+                      (variant_id,INITIAL_CAPITAL,replay.current_realized_capital,start))
+                    for accounted in replay.trades:
                         snap=snapshots[accounted.candidate.key]
-                        gross_return=(accounted.gross_pnl/(Decimal(accounted.quantity)*
-                          accounted.candidate.entry_price) if accounted.quantity else Decimal(0))
-                        net_return=(accounted.realized_pnl/accounted.capital_before
-                          if accounted.capital_before else Decimal(0))
+                        compound=accounted.compound; fixed=accounted.fixed
+                        closed=accounted.status=='CLOSED'
                         exit_signal=(accounted.candidate.exit_time-timedelta(minutes=1)
-                                     if accounted.candidate.exit_time else None)
-                        exit_reason='NORMAL_EXIT' if accounted.status=='CLOSED' else None
+                                     if closed else None)
+                        compound_base=Decimal(compound.quantity)*accounted.candidate.entry_price
+                        fixed_base=Decimal(fixed.quantity)*accounted.candidate.entry_price
                         cursor.execute("""INSERT INTO minute_ma_real_paper_trade(
                           real_variant_id,minute_strategy_id,strategy_id,signal_code,filter_code,paper_epoch,
                           lifecycle_status,entry_signal_key,entry_signal_time,entry_execution_time,entry_price,
-                          exit_signal_time,exit_execution_time,exit_price,exit_reason,slot_no,quantity,
-                          capital_before,capital_after,gross_return,buy_fee,sell_fee,sell_tax,total_cost,
-                          net_return,realized_pnl,velocity_value,velocity_avg_3,velocity_avg_10,
-                          flow_avg_5,flow_avg_20,real_is_complete)
-                          VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                          ON CONFLICT(real_variant_id,entry_signal_key) DO UPDATE
-                          SET updated_at=minute_ma_real_paper_trade.updated_at
-                          RETURNING real_paper_trade_id""",
-                          (variant_id,strategy.minute_path_id,str(strategy.minute_path_id),
-                           strategy.signal_code,filter_code.value,accounted.status,
-                           accounted.candidate.key,accounted.candidate.entry_time-timedelta(minutes=1),
-                           accounted.candidate.entry_time,accounted.candidate.entry_price,
-                           exit_signal,accounted.candidate.exit_time,
-                           accounted.candidate.exit_price,exit_reason,accounted.slot_no,accounted.quantity,
-                           accounted.capital_before,accounted.capital_after,gross_return,
-                           accounted.buy_fee,accounted.sell_fee,accounted.sell_tax,
-                           accounted.buy_fee+accounted.sell_fee+accounted.sell_tax,net_return,
-                           accounted.realized_pnl,snap.velocity_value,snap.velocity_avg_3,
-                           snap.velocity_avg_10,snap.flow_avg_5,snap.flow_avg_20,snap.is_complete))
-                        trade_ids[accounted.candidate.key]=int(cursor.fetchone()[0])
-                    # Reconstruct the exact end-of-backfill slot state, including
-                    # normal-exit responsibilities that remain OPEN at the cutoff.
-                    final_capital={slot_no:slot_initial for slot_no in range(1,slots+1)}
-                    open_by_slot={}
-                    for accounted in replayed:
-                        if accounted.slot_no is None: continue
-                        if accounted.capital_after is not None:
-                            final_capital[accounted.slot_no]=accounted.capital_after
-                        if accounted.status=='OPEN':
-                            open_by_slot[accounted.slot_no]=trade_ids[accounted.candidate.key]
-                    for slot_no,capital in final_capital.items():
-                        trade_id=open_by_slot.get(slot_no)
-                        cursor.execute("""UPDATE minute_ma_real_paper_slot SET current_capital=%s,
-                          occupancy_status=%s,current_trade_id=%s,version=version+1,
-                          updated_at=CURRENT_TIMESTAMP
-                          WHERE real_variant_id=%s AND paper_epoch=1 AND slot_no=%s""",
-                          (capital,'OPEN' if trade_id else 'FREE',trade_id,variant_id,slot_no))
+                          exit_signal_time,exit_execution_time,exit_price,exit_reason,
+                          compound_quantity,entry_realized_capital,settlement_realized_capital_after,
+                          compound_gross_pnl,compound_gross_return,compound_buy_fee,compound_sell_fee,
+                          compound_sell_tax,compound_total_cost,compound_net_return,compound_realized_pnl,
+                          fixed_quantity,fixed_gross_pnl,fixed_gross_return,fixed_buy_fee,fixed_sell_fee,
+                          fixed_sell_tax,fixed_total_cost,fixed_net_return,fixed_realized_pnl,settlement_time,
+                          velocity_value,velocity_avg_3,velocity_avg_10,flow_avg_5,flow_avg_20,real_is_complete)
+                          VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                 %s,%s,%s,%s,%s,%s)
+                          ON CONFLICT(real_variant_id,entry_signal_key) DO UPDATE SET
+                            lifecycle_status=EXCLUDED.lifecycle_status,
+                            exit_signal_time=EXCLUDED.exit_signal_time,
+                            exit_execution_time=EXCLUDED.exit_execution_time,
+                            exit_price=EXCLUDED.exit_price,exit_reason=EXCLUDED.exit_reason,
+                            compound_quantity=EXCLUDED.compound_quantity,
+                            entry_realized_capital=EXCLUDED.entry_realized_capital,
+                            settlement_realized_capital_after=EXCLUDED.settlement_realized_capital_after,
+                            compound_gross_pnl=EXCLUDED.compound_gross_pnl,
+                            compound_gross_return=EXCLUDED.compound_gross_return,
+                            compound_buy_fee=EXCLUDED.compound_buy_fee,compound_sell_fee=EXCLUDED.compound_sell_fee,
+                            compound_sell_tax=EXCLUDED.compound_sell_tax,compound_total_cost=EXCLUDED.compound_total_cost,
+                            compound_net_return=EXCLUDED.compound_net_return,
+                            compound_realized_pnl=EXCLUDED.compound_realized_pnl,
+                            fixed_quantity=EXCLUDED.fixed_quantity,fixed_gross_pnl=EXCLUDED.fixed_gross_pnl,
+                            fixed_gross_return=EXCLUDED.fixed_gross_return,fixed_buy_fee=EXCLUDED.fixed_buy_fee,
+                            fixed_sell_fee=EXCLUDED.fixed_sell_fee,fixed_sell_tax=EXCLUDED.fixed_sell_tax,
+                            fixed_total_cost=EXCLUDED.fixed_total_cost,fixed_net_return=EXCLUDED.fixed_net_return,
+                            fixed_realized_pnl=EXCLUDED.fixed_realized_pnl,
+                            settlement_time=EXCLUDED.settlement_time,updated_at=CURRENT_TIMESTAMP""",
+                          (variant_id,strategy.minute_path_id,str(strategy.minute_path_id),strategy.signal_code,
+                           filter_code.value,accounted.status,accounted.candidate.key,
+                           accounted.candidate.entry_time-timedelta(minutes=1),accounted.candidate.entry_time,
+                           accounted.candidate.entry_price,exit_signal,accounted.candidate.exit_time,
+                           accounted.candidate.exit_price,'NORMAL_EXIT' if closed else None,
+                           compound.quantity,accounted.entry_realized_capital,
+                           accounted.settlement_realized_capital_after,compound.gross_pnl,
+                           compound.gross_pnl/compound_base if compound_base else Decimal(0),
+                           compound.buy_fee,compound.sell_fee,compound.sell_tax,
+                           compound.buy_fee+compound.sell_fee+compound.sell_tax,
+                           compound.realized_pnl/accounted.entry_realized_capital
+                           if accounted.entry_realized_capital else Decimal(0),compound.realized_pnl,
+                           fixed.quantity,fixed.gross_pnl,
+                           fixed.gross_pnl/fixed_base if fixed_base else Decimal(0),fixed.buy_fee,
+                           fixed.sell_fee,fixed.sell_tax,fixed.buy_fee+fixed.sell_fee+fixed.sell_tax,
+                           fixed.realized_pnl/INITIAL_CAPITAL,fixed.realized_pnl,
+                           accounted.candidate.exit_time if closed else None,snap.velocity_value,
+                           snap.velocity_avg_3,snap.velocity_avg_10,snap.flow_avg_5,snap.flow_avg_20,
+                           snap.is_complete))
             connection.commit()
         return HistoricalResult(len(strategies),len(strategies)*3,common_entries,
                                 sum(len(rows) for rows in candidates.values()))
 
     def process_day(self, trading_date: date) -> tuple[int, int]:
-        """Incrementally apply executable events for one day.
-
-        EXIT rows are handled before ENTRY rows at an equal execution minute.
-        The unique entry key and row locks make repeated polling/restart safe.
-        """
-        strategies=self._strategies()
-        by_stock: dict[str,list[MinuteMaPath]]=defaultdict(list)
+        strategies=self._strategies(); by_stock: dict[str,list[MinuteMaPath]]=defaultdict(list)
         for strategy in strategies: by_stock[strategy.signal_code].append(strategy)
         opened=closed=0
         for stock_code,group in by_stock.items():
             bars=self._bars(stock_code,trading_date,trading_date)
             bar_by_time={bar.bar_time:bar for bar in bars}
             real_by_time=self._real(stock_code,trading_date,trading_date)
-            points=self.engine.prepare(path=group[0],bars=bars)
-            events=[]
+            points=self.engine.prepare(path=group[0],bars=bars); events=[]
             for strategy in group:
                 for event in self.engine.evaluate_prepared(path=strategy,points=points):
                     execution_time=event.source_bar_time+timedelta(minutes=1)
-                    if execution_time not in bar_by_time:
-                        continue
-                    order=0 if event.signal_type is SignalType.EXIT else 1
-                    events.append((execution_time,order,strategy,event))
+                    if execution_time in bar_by_time:
+                        events.append((execution_time,0 if event.signal_type is SignalType.EXIT else 1,
+                                       strategy,event))
             for execution_time,_,strategy,event in sorted(
                     events,key=lambda row:(row[0],row[1],row[2].minute_path_id)):
                 if event.signal_type is SignalType.EXIT:
-                    closed += self._close_incremental(strategy,event,bar_by_time[execution_time])
+                    closed+=self._close_incremental(strategy,event,bar_by_time[execution_time])
                 elif eligible_entry_time(event.source_bar_time):
                     snapshot=real_by_time.get(event.source_bar_time)
                     if snapshot is not None:
-                        opened += self._open_incremental(
-                            strategy,event,bar_by_time[execution_time],snapshot)
+                        opened+=self._open_incremental(strategy,event,bar_by_time[execution_time],snapshot)
         return opened,closed
 
     def _open_incremental(self,strategy,event,execution_bar,snapshot:RealSnapshot) -> int:
-        inserted=0
-        filters=passing_filters(snapshot)
-        if not filters:
-            return 0
+        inserted=0; filters=passing_filters(snapshot)
+        if not filters: return 0
         key=self._trade_key(str(strategy.minute_path_id),event.source_bar_time)
         with self.pool.connection() as connection,connection.cursor() as cursor:
             for filter_code in filters:
-                cursor.execute("""SELECT real_variant_id,paper_epoch FROM minute_ma_real_variant
-                  WHERE minute_strategy_id=%s AND filter_code=%s AND enabled AND effective_to IS NULL""",
+                cursor.execute("""SELECT v.real_variant_id,v.paper_epoch,c.current_realized_capital
+                  FROM minute_ma_real_variant v JOIN minute_ma_real_capital_epoch c
+                    ON c.real_variant_id=v.real_variant_id AND c.paper_epoch=v.paper_epoch AND c.ended_at IS NULL
+                  WHERE v.minute_strategy_id=%s AND v.filter_code=%s AND v.enabled
+                    AND v.effective_to IS NULL FOR UPDATE OF c""",
                   (strategy.minute_path_id,filter_code.value)); variant=cursor.fetchone()
-                if variant is None:
-                    continue
-                variant_id,epoch=int(variant[0]),int(variant[1])
-                cursor.execute("""SELECT slot_no,current_capital FROM minute_ma_real_paper_slot
-                  WHERE real_variant_id=%s AND paper_epoch=%s AND occupancy_status='FREE'
-                  ORDER BY slot_no FOR UPDATE SKIP LOCKED LIMIT 1""",(variant_id,epoch))
-                slot=cursor.fetchone()
-                status='OPEN' if slot else 'SKIPPED_NO_SLOT'
-                capital=Decimal(str(slot[1])) if slot else None
-                from .real_paper import BUY_FEE_RATE
-                quantity=(int(capital/(Decimal(str(execution_bar.open_price))*(1+BUY_FEE_RATE)))
-                          if capital else 0)
-                if slot and quantity<=0: status='SKIPPED_QTY_ZERO'
+                if variant is None: continue
+                variant_id,epoch,capital=int(variant[0]),int(variant[1]),Decimal(str(variant[2]))
+                price=Decimal(str(execution_bar.open_price))
+                compound_qty=purchasable_quantity(capital,price)
+                fixed_qty=purchasable_quantity(INITIAL_CAPITAL,price)
                 cursor.execute("""INSERT INTO minute_ma_real_paper_trade(
                   real_variant_id,minute_strategy_id,strategy_id,signal_code,filter_code,paper_epoch,
                   lifecycle_status,entry_signal_key,entry_signal_time,entry_execution_time,entry_price,
-                  slot_no,quantity,capital_before,velocity_value,velocity_avg_3,velocity_avg_10,
-                  flow_avg_5,flow_avg_20,real_is_complete)
-                  VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)
-                  ON CONFLICT(real_variant_id,entry_signal_key) DO NOTHING RETURNING real_paper_trade_id""",
-                  (variant_id,strategy.minute_path_id,str(strategy.minute_path_id),
-                   strategy.signal_code,filter_code.value,epoch,status,key,event.source_bar_time,
-                   execution_bar.bar_time,Decimal(str(execution_bar.open_price)),
-                   int(slot[0]) if slot else None,quantity,capital,snapshot.velocity_value,
-                   snapshot.velocity_avg_3,snapshot.velocity_avg_10,snapshot.flow_avg_5,
-                   snapshot.flow_avg_20))
-                row=cursor.fetchone()
-                if row and status=='OPEN':
-                    cursor.execute("""UPDATE minute_ma_real_paper_slot SET occupancy_status='OPEN',
-                      current_trade_id=%s,version=version+1,updated_at=CURRENT_TIMESTAMP
-                      WHERE real_variant_id=%s AND paper_epoch=%s AND slot_no=%s""",
-                      (int(row[0]),variant_id,epoch,int(slot[0])))
-                    inserted+=1
+                  compound_quantity,fixed_quantity,entry_realized_capital,velocity_value,velocity_avg_3,
+                  velocity_avg_10,flow_avg_5,flow_avg_20,real_is_complete)
+                  VALUES(%s,%s,%s,%s,%s,%s,'OPEN',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE)
+                  ON CONFLICT(real_variant_id,entry_signal_key) DO NOTHING""",
+                  (variant_id,strategy.minute_path_id,str(strategy.minute_path_id),strategy.signal_code,
+                   filter_code.value,epoch,key,event.source_bar_time,execution_bar.bar_time,price,
+                   compound_qty,fixed_qty,capital,snapshot.velocity_value,snapshot.velocity_avg_3,
+                   snapshot.velocity_avg_10,snapshot.flow_avg_5,snapshot.flow_avg_20))
+                inserted+=cursor.rowcount
             connection.commit()
         return inserted
 
     def _close_incremental(self,strategy,event,execution_bar) -> int:
-        count=0
+        count=0; exit_price=Decimal(str(execution_bar.open_price))
         with self.pool.connection() as connection,connection.cursor() as cursor:
-            cursor.execute("""SELECT t.real_paper_trade_id,t.real_variant_id,t.paper_epoch,t.slot_no,
-              t.quantity,t.entry_price,t.capital_before FROM minute_ma_real_paper_trade t
+            cursor.execute("""SELECT t.real_paper_trade_id,t.real_variant_id,t.paper_epoch,
+              t.compound_quantity,t.fixed_quantity,t.entry_price
+              FROM minute_ma_real_paper_trade t
               WHERE t.minute_strategy_id=%s AND t.lifecycle_status='OPEN'
                 AND t.entry_execution_time<=%s
-              ORDER BY t.real_paper_trade_id FOR UPDATE""",
-              (strategy.minute_path_id,event.source_bar_time))
-            for trade_id,variant_id,epoch,slot_no,quantity,entry_price,capital_before in cursor.fetchall():
-                qty=Decimal(quantity); entry=Decimal(str(entry_price)); exit_price=Decimal(str(execution_bar.open_price))
-                from .real_paper import BUY_FEE_RATE,SELL_FEE_RATE,SELL_TAX_RATE
-                gross=qty*(exit_price-entry); buy=qty*entry*BUY_FEE_RATE
-                sell=qty*exit_price*SELL_FEE_RATE; tax=qty*exit_price*SELL_TAX_RATE
-                realized=gross-buy-sell-tax; after=Decimal(str(capital_before))+realized
-                cursor.execute("""UPDATE minute_ma_real_paper_trade SET lifecycle_status='CLOSED',
-                  exit_signal_time=%s,exit_execution_time=%s,exit_price=%s,exit_reason='NORMAL_EXIT',
-                  capital_after=%s,gross_return=%s,buy_fee=%s,sell_fee=%s,sell_tax=%s,total_cost=%s,
-                  net_return=%s,realized_pnl=%s,updated_at=CURRENT_TIMESTAMP
-                  WHERE real_paper_trade_id=%s AND lifecycle_status='OPEN'""",
-                  (event.source_bar_time,execution_bar.bar_time,exit_price,after,
-                   gross/(qty*entry),buy,sell,tax,buy+sell+tax,realized/Decimal(str(capital_before)),
-                   realized,trade_id))
-                cursor.execute("""UPDATE minute_ma_real_paper_slot SET current_capital=%s,
-                  occupancy_status='FREE',current_trade_id=NULL,version=version+1,
-                  updated_at=CURRENT_TIMESTAMP WHERE real_variant_id=%s AND paper_epoch=%s AND slot_no=%s""",
-                  (after,variant_id,epoch,slot_no)); count+=1
+              ORDER BY t.real_variant_id,t.real_paper_trade_id FOR UPDATE OF t""",
+              (strategy.minute_path_id,event.source_bar_time)); rows=cursor.fetchall()
+            by_variant=defaultdict(list)
+            for row in rows: by_variant[(int(row[1]),int(row[2]))].append(row)
+            for (variant_id,epoch),trades in by_variant.items():
+                cursor.execute("""SELECT current_realized_capital FROM minute_ma_real_capital_epoch
+                  WHERE real_variant_id=%s AND paper_epoch=%s AND ended_at IS NULL FOR UPDATE""",
+                  (variant_id,epoch)); capital=Decimal(str(cursor.fetchone()[0]))
+                for trade_id,_,_,compound_qty,fixed_qty,entry_price in trades:
+                    entry=Decimal(str(entry_price))
+                    compound=account_costs(int(compound_qty),entry,exit_price)
+                    fixed=account_costs(int(fixed_qty),entry,exit_price)
+                    capital+=compound.realized_pnl
+                    compound_base=Decimal(compound.quantity)*entry
+                    fixed_base=Decimal(fixed.quantity)*entry
+                    cursor.execute("""UPDATE minute_ma_real_paper_trade SET lifecycle_status='CLOSED',
+                      exit_signal_time=%s,exit_execution_time=%s,exit_price=%s,exit_reason='NORMAL_EXIT',
+                      settlement_time=%s,settlement_realized_capital_after=%s,
+                      compound_gross_pnl=%s,compound_gross_return=%s,compound_buy_fee=%s,
+                      compound_sell_fee=%s,compound_sell_tax=%s,compound_total_cost=%s,
+                      compound_net_return=%s,compound_realized_pnl=%s,
+                      fixed_gross_pnl=%s,fixed_gross_return=%s,fixed_buy_fee=%s,fixed_sell_fee=%s,
+                      fixed_sell_tax=%s,fixed_total_cost=%s,fixed_net_return=%s,fixed_realized_pnl=%s,
+                      updated_at=CURRENT_TIMESTAMP WHERE real_paper_trade_id=%s AND lifecycle_status='OPEN'""",
+                      (event.source_bar_time,execution_bar.bar_time,exit_price,execution_bar.bar_time,capital,
+                       compound.gross_pnl,compound.gross_pnl/compound_base if compound_base else Decimal(0),
+                       compound.buy_fee,compound.sell_fee,compound.sell_tax,
+                       compound.buy_fee+compound.sell_fee+compound.sell_tax,
+                       compound.realized_pnl/(capital-compound.realized_pnl)
+                       if capital!=compound.realized_pnl else Decimal(0),compound.realized_pnl,
+                       fixed.gross_pnl,fixed.gross_pnl/fixed_base if fixed_base else Decimal(0),
+                       fixed.buy_fee,fixed.sell_fee,fixed.sell_tax,
+                       fixed.buy_fee+fixed.sell_fee+fixed.sell_tax,fixed.realized_pnl/INITIAL_CAPITAL,
+                       fixed.realized_pnl,trade_id)); count+=cursor.rowcount
+                cursor.execute("""UPDATE minute_ma_real_capital_epoch SET current_realized_capital=%s,
+                  version=version+1,updated_at=CURRENT_TIMESTAMP
+                  WHERE real_variant_id=%s AND paper_epoch=%s AND ended_at IS NULL""",
+                  (capital,variant_id,epoch))
             connection.commit()
         return count

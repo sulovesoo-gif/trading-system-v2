@@ -1,18 +1,16 @@
-"""Pure contracts for the Minute-MA + REAL PAPER research path.
+"""Pure contracts for Minute-MA + REAL PAPER V1.3.
 
-This module deliberately has no broker/LIVE dependency.  It is shared by the
-historical loader and the incremental runtime so the two paths use identical
-filter, K and accounting semantics.
+PAPER entries never reserve capital and are never gated by K/slots. Every
+signal is independent. Only settled PnL changes capital used by later entries;
+fixed-10M accounting is calculated from the same trade ledger.
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal, ROUND_FLOOR
 from enum import Enum
 from typing import Iterable
-
 
 INITIAL_CAPITAL = Decimal("10000000")
 BUY_FEE_RATE = Decimal("0.000140527")
@@ -49,27 +47,38 @@ class CandidateTrade:
 
 
 @dataclass(frozen=True)
-class AccountedTrade:
-    candidate: CandidateTrade
-    slot_no: int | None
+class CostResult:
     quantity: int
-    capital_before: Decimal | None
-    capital_after: Decimal | None
     gross_pnl: Decimal
     buy_fee: Decimal
     sell_fee: Decimal
     sell_tax: Decimal
     realized_pnl: Decimal
+
+
+@dataclass(frozen=True)
+class AccountedTrade:
+    candidate: CandidateTrade
+    entry_realized_capital: Decimal
+    settlement_realized_capital_after: Decimal | None
+    compound: CostResult
+    fixed: CostResult
     status: str
 
 
+@dataclass(frozen=True)
+class ReplayResult:
+    trades: tuple[AccountedTrade, ...]
+    current_realized_capital: Decimal
+
+
 def eligible_entry_time(at: datetime) -> bool:
-    minute=at.time().replace(second=0,microsecond=0)
+    minute = at.time().replace(second=0, microsecond=0)
     return ENTRY_START <= minute <= ENTRY_END
 
 
 def passing_filters(snapshot: RealSnapshot) -> tuple[RealFilter, ...]:
-    """Return nested F1/F2/F3 passes; UNKNOWN never passes."""
+    """Return nested F1/F2/F3 passes; incomplete or NULL input never passes."""
     if not snapshot.is_complete or snapshot.velocity_value is None:
         return ()
     f1 = snapshot.velocity_value > 0
@@ -84,84 +93,59 @@ def passing_filters(snapshot: RealSnapshot) -> tuple[RealFilter, ...]:
     ) if passed)
 
 
-def daily_max_concurrency(trades: Iterable[CandidateTrade],
-                          *, market_dates: Iterable[date] | None = None) -> dict[date, int]:
-    """04A2 contract: EXIT precedes ENTRY at an equal timestamp."""
-    events: dict[date, list[tuple[datetime, int]]] = defaultdict(list)
-    for trade in trades:
-        # Overnight positions count at the start of every intervening market
-        # date represented by an event.  The historical loader calls this with
-        # trading-date-complete candidates, so entry/exit day events suffice.
-        events[trade.entry_time.date()].append((trade.entry_time, 1))
-        if trade.exit_time is not None:
-            events[trade.exit_time.date()].append((trade.exit_time, -1))
-    calendar = set(events)
-    if market_dates is not None:
-        calendar.update(market_dates)
-    result: dict[date, int] = {}
-    carry = 0
-    for day in sorted(calendar):
-        current = carry
-        maximum = current
-        for _, delta in sorted(events[day], key=lambda item: (item[0], item[1])):
-            current += delta
-            maximum = max(maximum, current)
-        result[day] = maximum
-        carry = current
-    return result
+def purchasable_quantity(capital: Decimal, price: Decimal) -> int:
+    if capital <= 0 or price <= 0:
+        return 0
+    return int((capital / (price * (Decimal(1) + BUY_FEE_RATE))).to_integral_value(
+        rounding=ROUND_FLOOR))
 
 
-def k_mode(trades: Iterable[CandidateTrade],
-           *, market_dates: Iterable[date] | None = None) -> int:
-    values = [value for value in daily_max_concurrency(
-        trades, market_dates=market_dates).values() if value > 0]
-    if not values:
-        return 1
-    counts = Counter(values)
-    highest = max(counts.values())
-    return min(value for value, count in counts.items() if count == highest)
+def account_costs(quantity: int, entry_price: Decimal,
+                  exit_price: Decimal | None) -> CostResult:
+    if quantity <= 0 or exit_price is None:
+        return CostResult(quantity, Decimal(0), Decimal(0), Decimal(0),
+                          Decimal(0), Decimal(0))
+    qty = Decimal(quantity)
+    gross = qty * (exit_price - entry_price)
+    buy_fee = qty * entry_price * BUY_FEE_RATE
+    sell_fee = qty * exit_price * SELL_FEE_RATE
+    sell_tax = qty * exit_price * SELL_TAX_RATE
+    return CostResult(quantity, gross, buy_fee, sell_fee, sell_tax,
+                      gross - buy_fee - sell_fee - sell_tax)
 
 
-def replay_slots(trades: Iterable[CandidateTrade], *, slot_count: int,
-                 initial_capital: Decimal = INITIAL_CAPITAL) -> tuple[AccountedTrade, ...]:
-    if slot_count < 1:
-        raise ValueError("slot_count must be positive")
-    slot_capital = [initial_capital / slot_count for _ in range(slot_count)]
-    busy_until: list[datetime | None] = [None] * slot_count
-    results: list[AccountedTrade] = []
-    ordered=sorted(trades,key=lambda row:(row.entry_time,row.exit_time or datetime.max,row.key))
-    for trade in ordered:
-        slot = next((index for index, until in enumerate(busy_until)
-                     if until is None or until <= trade.entry_time), None)
-        if slot is None:
-            results.append(AccountedTrade(trade, None, 0, None, None,
-                                           Decimal(0), Decimal(0), Decimal(0),
-                                           Decimal(0), Decimal(0), "SKIPPED_NO_SLOT"))
-            continue
-        before = slot_capital[slot]
-        unit_cost = trade.entry_price * (Decimal(1) + BUY_FEE_RATE)
-        qty = int((before / unit_cost).to_integral_value(rounding=ROUND_FLOOR))
-        if qty <= 0:
-            results.append(AccountedTrade(trade, slot + 1, 0, before, before,
-                                           Decimal(0), Decimal(0), Decimal(0),
-                                           Decimal(0), Decimal(0), "SKIPPED_QTY_ZERO"))
-            continue
-        quantity = Decimal(qty)
-        if trade.exit_time is None or trade.exit_price is None:
-            busy_until[slot]=datetime.max
-            results.append(AccountedTrade(trade,slot+1,qty,before,None,
-                                           Decimal(0),Decimal(0),Decimal(0),
-                                           Decimal(0),Decimal(0),"OPEN"))
-            continue
-        gross = quantity * (trade.exit_price - trade.entry_price)
-        buy_fee = quantity * trade.entry_price * BUY_FEE_RATE
-        sell_fee = quantity * trade.exit_price * SELL_FEE_RATE
-        sell_tax = quantity * trade.exit_price * SELL_TAX_RATE
-        realized = gross - buy_fee - sell_fee - sell_tax
-        after = before + realized
-        slot_capital[slot] = after
-        busy_until[slot] = trade.exit_time
-        results.append(AccountedTrade(trade, slot + 1, qty, before, after,
-                                       gross, buy_fee, sell_fee, sell_tax,
-                                       realized, "CLOSED"))
-    return tuple(results)
+def replay_parallel_capital(
+        trades: Iterable[CandidateTrade], *,
+        initial_capital: Decimal = INITIAL_CAPITAL) -> ReplayResult:
+    """Replay overlapping trades with EXIT-before-ENTRY ordering."""
+    ordered = tuple(sorted(trades, key=lambda row: (row.entry_time, row.key)))
+    by_key = {row.key: row for row in ordered}
+    events: list[tuple[datetime, int, str]] = []
+    for row in ordered:
+        events.append((row.entry_time, 1, row.key))
+        if row.exit_time is not None and row.exit_price is not None:
+            events.append((row.exit_time, 0, row.key))
+    current = initial_capital
+    entries: dict[str, tuple[Decimal, CostResult, CostResult]] = {}
+    settled_after: dict[str, Decimal] = {}
+    for _, kind, key in sorted(events, key=lambda item: (item[0], item[1], item[2])):
+        row = by_key[key]
+        if kind == 1:
+            entries[key] = (
+                current,
+                account_costs(purchasable_quantity(current, row.entry_price),
+                              row.entry_price, row.exit_price),
+                account_costs(purchasable_quantity(initial_capital, row.entry_price),
+                              row.entry_price, row.exit_price),
+            )
+        else:
+            _, compound, _ = entries[key]
+            current += compound.realized_pnl
+            settled_after[key] = current
+    accounted = []
+    for row in ordered:
+        entry_capital, compound, fixed = entries[row.key]
+        accounted.append(AccountedTrade(
+            row, entry_capital, settled_after.get(row.key), compound, fixed,
+            "CLOSED" if row.key in settled_after else "OPEN"))
+    return ReplayResult(tuple(accounted), current)

@@ -34,7 +34,7 @@ class Handler(SimpleHTTPRequestHandler):
             q=parse_qs(parsed.query)
             raw_date=q.get("date",[None])[0]
             result=list_rows(POOL,snapshot_date=date.fromisoformat(raw_date) if raw_date else None,
-                filter_code=q.get("filter",[None])[0],sort=q.get("sort",["cumulative_rank"])[0],
+                filter_code=q.get("filter",[None])[0],sort=q.get("sort",["compound_cumulative_rank"])[0],
                 limit=int(q.get("limit",[100])[0]),offset=int(q.get("offset",[0])[0]))
             payload=json.dumps(result,default=_json,ensure_ascii=False).encode()
             self.send_response(200); self.send_header("Content-Type","application/json; charset=utf-8")
