@@ -10,7 +10,7 @@ from decimal import Decimal
 from threading import RLock
 from zoneinfo import ZoneInfo
 
-from .models import CandidateState, Observation, ResearchState, TERMINAL_STATES
+from .models import CandidateState, MinuteBar, Observation, ResearchState, TERMINAL_STATES
 
 LOGGER = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -83,6 +83,7 @@ class FirstRiseBreakoutRuntime:
         self._poll_errors = 0
         self._poll_discovered: set[str] = set()
         self._poll_summary_date = None
+        self._previous_closes: dict[tuple[object, str], Decimal] = {}
 
     def _ensure_poll_date(self, at: datetime) -> None:
         if self._poll_date == at.date():
@@ -112,7 +113,7 @@ class FirstRiseBreakoutRuntime:
         return self._condition_seq
 
     def scan_once(self, *, at: datetime) -> int:
-        if not (self.SEARCH_START <= at.time() <= self.SEARCH_END):
+        if not (self.SEARCH_START <= at.time() < self.SEARCH_END):
             return 0
         self._ensure_poll_date(at)
         self._poll_count += 1
@@ -172,20 +173,28 @@ class FirstRiseBreakoutRuntime:
                     "FIRST_RISE_DISCOVERED stock_code=%s stock_name=%s discovered_at=%s",
                     candidate.stock_code, candidate.stock_name or "", at.isoformat(),
                 )
-                peak = self.minute_source.peak(stock_code=candidate.stock_code, until=at)
-                if peak is None:
-                    LOGGER.warning("first-rise peak seed unavailable stock_code=%s", candidate.stock_code)
+                previous_close = self._previous_close(candidate.stock_code, at)
+                if previous_close is None:
+                    LOGGER.warning(
+                        "first-rise previous regular close unavailable stock_code=%s",
+                        candidate.stock_code,
+                    )
                     continue
-                peak_price, peak_time, latest_close = peak
-                decision = self.strategy.seed_peak(state, peak_price=peak_price, peak_time=peak_time)
-                state = self.repository.apply(
-                    decision, Observation(peak_time, peak_price, "KIS_1MIN_HIGH"),
-                    evidence={"source": "KIS_1MIN", "seeded_at": at.isoformat()},
+                bars = self.minute_source.completed_bars_from_open(
+                    stock_code=candidate.stock_code, as_of=at,
                 )
+                session_volume = 0
+                for bar in bars:
+                    session_volume += bar.volume
+                    decision = self.strategy.observe_bar(
+                        state, bar, previous_close=previous_close,
+                        allow_entry=False, bootstrap=True,
+                        session_volume=session_volume,
+                        session_amount=bar.accumulated_amount,
+                    )
+                    state = self._persist_decision(decision, bar)
                 with self._state_lock:
                     self._states[candidate.stock_code] = state
-                if latest_close < peak_price:
-                    self.observe(candidate.stock_code, observed_at=at, price=latest_close, source="KIS_1MIN_CLOSE")
         except Exception:
             self._poll_errors += 1
             raise
@@ -208,12 +217,80 @@ class FirstRiseBreakoutRuntime:
             return
         observation = Observation(observed_at, price, source)
         decision = self.strategy.observe(state, observation)
+        # H0STCNT0 remains the existing real-time observation/subscription
+        # channel, but frozen research decisions are completed-minute only.
         if decision.changed:
-            state = self.repository.apply(decision, observation)
+            with self._state_lock:
+                self._states[stock_code] = self.repository.apply(decision, observation)
+
+    def refresh_completed_bars(self, *, at: datetime) -> int:
+        """Advance every active candidate from actual completed KRX minute bars."""
+        changed = 0
+        with self._state_lock:
+            current_states = list(self._states.items())
+        for stock_code, state in current_states:
+            if state.state in TERMINAL_STATES:
+                continue
+            previous_close = self._previous_close(stock_code, at)
+            if previous_close is None:
+                continue
+            bars = self.minute_source.completed_bars_from_open(stock_code=stock_code, as_of=at)
+            if state.state == ResearchState.PAPER_ENTERED:
+                decision = self.strategy.exit_from_completed_bars(
+                    state, bars, session_ended=at.time() > self.strategy.SESSION_CLOSE,
+                )
+                if decision.changed:
+                    state = self._persist_decision(decision, None)
+                    changed += 1
+            else:
+                session_volume = 0
+                for bar in bars:
+                    session_volume += bar.volume
+                    if state.last_observed_at is not None and bar.bar_time <= state.last_observed_at:
+                        continue
+                    decision = self.strategy.observe_bar(
+                        state, bar, previous_close=previous_close,
+                        allow_entry=True, bootstrap=False,
+                        session_volume=session_volume,
+                        session_amount=bar.accumulated_amount,
+                    )
+                    if decision.changed:
+                        state = self._persist_decision(decision, bar)
+                        changed += 1
+                    if state.state in TERMINAL_STATES or state.state == ResearchState.PAPER_ENTERED:
+                        break
             with self._state_lock:
                 self._states[stock_code] = state
-            if state.state in {ResearchState.REJECTED, ResearchState.EXPIRED, ResearchState.PAPER_EXITED}:
+            if state.state in TERMINAL_STATES:
                 self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
+        return changed
+
+    def _previous_close(self, stock_code: str, at: datetime) -> Decimal | None:
+        key = (at.date(), stock_code)
+        if key not in self._previous_closes:
+            value = self.repository.previous_regular_close(
+                stock_code=stock_code, business_date=at.date(),
+            )
+            if value is not None:
+                self._previous_closes[key] = Decimal(value)
+        return self._previous_closes.get(key)
+
+    def _persist_decision(self, decision, bar: MinuteBar | None) -> CandidateState:
+        if not decision.changed:
+            return decision.before
+        evidence = dict(decision.evidence or {})
+        raw_price = decision.raw_execution_price
+        if bar is not None:
+            observed_at = bar.bar_time
+            observed_price = raw_price or bar.close_price
+            source = bar.source
+        else:
+            observed_at = datetime.fromisoformat(evidence["bar_time"])
+            observed_price = raw_price or Decimal(evidence["close"])
+            source = evidence.get("source", "KIS_1MIN")
+        return self.repository.apply(
+            decision, Observation(observed_at, observed_price, source), evidence=evidence,
+        )
 
     def expire_once(self, *, at: datetime) -> int:
         if at.time() <= self.SEARCH_END:
@@ -257,6 +334,7 @@ class FirstRiseBreakoutRuntime:
                 if self._restored_date != at.date():
                     await asyncio.to_thread(self.restore, at=at)
                 await asyncio.to_thread(self.scan_once, at=at)
+                await asyncio.to_thread(self.refresh_completed_bars, at=at)
                 await asyncio.to_thread(self.expire_once, at=at)
             except Exception:
                 # Research discovery must never stop the shared RAW collector.

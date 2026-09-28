@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from threading import RLock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -28,14 +29,19 @@ from src.repository.database import DatabaseSettings, create_connection_pool
 
 async def run(pool) -> None:
     registry = DynamicExecutionRegistry()
+    condition_request_lock = RLock()
     research = None
     try:
         client = KISClient()
         research = FirstRiseBreakoutRuntime(
             repository=FirstRiseBreakoutRepository(pool),
             strategy=FirstRiseBreakoutStrategy(),
-            condition_search=SavedConditionSearch(client, user_id=os.getenv("KIS_USER", "")),
-            minute_source=SameDayMinutePeakSource(StockMinuteCollector(client)),
+            condition_search=SavedConditionSearch(
+                client, user_id=os.getenv("KIS_USER", ""), request_lock=condition_request_lock,
+            ),
+            minute_source=SameDayMinutePeakSource(
+                StockMinuteCollector(client), request_lock=condition_request_lock,
+            ),
             subscriptions=registry,
         )
     except Exception:
