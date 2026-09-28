@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from src.first_rise_breakout.condition_search import SavedConditionError, SavedConditionSearch
 from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
-from src.first_rise_breakout.models import CandidateState, Observation, ResearchState
+from src.first_rise_breakout.models import CandidateState, MinuteBar, Observation, ResearchState
 from src.first_rise_breakout.condition_search import ConditionCandidate
 from src.first_rise_breakout.runtime import DynamicExecutionRegistry, FirstRiseBreakoutRuntime
 from src.first_rise_breakout.strategy import FirstRiseBreakoutStrategy
@@ -76,11 +76,26 @@ class StrategyTest(unittest.TestCase):
     def setUp(self):
         self.strategy = FirstRiseBreakoutStrategy()
 
+    @staticmethod
+    def bar(at, *, open_, high, low, close=None):
+        return MinuteBar(
+            at, Decimal(open_), Decimal(high), Decimal(low), Decimal(close or open_),
+        )
+
     def test_pullback_and_same_peak_rebreak_after_nine_minutes_enters(self):
         seeded = self.strategy.seed_peak(state(), peak_price=Decimal("100"), peak_time=AT).after
-        pulled = self.strategy.observe(seeded, Observation(AT + timedelta(minutes=2), Decimal("99"))).after
-        waiting = self.strategy.observe(pulled, Observation(AT + timedelta(minutes=3), Decimal("98.5"))).after
-        decision = self.strategy.observe(waiting, Observation(AT + timedelta(minutes=9), Decimal("100.1")))
+        pulled = self.strategy.observe_bar(
+            seeded, self.bar(AT + timedelta(minutes=2), open_="99", high="99.5", low="99"),
+            previous_close=Decimal("95"),
+        ).after
+        waiting = self.strategy.observe_bar(
+            pulled, self.bar(AT + timedelta(minutes=3), open_="99", high="99.4", low="98.5"),
+            previous_close=Decimal("95"),
+        ).after
+        decision = self.strategy.observe_bar(
+            waiting, self.bar(AT + timedelta(minutes=9), open_="99.8", high="100.1", low="99.7"),
+            previous_close=Decimal("95"),
+        )
         self.assertEqual(pulled.state, ResearchState.PULLBACK)
         self.assertEqual(waiting.state, ResearchState.WAIT_REBREAK)
         self.assertEqual(decision.after.state, ResearchState.PAPER_ENTERED)
@@ -88,20 +103,30 @@ class StrategyTest(unittest.TestCase):
 
     def test_early_rebreak_becomes_new_peak_and_restarts_structure(self):
         seeded = self.strategy.seed_peak(state(), peak_price=Decimal("100"), peak_time=AT).after
-        pulled = self.strategy.observe(seeded, Observation(AT + timedelta(minutes=1), Decimal("99"))).after
-        decision = self.strategy.observe(pulled, Observation(AT + timedelta(minutes=2), Decimal("101")))
+        pulled = self.strategy.observe_bar(
+            seeded, self.bar(AT + timedelta(minutes=1), open_="99", high="99.5", low="99"),
+            previous_close=Decimal("95"),
+        ).after
+        decision = self.strategy.observe_bar(
+            pulled, self.bar(AT + timedelta(minutes=2), open_="100.5", high="101", low="100"),
+            previous_close=Decimal("95"),
+        )
         self.assertEqual(decision.after.state, ResearchState.TRACKING)
         self.assertEqual(decision.after.peak_price, Decimal("101"))
         self.assertFalse(decision.create_entry)
 
-    def test_over_four_percent_rejects_unentered_structure(self):
+    def test_over_four_percent_invalidates_only_the_peak_structure(self):
         seeded = self.strategy.seed_peak(state(), peak_price=Decimal("100"), peak_time=AT).after
-        decision = self.strategy.observe(seeded, Observation(AT + timedelta(minutes=2), Decimal("95.9")))
-        self.assertEqual(decision.after.state, ResearchState.REJECTED)
+        decision = self.strategy.observe_bar(
+            seeded, self.bar(AT + timedelta(minutes=2), open_="97", high="98", low="95.9"),
+            previous_close=Decimal("95"),
+        )
+        self.assertEqual(decision.after.state, ResearchState.TRACKING)
+        self.assertEqual(decision.reason, "PULLBACK_OVER_4_STRUCTURE_INVALIDATED")
 
     def test_after_ten_without_entry_expires(self):
         seeded = self.strategy.seed_peak(state(), peak_price=Decimal("100"), peak_time=AT).after
-        decision = self.strategy.observe(seeded, Observation(datetime(2026, 9, 22, 10, 0, 1), Decimal("99")))
+        decision = self.strategy.expire(seeded, at=datetime(2026, 9, 22, 10, 0, 1))
         self.assertEqual(decision.after.state, ResearchState.EXPIRED)
 
     def test_explicit_paper_exit_path_only_closes_entered_candidate(self):
@@ -354,26 +379,37 @@ class RuntimePersistencePathTest(unittest.TestCase):
             def resolve_seq(self, name): return "37"
             def candidates(self, seq):
                 return [ConditionCandidate("123456", "A", {"code": "123456"}, 1)]
-        class Peak:
-            def peak(self, **kwargs): return Decimal("100"), AT, Decimal("100")
+        class Source:
+            def __init__(self):
+                self.bars = [MinuteBar(
+                    datetime(2026, 9, 22, 9, 1), Decimal("9900"), Decimal("10000"),
+                    Decimal("9900"), Decimal("10000"), 1_000_000, Decimal("1000000000"),
+                )]
+            def completed_bars_from_open(self, **kwargs): return list(self.bars)
+        source = Source()
+        def previous_regular_close(**kwargs): return Decimal("9500")
         repo, registry = Repo(), DynamicExecutionRegistry()
+        repo.previous_regular_close = previous_regular_close
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
-            minute_source=Peak(), subscriptions=registry,
+            minute_source=source, subscriptions=registry,
         )
         with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
             runtime.scan_once(at=AT)
         self.assertIn("FIRST_RISE_DISCOVERED stock_code=123456 stock_name=A", "\n".join(captured.output))
-        runtime.observe("123456", observed_at=AT + timedelta(minutes=1), price=Decimal("99"))
-        runtime.observe("123456", observed_at=AT + timedelta(minutes=2), price=Decimal("98.5"))
-        runtime.observe("123456", observed_at=AT + timedelta(minutes=9), price=Decimal("100.1"))
+        source.bars.extend([
+            MinuteBar(datetime(2026, 9, 22, 9, 11), Decimal("9900"), Decimal("9950"), Decimal("9900"), Decimal("9900"), accumulated_amount=Decimal("1000000000")),
+            MinuteBar(datetime(2026, 9, 22, 9, 12), Decimal("9900"), Decimal("9940"), Decimal("9850"), Decimal("9850"), accumulated_amount=Decimal("1000000000")),
+            MinuteBar(datetime(2026, 9, 22, 9, 20), Decimal("9980"), Decimal("10010"), Decimal("9970"), Decimal("10010"), accumulated_amount=Decimal("1000000000")),
+        ])
+        runtime.refresh_completed_bars(at=datetime(2026, 9, 22, 9, 21))
         self.assertEqual(repo.entries, 1)
         self.assertIn(
             "123456",
             registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER),
         )
         self.assertTrue(runtime.record_exit(
-            "123456", observed_at=AT + timedelta(minutes=10), price=Decimal("101"), reason="RESEARCH_EXIT"
+            "123456", observed_at=AT + timedelta(minutes=10), price=Decimal("10100"), reason="RESEARCH_EXIT"
         ))
         self.assertEqual(repo.exits, 1)
         self.assertEqual(repo.state.state, ResearchState.PAPER_EXITED)
@@ -381,6 +417,166 @@ class RuntimePersistencePathTest(unittest.TestCase):
             "123456",
             registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER),
         )
+
+
+class FrozenResearchContractTest(unittest.TestCase):
+    def setUp(self):
+        self.strategy = FirstRiseBreakoutStrategy()
+
+    @staticmethod
+    def bar(minute, *, open_, high, low, close, hour=9):
+        return MinuteBar(
+            datetime(2026, 9, 22, hour, minute),
+            Decimal(open_), Decimal(high), Decimal(low), Decimal(close),
+            volume=1000, accumulated_amount=Decimal("1000000000"),
+        )
+
+    def test_bootstrap_replays_every_bar_and_new_record_high_resets_peak(self):
+        current = state()
+        bars = [
+            self.bar(5, open_="99", high="100", low="99", close="100"),
+            self.bar(10, open_="99", high="99", low="97", close="98"),
+            self.bar(15, open_="100", high="101", low="99", close="101"),
+            self.bar(20, open_="100", high="100", low="98", close="99"),
+        ]
+        for bar in bars:
+            current = self.strategy.observe_bar(
+                current, bar, previous_close=Decimal("95"),
+                allow_entry=False, bootstrap=True,
+            ).after
+        self.assertEqual(current.peak_time, datetime(2026, 9, 22, 9, 15))
+        self.assertEqual(current.peak_price, Decimal("101"))
+        self.assertEqual(current.pullback_low_price, Decimal("98"))
+        self.assertEqual(current.state, ResearchState.PULLBACK)
+
+    def test_pullback_below_half_percent_does_not_rest(self):
+        seeded = self.strategy.seed_peak(
+            state(), peak_price=Decimal("100"), peak_time=datetime(2026, 9, 22, 9, 5),
+        ).after
+        result = self.strategy.observe_bar(
+            seeded, self.bar(10, open_="100", high="100", low="99.6", close="99.8"),
+            previous_close=Decimal("95"),
+        )
+        self.assertEqual(result.after.state, ResearchState.TRACKING)
+
+    def test_gap_and_ordinary_breakout_raw_prices(self):
+        base = self.strategy.seed_peak(
+            state(), peak_price=Decimal("100"), peak_time=datetime(2026, 9, 22, 9, 5),
+        ).after
+        rested = self.strategy.observe_bar(
+            base, self.bar(7, open_="99", high="99.5", low="99", close="99"),
+            previous_close=Decimal("95"),
+        ).after
+        gap = self.strategy.observe_bar(
+            rested, self.bar(14, open_="101", high="102", low="100", close="101"),
+            previous_close=Decimal("95"),
+        )
+        ordinary = self.strategy.observe_bar(
+            rested, self.bar(14, open_="99.8", high="100.1", low="99.7", close="100.1"),
+            previous_close=Decimal("95"),
+        )
+        self.assertEqual(gap.raw_execution_price, Decimal("101"))
+        self.assertEqual(ordinary.raw_execution_price, Decimal("100"))
+
+    def test_strategy_liquidity_gate_is_separate_from_condition_discovery(self):
+        base = self.strategy.seed_peak(
+            state(), peak_price=Decimal("10000"), peak_time=datetime(2026, 9, 22, 9, 5),
+        ).after
+        rested = self.strategy.observe_bar(
+            base, MinuteBar(
+                datetime(2026, 9, 22, 9, 7), Decimal("9900"), Decimal("9950"),
+                Decimal("9900"), Decimal("9900"),
+            ), previous_close=Decimal("9500"),
+        ).after
+        breakout = MinuteBar(
+            datetime(2026, 9, 22, 9, 14), Decimal("9980"), Decimal("10010"),
+            Decimal("9970"), Decimal("10010"),
+        )
+        not_ready = self.strategy.observe_bar(
+            rested, breakout, previous_close=Decimal("9500"),
+            session_volume=999_999, session_amount=Decimal("1000000000"),
+        )
+        ready = self.strategy.observe_bar(
+            rested, breakout, previous_close=Decimal("9500"),
+            session_volume=1_000_000, session_amount=Decimal("1000000000"),
+        )
+        self.assertFalse(not_ready.create_entry)
+        self.assertEqual(not_ready.reason, "HISTORICAL_LIQUIDITY_NOT_YET_CONFIRMED")
+        self.assertTrue(ready.create_entry)
+
+    def test_stop_is_strictly_below_entry_and_uses_gap_or_entry_price(self):
+        entered = state().evolve(
+            state=ResearchState.PAPER_ENTERED,
+            entry_signal_time=datetime(2026, 9, 22, 9, 10),
+            raw_entry_price=Decimal("100"),
+            entry_execution_price=self.strategy.buy_execution_price(Decimal("100")),
+        )
+        equal_low = self.bar(11, open_="101", high="102", low="100", close="100")
+        broken = self.bar(12, open_="99", high="100", low="98", close="99")
+        result = self.strategy.exit_from_completed_bars(entered, [equal_low, broken])
+        self.assertEqual(result.reason, "STOP_ENTRY_BREAK")
+        self.assertEqual(result.signal_time, broken.bar_time)
+        self.assertEqual(result.raw_execution_price, Decimal("99"))
+
+    def test_profit_exit_uses_completed_three_minute_tenkan_then_next_minute_open(self):
+        entered = state().evolve(
+            state=ResearchState.PAPER_ENTERED,
+            entry_signal_time=datetime(2026, 9, 22, 9, 10),
+            raw_entry_price=Decimal("100"),
+            entry_execution_price=self.strategy.buy_execution_price(Decimal("100")),
+        )
+        bars = []
+        for minute in range(27):
+            bars.append(self.bar(
+                minute, open_="101", high="102", low="100", close="101.5",
+            ))
+        bars.extend([
+            self.bar(27, open_="103", high="104", low="101", close="102.5"),
+            self.bar(28, open_="102.5", high="103", low="100.5", close="101.5"),
+            self.bar(29, open_="101.5", high="102", low="100.5", close="101"),
+            self.bar(30, open_="100.8", high="101", low="100", close="100.5"),
+        ])
+        result = self.strategy.exit_from_completed_bars(entered, bars)
+        self.assertEqual(result.reason, "BOOK_TENKAN_PROFIT")
+        self.assertEqual(result.signal_time, datetime(2026, 9, 22, 9, 30))
+        self.assertEqual(result.after.last_observed_at, datetime(2026, 9, 22, 9, 30))
+        self.assertEqual(result.raw_execution_price, Decimal("100.8"))
+
+    def test_session_close_uses_last_krx_close(self):
+        entered = state().evolve(
+            state=ResearchState.PAPER_ENTERED,
+            entry_signal_time=datetime(2026, 9, 22, 9, 10),
+            raw_entry_price=Decimal("100"),
+            entry_execution_price=self.strategy.buy_execution_price(Decimal("100")),
+        )
+        last = MinuteBar(
+            datetime(2026, 9, 22, 15, 30), Decimal("102"), Decimal("103"),
+            Decimal("100"), Decimal("102.5"),
+        )
+        result = self.strategy.exit_from_completed_bars(entered, [last], session_ended=True)
+        self.assertEqual(result.reason, "SESSION_CLOSE")
+        self.assertEqual(result.raw_execution_price, Decimal("102.5"))
+
+    def test_kmode_one_cost_and_compound_match_first_verification_trade(self):
+        entry = self.strategy.entry_plan(
+            capital=Decimal("10000000"), raw_entry_price=Decimal("945000"),
+        )
+        self.assertEqual(entry["quantity"], 10)
+        exit_ = self.strategy.exit_plan(
+            capital_before=Decimal("10000000"),
+            cash_remaining=entry["cash_remaining"], quantity=entry["quantity"],
+            raw_exit_price=Decimal("945000"),
+        )
+        self.assertAlmostEqual(float(exit_["capital_after"]), 9974554.4197, places=4)
+
+    def test_ticks_do_not_create_entry(self):
+        seeded = self.strategy.seed_peak(state(), peak_price=Decimal("100"), peak_time=AT).after
+        decision = self.strategy.observe(
+            seeded, Observation(AT + timedelta(minutes=10), Decimal("101"), "H0STCNT0"),
+        )
+        self.assertFalse(decision.changed)
+        self.assertFalse(decision.create_entry)
+        self.assertEqual(decision.reason, "TICK_AUXILIARY_ONLY")
 
 
 class MigrationScopeTest(unittest.TestCase):

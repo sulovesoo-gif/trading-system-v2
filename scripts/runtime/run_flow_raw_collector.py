@@ -41,7 +41,9 @@ async def run(pool) -> None:
             condition_search=SavedConditionSearch(
                 client, user_id=os.getenv("KIS_USER", ""), request_lock=condition_request_lock,
             ),
-            minute_source=SameDayMinutePeakSource(StockMinuteCollector(client)),
+            minute_source=SameDayMinutePeakSource(
+                StockMinuteCollector(client), request_lock=condition_request_lock,
+            ),
             subscriptions=registry,
         )
     except Exception:
