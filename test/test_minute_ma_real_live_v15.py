@@ -61,3 +61,10 @@ def test_first_successful_route_poll_bootstraps_without_entry_replay():
     source=open("src/minute_ma/real_live.py",encoding="utf-8").read()
     assert "if route.cursor is None:" in source
     assert 'counts["BOOTSTRAPPED_NO_REPLAY"]+=1' in source
+
+
+def test_exit_price_is_not_requested_without_an_open_trade():
+    source=open("src/minute_ma/real_live.py",encoding="utf-8").read()
+    exit_branch=source[source.index("else:\n                            if not self.planner.has_open_trade"):]
+    assert "if not self.planner.has_open_trade(route=route): continue" in exit_branch
+    assert exit_branch.index("has_open_trade") < exit_branch.index("current_price")

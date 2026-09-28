@@ -196,6 +196,13 @@ class PostgresMinuteMaRealLivePlanner:
             counts[self._plan_one_exit(route,event,signal_id,Decimal(reference_price),trade)]+=1
         return dict(counts)
 
+    def has_open_trade(self, *, route: RealLiveRoute) -> bool:
+        with self.connection_factory() as c,c.cursor() as q:
+            q.execute("""SELECT 1 FROM minute_ma_live_trade
+              WHERE real_live_route_id=%s AND trade_status='OPEN' LIMIT 1""",
+              (route.route_id,))
+            return q.fetchone() is not None
+
     def _plan_one_exit(self,route,event,signal_id,price,trade) -> str:
         trade_id,ownership,capital,epoch,qty=trade
         if int(qty)<=0: return "OWNERSHIP_REQUIRED"
@@ -317,6 +324,7 @@ class MinuteMaRealLiveRuntime:
                             counts[self.planner.plan_entry(route=route,event=event,
                               reference_price=price,available_cash=cash)]+=1
                         else:
+                            if not self.planner.has_open_trade(route=route): continue
                             price=Decimal(self.price_lookup.current_price(route.execution_stock_code))
                             for status,n in self.planner.plan_exit(route=route,event=event,
                               reference_price=price).items(): counts[status]+=n
