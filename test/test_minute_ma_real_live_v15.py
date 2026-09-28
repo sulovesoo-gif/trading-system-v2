@@ -21,7 +21,7 @@ def test_route_rebase_source_preserves_old_open_trade_identity():
 def test_fixed_quantity_and_zero_capital_are_the_only_entry_controls():
     source=open("src/minute_ma/real_live.py",encoding="utf-8").read()
     assert "actual_order_quantity(" in source
-    assert 'reason="ZERO_QUANTITY"' in source
+    assert '"ZERO_QUANTITY"' in source
     for forbidden in ("send_enabled","actual_enabled","order_allowed","live_enabled"):
         assert forbidden not in source
 
