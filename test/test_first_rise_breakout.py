@@ -478,7 +478,7 @@ class FrozenResearchContractTest(unittest.TestCase):
         self.assertEqual(gap.raw_execution_price, Decimal("101"))
         self.assertEqual(ordinary.raw_execution_price, Decimal("100"))
 
-    def test_strategy_liquidity_gate_is_separate_from_condition_discovery(self):
+    def test_historical_liquidity_is_annotation_not_realtime_entry_gate(self):
         base = self.strategy.seed_peak(
             state(), peak_price=Decimal("10000"), peak_time=datetime(2026, 9, 22, 9, 5),
         ).after
@@ -492,17 +492,40 @@ class FrozenResearchContractTest(unittest.TestCase):
             datetime(2026, 9, 22, 9, 14), Decimal("9980"), Decimal("10010"),
             Decimal("9970"), Decimal("10010"),
         )
-        not_ready = self.strategy.observe_bar(
+        below_historical_threshold = self.strategy.observe_bar(
             rested, breakout, previous_close=Decimal("9500"),
             session_volume=999_999, session_amount=Decimal("1000000000"),
         )
-        ready = self.strategy.observe_bar(
+        above_historical_threshold = self.strategy.observe_bar(
             rested, breakout, previous_close=Decimal("9500"),
             session_volume=1_000_000, session_amount=Decimal("1000000000"),
         )
-        self.assertFalse(not_ready.create_entry)
-        self.assertEqual(not_ready.reason, "HISTORICAL_LIQUIDITY_NOT_YET_CONFIRMED")
-        self.assertTrue(ready.create_entry)
+        self.assertTrue(below_historical_threshold.create_entry)
+        self.assertFalse(
+            below_historical_threshold.evidence["historical_liquidity_threshold_met"]
+        )
+        self.assertFalse(below_historical_threshold.evidence["historical_liquidity_entry_gate"])
+        self.assertTrue(above_historical_threshold.create_entry)
+        self.assertTrue(
+            above_historical_threshold.evidence["historical_liquidity_threshold_met"]
+        )
+
+    def test_bootstrap_valid_breakout_is_audited_without_retroactive_entry(self):
+        base = self.strategy.seed_peak(
+            state(), peak_price=Decimal("100"), peak_time=datetime(2026, 9, 22, 9, 5),
+        ).after
+        rested = self.strategy.observe_bar(
+            base, self.bar(7, open_="99", high="99.5", low="99", close="99"),
+            previous_close=Decimal("95"), allow_entry=False, bootstrap=True,
+        ).after
+        missed = self.strategy.observe_bar(
+            rested, self.bar(14, open_="99.8", high="100.1", low="99.7", close="100.1"),
+            previous_close=Decimal("95"), allow_entry=False, bootstrap=True,
+        )
+        self.assertFalse(missed.create_entry)
+        self.assertEqual(missed.reason, "MISSED_BEFORE_DISCOVERY")
+        self.assertTrue(missed.evidence["missed_before_discovery"])
+        self.assertEqual(missed.after.state, ResearchState.TRACKING)
 
     def test_stop_is_strictly_below_entry_and_uses_gap_or_entry_price(self):
         entered = state().evolve(

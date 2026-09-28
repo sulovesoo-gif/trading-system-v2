@@ -130,16 +130,19 @@ class FirstRiseBreakoutStrategy:
         if bar.high_price > peak:
             rise = peak / previous_close - Decimal("1")
             rest = bar.bar_time - peak_time
+            decision_evidence = self._bar_evidence(
+                bar, bootstrap=bootstrap, previous_close=previous_close,
+            )
             if has_valid_pullback and rest >= self.MIN_PEAK_AGE and rise >= self.MIN_RISE:
                 raw_entry = max(bar.open_price, peak)
-                liquidity_ready = (
-                    True if session_volume is None and session_amount is None else
+                historical_liquidity_threshold_met = (
+                    None if session_volume is None or session_amount is None else
                     session_volume is not None
                     and session_amount is not None
                     and session_volume >= self.MIN_SESSION_VOLUME
                     and session_amount >= self.MIN_SESSION_AMOUNT
                 )
-                evidence = self._bar_evidence(
+                decision_evidence = self._bar_evidence(
                     bar,
                     bootstrap=bootstrap,
                     previous_close=previous_close,
@@ -155,9 +158,10 @@ class FirstRiseBreakoutStrategy:
                     entry_execution_time=bar.bar_time,
                     session_volume=session_volume,
                     session_amount=session_amount,
-                    liquidity_ready=liquidity_ready,
+                    historical_liquidity_threshold_met=historical_liquidity_threshold_met,
+                    historical_liquidity_entry_gate=False,
                 )
-                if allow_entry and liquidity_ready:
+                if allow_entry:
                     key = (
                         f"FRB|{state.business_date.isoformat()}|{state.stock_code}|"
                         f"{peak_time.isoformat()}|{bar.bar_time.isoformat()}"
@@ -174,12 +178,10 @@ class FirstRiseBreakoutStrategy:
                     return Decision(
                         state, after, "SAME_PEAK_REBREAK_CONFIRMED", create_entry=True,
                         signal_time=bar.bar_time, raw_execution_price=raw_entry,
-                        evidence=evidence,
+                        evidence=decision_evidence,
                     )
-                reason = (
-                    "BOOTSTRAP_ENTRY_SUPPRESSED" if not allow_entry
-                    else "HISTORICAL_LIQUIDITY_NOT_YET_CONFIRMED"
-                )
+                reason = "MISSED_BEFORE_DISCOVERY"
+                decision_evidence["missed_before_discovery"] = True
             else:
                 reason = "NEW_RECORD_HIGH_RESET"
             after = state.evolve(
@@ -193,7 +195,7 @@ class FirstRiseBreakoutStrategy:
             )
             return Decision(
                 state, after, reason,
-                evidence=self._bar_evidence(bar, bootstrap=bootstrap, previous_close=previous_close),
+                evidence=decision_evidence,
             )
 
         low = min(value for value in (state.pullback_low_price, bar.low_price) if value is not None)
