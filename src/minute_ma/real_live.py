@@ -18,6 +18,16 @@ def _digest(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
+def actual_order_quantity(*, sizing_mode: str, current_capital: Decimal,
+                          fixed_quantity: int, reference_price: Decimal,
+                          available_cash: Decimal) -> tuple[int,int,int]:
+    """Return strategy target, cash-supported, and actual integer quantities."""
+    target=(int(fixed_quantity) if sizing_mode=="FIXED_QTY"
+            else purchasable_quantity(Decimal(current_capital),Decimal(reference_price)))
+    cash_available=purchasable_quantity(Decimal(available_cash),Decimal(reference_price))
+    return target,cash_available,min(target,cash_available)
+
+
 @dataclass(frozen=True)
 class RealLiveRoute:
     route_id: int
@@ -103,21 +113,22 @@ class PostgresMinuteMaRealLivePlanner:
                 if capital_row is None: return "CAPITAL_EPOCH_REQUIRED"
                 current=capital_row[0]
             price=Decimal(reference_price); capital=Decimal(current)
-            if sizing=="FIXED_QTY":
-                qty=int(fixed)
-            else:
-                qty=purchasable_quantity(capital,price)
+            target_qty,_cash_available_qty,qty=actual_order_quantity(
+              sizing_mode=str(sizing),current_capital=capital,fixed_quantity=int(fixed),
+              reference_price=price,available_cash=Decimal(available_cash))
             required=price*qty*(Decimal(1)+BUY_FEE_RATE)
             q.execute("SELECT lifecycle_status FROM minute_ma_live_intent WHERE intent_key=%s",(intent_key,))
             prior=q.fetchone()
             if prior is not None: return str(prior[0])
-            if qty<=0 or required>Decimal(available_cash):
-                reason="ZERO_QUANTITY" if qty<=0 else "INSUFFICIENT_AVAILABLE_CASH"
+            if qty<=0:
+                reason=("ZERO_QUANTITY" if target_qty<=0
+                        else "INSUFFICIENT_AVAILABLE_CASH")
                 q.execute("""INSERT INTO minute_ma_real_live_entry_skip(
                   real_live_route_id,signal_event_key,source_event_time,capital_epoch_no,
                   capital_at_signal,planned_quantity,planned_notional,skip_reason)
                   VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
-                  (route.route_id,event_key,event.source_bar_time,epoch,capital,qty,price*qty,reason))
+                  (route.route_id,event_key,event.source_bar_time,epoch,capital,target_qty,
+                   price*target_qty,reason))
                 c.commit(); return reason
             signal_id=str(uuid5(NAMESPACE_URL,"minute-real-event|"+event_key+"|ENTRY"))
             q.execute("""INSERT INTO minute_ma_live_signal_event(
@@ -232,9 +243,14 @@ class MinuteMaRealLiveRuntime:
           s.exit_slow_ma,s.trend_ma,s.source_daily_strategy_id,r.route_code,r.execution_stock_code,
           r.sizing_mode,r.allocated_amount,r.fixed_quantity,r.capital_epoch_no,r.activated_at,
           r.last_source_bar_time,(r.effective_to IS NULL) AS active
-          FROM minute_ma_real_live_route r JOIN minute_ma_real_variant v USING(real_variant_id)
-          JOIN minute_ma_path p USING(minute_path_id)
-          JOIN minute_ma_strategy_master s USING(minute_strategy_id)
+          FROM minute_ma_real_live_route r
+          JOIN minute_ma_real_variant v
+            ON v.real_variant_id=r.real_variant_id
+          JOIN minute_ma_path p
+            ON p.minute_path_id=r.minute_path_id
+          JOIN minute_ma_strategy_master s
+            ON s.minute_strategy_id=p.minute_strategy_id
+           AND s.minute_strategy_id=v.minute_strategy_id
           WHERE v.enabled AND (r.effective_to IS NULL OR EXISTS(
             SELECT 1 FROM minute_ma_live_trade t WHERE t.real_live_route_id=r.real_live_route_id
               AND t.trade_status='OPEN')) ORDER BY r.real_live_route_id"""
@@ -288,6 +304,9 @@ class MinuteMaRealLiveRuntime:
                         if event.source_bar_time<=floor: continue
                         if event.signal_type is SignalType.ENTRY:
                             if not route.active: continue
+                            if route.cursor is None:
+                                counts["BOOTSTRAPPED_NO_REPLAY"]+=1
+                                continue
                             if not eligible_entry_time(event.source_bar_time): continue
                             if route.filter_code is not RealFilter.BASE:
                                 snapshot=real.get(event.source_bar_time)
