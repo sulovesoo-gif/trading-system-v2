@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.minute_ma.real_live import actual_order_quantity,PostgresMinuteMaRealLivePlanner
-from src.minute_ma.real_paper import purchasable_quantity
+from src.minute_ma.real_paper import eligible_entry_time,purchasable_quantity
 
 
 def test_underlying_capital_quantity_includes_buy_fee():
@@ -68,3 +68,12 @@ def test_exit_price_is_not_requested_without_an_open_trade():
     exit_branch=source[source.index("else:\n                            if not self.planner.has_open_trade"):]
     assert "if not self.planner.has_open_trade(route=route): continue" in exit_branch
     assert exit_branch.index("has_open_trade") < exit_branch.index("current_price")
+
+
+def test_live_uses_shared_1450_through_1518_entry_window():
+    source=open("src/minute_ma/real_live.py",encoding="utf-8").read()
+    assert "if not eligible_entry_time(event.source_bar_time): continue" in source
+    assert not eligible_entry_time(datetime(2026,9,1,14,49))
+    assert eligible_entry_time(datetime(2026,9,1,14,50))
+    assert eligible_entry_time(datetime(2026,9,1,15,18))
+    assert not eligible_entry_time(datetime(2026,9,1,15,19))

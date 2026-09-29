@@ -3,6 +3,19 @@ BEGIN TRANSACTION READ ONLY;
 SELECT filter_code,count(*) AS variants
 FROM minute_ma_real_variant WHERE enabled GROUP BY filter_code ORDER BY filter_code;
 
+SELECT 'long_strategy_count' AS check_name,count(*) AS actual,1200 AS expected
+FROM minute_ma_strategy_master WHERE is_enabled='Y' AND direction='LONG'
+UNION ALL
+SELECT 'variant_count',count(*),4800 FROM minute_ma_real_variant WHERE enabled
+UNION ALL
+SELECT 'duplicate_variant',count(*),0 FROM (
+  SELECT minute_strategy_id,filter_code,paper_epoch
+  FROM minute_ma_real_variant GROUP BY 1,2,3 HAVING count(*)>1
+) duplicate
+UNION ALL
+SELECT 'entry_outside_1450_1518',count(*),0 FROM minute_ma_real_paper_trade
+WHERE NOT (entry_signal_time::time>=TIME '14:50' AND entry_signal_time::time<TIME '15:19');
+
 SELECT filter_code,count(*) AS trades
 FROM minute_ma_real_paper_trade GROUP BY filter_code ORDER BY filter_code;
 
