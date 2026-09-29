@@ -16,7 +16,7 @@ INITIAL_CAPITAL = Decimal("10000000")
 BUY_FEE_RATE = Decimal("0.000140527")
 SELL_FEE_RATE = Decimal("0.000140527")
 SELL_TAX_RATE = Decimal("0.002")
-ENTRY_START = time(15, 0)
+ENTRY_START = time(14, 50)
 ENTRY_END = time(15, 18)
 
 

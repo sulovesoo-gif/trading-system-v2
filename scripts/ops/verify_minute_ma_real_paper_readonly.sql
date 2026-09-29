@@ -3,18 +3,18 @@ BEGIN TRANSACTION READ ONLY;
 SELECT 'long_strategy_count' AS check_name,count(*)::text AS actual,'1200' AS expected
 FROM minute_ma_strategy_master WHERE is_enabled='Y' AND direction='LONG'
 UNION ALL
-SELECT 'variant_count',count(*)::text,'3600' FROM minute_ma_real_variant WHERE enabled
+SELECT 'variant_count',count(*)::text,'4800' FROM minute_ma_real_variant WHERE enabled
 UNION ALL
-SELECT 'capital_epoch_count',count(*)::text,'3600' FROM minute_ma_real_capital_epoch WHERE ended_at IS NULL
+SELECT 'capital_epoch_count',count(*)::text,'4800' FROM minute_ma_real_capital_epoch WHERE ended_at IS NULL
 UNION ALL
-SELECT 'entry_outside_1500_1518',count(*)::text,'0' FROM minute_ma_real_paper_trade
- WHERE entry_signal_time::time NOT BETWEEN TIME '15:00' AND TIME '15:18'
+SELECT 'entry_outside_1450_1518',count(*)::text,'0' FROM minute_ma_real_paper_trade
+ WHERE NOT (entry_signal_time::time>=TIME '14:50' AND entry_signal_time::time<TIME '15:19')
 UNION ALL
 SELECT 'non_normal_exit',count(*)::text,'0' FROM minute_ma_real_paper_trade
  WHERE exit_reason IS NOT NULL AND exit_reason<>'NORMAL_EXIT'
 UNION ALL
 SELECT 'null_real_pass',count(*)::text,'0' FROM minute_ma_real_paper_trade
- WHERE NOT real_is_complete OR velocity_value IS NULL
+ WHERE filter_code<>'BASE' AND (NOT real_is_complete OR velocity_value IS NULL)
 UNION ALL
 SELECT 'duplicate_trade',count(*)::text,'0' FROM (
  SELECT real_variant_id,entry_signal_key FROM minute_ma_real_paper_trade

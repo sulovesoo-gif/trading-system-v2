@@ -27,9 +27,9 @@ def test_filter_contract_is_nested_and_null_fail_closed():
     assert passing_filters(snap(complete=False))==()
 
 
-def test_entry_window_is_exactly_1500_through_1518():
-    assert not eligible_entry_time(datetime(2026,9,1,14,59))
-    assert eligible_entry_time(datetime(2026,9,1,15,0))
+def test_entry_window_is_exactly_1450_through_1518():
+    assert not eligible_entry_time(datetime(2026,9,1,14,49,59))
+    assert eligible_entry_time(datetime(2026,9,1,14,50))
     assert eligible_entry_time(datetime(2026,9,1,15,18,59))
     assert not eligible_entry_time(datetime(2026,9,1,15,19))
 
@@ -93,6 +93,14 @@ def test_v15_migration_is_additive_base_and_exact_live_route_contract():
     assert "('1934','REAL_F1',0::numeric)" in sql
     assert "('2185','REAL_F2',0::numeric)" in sql
     assert "DELETE FROM minute_ma_real" not in sql
+
+
+def test_v15_entry_1450_migration_changes_only_the_entry_time_constraint():
+    sql=open("database/migrations/20260929_minute_ma_real_entry_1450.sql",encoding="utf-8").read()
+    assert "TIME '14:50'" in sql
+    assert "TIME '15:19'" in sql
+    assert "DROP CONSTRAINT IF EXISTS minute_ma_real_paper_trade_entry_signal_time_check" in sql
+    assert "UPDATE " not in sql and "DELETE FROM" not in sql
 
 
 def test_runtime_has_no_live_or_broker_dependency():
