@@ -14,7 +14,7 @@ from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
 from src.first_rise_breakout.models import CandidateState, MinuteBar, Observation, ResearchState
 from src.first_rise_breakout.condition_search import ConditionCandidate
 from src.first_rise_breakout.repository import FirstRiseBreakoutRepository
-from src.first_rise_breakout.runtime import DynamicExecutionRegistry, FirstRiseBreakoutRuntime as Runtime
+from src.first_rise_breakout.runtime import FirstRiseBreakoutRuntime as Runtime
 from src.first_rise_breakout.config import FirstRiseRuntimeConfig
 from src.first_rise_breakout.strategy import FirstRiseBreakoutStrategy
 from src.collector.raw.kis_client import KISClientError
@@ -30,7 +30,6 @@ def FirstRiseBreakoutRuntime(**kwargs):
     return Runtime(**kwargs)
 
 
-FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER = Runtime.SUBSCRIPTION_OWNER
 
 
 def state() -> CandidateState:
@@ -173,85 +172,32 @@ class FakeRawRepository:
     def recent_hashes(self, **kwargs): return set()
 
 
-class DynamicSubscriptionTest(unittest.TestCase):
-    def test_existing_socket_subscription_set_adds_only_dynamic_execution(self):
-        registry = DynamicExecutionRegistry()
-        registry.add("123456", owner="first_rise_breakout")
-        registry.add("000660", owner="first_rise_breakout")
-        collector = FlowRawCollector(
-            FakeRawRepository(), ws_url="ws://unused", approval_provider=lambda: "unused",
-            dynamic_execution_registry=registry,
-        )
-        dynamic = [row for row in collector.subscriptions if row == {"tr_id": TR_EXECUTION, "tr_key": "123456"}]
-        base = [row for row in collector.subscriptions if row == {"tr_id": TR_EXECUTION, "tr_key": "000660"}]
-        self.assertEqual(len(dynamic), 1)
-        self.assertEqual(len(base), 1)
-
-    def test_first_rise_release_keeps_another_owner_subscription(self):
-        registry = DynamicExecutionRegistry()
-        registry.add("123456", owner="existing_v2_feature")
-        registry.add("123456", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
-        collector = FlowRawCollector(
-            FakeRawRepository(), ws_url="ws://unused", approval_provider=lambda: "unused",
-            dynamic_execution_registry=registry,
-        )
-
-        registry.discard("123456", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
-
-        self.assertEqual(registry.symbols(), {"123456"})
-        self.assertEqual(
-            collector.dynamic_subscriptions,
-            [{"tr_id": TR_EXECUTION, "tr_key": "123456"}],
-        )
-
-    def test_first_rise_release_never_removes_base_subscription(self):
-        registry = DynamicExecutionRegistry()
-        registry.add("000660", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
-        collector = FlowRawCollector(
-            FakeRawRepository(), ws_url="ws://unused", approval_provider=lambda: "unused",
-            dynamic_execution_registry=registry,
-        )
-
-        registry.discard("000660", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
-
-        self.assertIn({"tr_id": TR_EXECUTION, "tr_key": "000660"}, collector.subscriptions)
-        self.assertEqual(collector.dynamic_subscriptions, [])
-
-    def test_daily_restore_clears_only_first_rise_owner(self):
+class RestIsolationTest(unittest.TestCase):
+    def test_hundred_candidates_bootstrap_without_changing_socket(self):
+        collector = FlowRawCollector(FakeRawRepository(), integrated_repository=object(),
+            ws_url="ws://unused", approval_provider=lambda: "unused")
+        before = collector.subscriptions
         class Repo:
-            def active_states(self, **kwargs):
-                return []
-
-        registry = DynamicExecutionRegistry()
-        registry.add("123456", owner="existing_v2_feature")
-        registry.add("123456", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
-        registry.add("654321", owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER)
-        runtime = FirstRiseBreakoutRuntime(
-            repository=Repo(), strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
-            minute_source=object(), subscriptions=registry,
-        )
-
-        runtime.restore(at=AT)
-
-        self.assertEqual(registry.symbols(), {"123456"})
-        self.assertEqual(registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER), set())
-
-    def test_subscription_and_unsubscription_use_existing_socket_protocol(self):
-        class Socket:
-            def __init__(self): self.sent = []
-            async def send(self, payload): self.sent.append(json.loads(payload))
-            async def recv(self): return json.dumps({"header": {"tr_id": TR_EXECUTION}, "body": {"rt_cd": "0", "msg1": "OK"}})
-        collector = FlowRawCollector(FakeRawRepository(), ws_url="ws://unused", approval_provider=lambda: "unused")
-        socket = Socket()
-        asyncio.run(collector._change_subscription(
-            socket, approval="masked", subscription={"tr_id": TR_EXECUTION, "tr_key": "123456"},
-            tr_type="1", deferred_frames=[],
-        ))
-        asyncio.run(collector._change_subscription(
-            socket, approval="masked", subscription={"tr_id": TR_EXECUTION, "tr_key": "123456"},
-            tr_type="2", deferred_frames=[],
-        ))
-        self.assertEqual([item["header"]["tr_type"] for item in socket.sent], ["1", "2"])
+            def record_condition_hits(self, **kw): return len(kw["candidates"])
+            def record_candidate(self, **kw):
+                return CandidateState(uuid4(), AT.date(), kw["stock_code"], ResearchState.DISCOVERED), True
+            def previous_regular_close(self, **kw): return Decimal("100")
+        class Search:
+            def resolve_seq(self, name): return "resolved"
+            def candidates(self, seq): return [ConditionCandidate(str(100000+i), "candidate", {}, i) for i in range(100)]
+        class Source:
+            def __init__(self): self.calls = []
+            def completed_bars_from_open(self, **kw): self.calls.append(kw["stock_code"]); return []
+        source = Source()
+        runtime = FirstRiseBreakoutRuntime(repository=Repo(), strategy=FirstRiseBreakoutStrategy(),
+            condition_search=Search(), minute_source=source)
+        self.assertEqual(runtime.scan_once(at=AT), 100)
+        self.assertEqual(len(source.calls), 100)
+        self.assertEqual(len(runtime._states), 100)
+        self.assertEqual(collector.subscriptions, before)
+        self.assertEqual(len(before), 12)
+        self.assertFalse(hasattr(runtime, "subscriptions"))
+        self.assertFalse(hasattr(collector, "dynamic_execution_registry"))
 
 
 class RuntimePersistencePathTest(unittest.TestCase):
@@ -311,7 +257,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
-            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=object(),
         )
         with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
             runtime.scan_once(at=AT)
@@ -336,7 +282,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
 
         runtime = FirstRiseBreakoutRuntime(
             repository=object(), strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
-            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=object(),
         )
         with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
             with self.assertRaises(KISClientError):
@@ -350,7 +296,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
     def test_default_runtime_clock_is_naive_kst(self):
         runtime = FirstRiseBreakoutRuntime(
             repository=object(), strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
-            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=object(),
         )
         actual = runtime.now()
         expected = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None)
@@ -376,7 +322,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
-            minute_source=object(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=object(),
         )
         runtime.scan_once(at=AT)
         runtime.scan_once(at=AT + timedelta(minutes=1))
@@ -384,7 +330,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         self.assertEqual(len(repo.hits), 6)
         self.assertEqual(len(set(repo.hits)), 6)
 
-    def test_hit_persistence_precedes_subscription_failure(self):
+    def test_hit_persistence_is_independent_of_websocket(self):
         candidate = ConditionCandidate("111111", "A", {"code": "111111"}, 1)
         class Repo:
             def __init__(self): self.hits = []
@@ -395,17 +341,12 @@ class RuntimePersistencePathTest(unittest.TestCase):
         class Search:
             def resolve_seq(self, name): return "7"
             def candidates(self, seq): return [candidate]
-        class FailingRegistry(DynamicExecutionRegistry):
-            def add(self, stock_code, *, owner):
-                raise RuntimeError("subscribe unavailable")
-
         repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
-            minute_source=object(), subscriptions=FailingRegistry(),
+            minute_source=object(),
         )
-        with self.assertRaises(RuntimeError):
-            runtime.scan_once(at=AT)
+        self.assertEqual(runtime.scan_once(at=AT), 0)
 
         self.assertEqual([row.stock_code for row in repo.hits], ["111111"])
 
@@ -438,11 +379,11 @@ class RuntimePersistencePathTest(unittest.TestCase):
             def completed_bars_from_open(self, **kwargs): return list(self.bars)
         source = Source()
         def previous_regular_close(**kwargs): return Decimal("9500")
-        repo, registry = Repo(), DynamicExecutionRegistry()
+        repo = Repo()
         repo.previous_regular_close = previous_regular_close
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
-            minute_source=source, subscriptions=registry,
+            minute_source=source,
         )
         with self.assertLogs("src.first_rise_breakout.runtime", level="INFO") as captured:
             runtime.scan_once(at=AT)
@@ -454,19 +395,13 @@ class RuntimePersistencePathTest(unittest.TestCase):
         ])
         runtime.refresh_completed_bars(at=datetime(2026, 9, 22, 9, 21))
         self.assertEqual(repo.entries, 1)
-        self.assertIn(
-            "123456",
-            registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER),
-        )
+        self.assertEqual(repo.state.state, ResearchState.PAPER_ENTERED)
         self.assertTrue(runtime.record_exit(
             "123456", observed_at=AT + timedelta(minutes=10), price=Decimal("10100"), reason="RESEARCH_EXIT"
         ))
         self.assertEqual(repo.exits, 1)
         self.assertEqual(repo.state.state, ResearchState.PAPER_EXITED)
-        self.assertNotIn(
-            "123456",
-            registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER),
-        )
+        self.assertFalse(hasattr(runtime, "subscriptions"))
 
     def test_polled_entered_candidate_keeps_entry_fields_and_stops(self):
         candidate_id = uuid4()
@@ -497,7 +432,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
-            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=Source(),
         )
         runtime.scan_once(at=datetime(2026, 9, 22, 9, 20))
         runtime.refresh_completed_bars(at=datetime(2026, 9, 22, 9, 21))
@@ -532,7 +467,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
-            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=Source(),
         )
         runtime._states = {"111111": first, "222222": second}
 
@@ -574,7 +509,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
-            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=Source(),
         )
         runtime._states = {"111111": broken}
 
@@ -599,7 +534,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
         repo = Repo()
         runtime = FirstRiseBreakoutRuntime(
             repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
-            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+            minute_source=Source(),
         )
         runtime._states = {"111111": broken}
 

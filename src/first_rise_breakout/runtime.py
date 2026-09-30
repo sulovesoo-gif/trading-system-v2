@@ -1,4 +1,4 @@
-"""Discovery and state orchestration attached to the existing FLOW socket."""
+"""REST completed-minute discovery and PAPER state orchestration."""
 
 from __future__ import annotations
 
@@ -18,53 +18,14 @@ KST = ZoneInfo("Asia/Seoul")
 FIRST_RISE_EXCLUDED_STOCK_CODES = frozenset({"005930", "000660"})
 
 
-class DynamicExecutionRegistry:
-    """Owner-scoped H0STCNT0 demand for the one existing websocket."""
-
-    def __init__(self) -> None:
-        self._owners_by_symbol: dict[str, set[str]] = {}
-        self._lock = RLock()
-
-    def add(self, stock_code: str, *, owner: str) -> None:
-        with self._lock:
-            self._owners_by_symbol.setdefault(stock_code, set()).add(owner)
-
-    def discard(self, stock_code: str, *, owner: str) -> None:
-        with self._lock:
-            owners = self._owners_by_symbol.get(stock_code)
-            if owners is None:
-                return
-            owners.discard(owner)
-            if not owners:
-                self._owners_by_symbol.pop(stock_code, None)
-
-    def symbols(self, *, owner: str | None = None) -> set[str]:
-        with self._lock:
-            if owner is None:
-                return set(self._owners_by_symbol)
-            return {
-                stock_code for stock_code, owners in self._owners_by_symbol.items()
-                if owner in owners
-            }
-
-    def discard_owner(self, owner: str) -> None:
-        with self._lock:
-            for stock_code in list(self._owners_by_symbol):
-                owners = self._owners_by_symbol[stock_code]
-                owners.discard(owner)
-                if not owners:
-                    self._owners_by_symbol.pop(stock_code, None)
-
-
 class FirstRiseBreakoutRuntime:
     CONDITION_NAME = "TSV2_오전1차상승후돌파_후보_V1"
-    SUBSCRIPTION_OWNER = "first_rise_breakout"
     SEARCH_START = time(9, 1)
     SEARCH_END = time(10, 0)
 
     def __init__(
         self, *, repository, strategy, condition_search, minute_source,
-        subscriptions: DynamicExecutionRegistry, now_provider=None,
+        now_provider=None,
         scan_interval_seconds: int = 60,
         config=None,
     ) -> None:
@@ -77,7 +38,6 @@ class FirstRiseBreakoutRuntime:
         self._load_daily_config(at=self.now())
         self.condition_search = condition_search
         self.minute_source = minute_source
-        self.subscriptions = subscriptions
         self.scan_interval_seconds = scan_interval_seconds
         self._states: dict[str, CandidateState] = {}
         self._condition_date = None
@@ -124,10 +84,6 @@ class FirstRiseBreakoutRuntime:
         with self._state_lock:
             self._states = restored
             self._restored_date = at.date()
-        self.subscriptions.discard_owner(self.SUBSCRIPTION_OWNER)
-        for state in restored.values():
-            if state.state not in TERMINAL_STATES:
-                self.subscriptions.add(state.stock_code, owner=self.SUBSCRIPTION_OWNER)
 
     def _resolve_seq(self, at: datetime) -> str:
         if self._condition_date != at.date() or not self._condition_seq:
@@ -191,7 +147,6 @@ class FirstRiseBreakoutRuntime:
                 )
                 with self._state_lock:
                     self._states[candidate.stock_code] = state
-                self.subscriptions.add(candidate.stock_code, owner=self.SUBSCRIPTION_OWNER)
                 if not created:
                     continue
                 created_count += 1
@@ -243,8 +198,7 @@ class FirstRiseBreakoutRuntime:
             return
         observation = Observation(observed_at, price, source)
         decision = self.strategy.observe(state, observation)
-        # H0STCNT0 remains the existing real-time observation/subscription
-        # channel, but frozen research decisions are completed-minute only.
+        # Auxiliary observations never replace completed-minute decisions.
         if decision.changed:
             with self._state_lock:
                 self._states[stock_code] = self.repository.apply(decision, observation)
@@ -350,7 +304,6 @@ class FirstRiseBreakoutRuntime:
     def _release_terminal(self, state):
         if state.state not in TERMINAL_STATES:
             return
-        self.subscriptions.discard(state.stock_code, owner=self.SUBSCRIPTION_OWNER)
         if hasattr(self.minute_source, "discard"):
             self.minute_source.discard(stock_code=state.stock_code, business_date=state.business_date)
 
@@ -417,7 +370,7 @@ class FirstRiseBreakoutRuntime:
             return False
         with self._state_lock:
             self._states[stock_code] = self.repository.apply(decision, observation)
-        self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
+        self._release_terminal(self._states[stock_code])
         return True
 
     async def run_forever(self) -> None:

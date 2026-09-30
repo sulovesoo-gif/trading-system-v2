@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from src.first_rise_breakout.config import FirstRiseRuntimeConfig
 from src.first_rise_breakout.models import CandidateState, ResearchState, MinuteBar
-from src.first_rise_breakout.runtime import FirstRiseBreakoutRuntime, DynamicExecutionRegistry
+from src.first_rise_breakout.runtime import FirstRiseBreakoutRuntime
 from src.first_rise_breakout.strategy import FirstRiseBreakoutStrategy
 from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
 from src.first_rise_breakout.condition_search import ConditionCandidate
@@ -45,7 +45,7 @@ class Source:
 
 def runtime(repo=None, source=None):
     return FirstRiseBreakoutRuntime(repository=repo or Repo(), strategy=FirstRiseBreakoutStrategy(),
-        condition_search=object(), minute_source=source or Source(), subscriptions=DynamicExecutionRegistry())
+        condition_search=object(), minute_source=source or Source())
 
 
 class ConfigRuntimeTests(unittest.TestCase):
@@ -60,7 +60,7 @@ class ConfigRuntimeTests(unittest.TestCase):
                 return CONFIG
         repo = DailyRepo()
         r = FirstRiseBreakoutRuntime(repository=repo, strategy=FirstRiseBreakoutStrategy(),
-            condition_search=object(), minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+            condition_search=object(), minute_source=Source(),
             now_provider=lambda: DAY)
         for minute in (1, 2, 300):
             r._load_daily_config(at=DAY+timedelta(minutes=minute))
@@ -114,11 +114,9 @@ class ConfigRuntimeTests(unittest.TestCase):
     def test_cutoff_expires_only_unentered_and_keeps_open_watch_cache(self):
         r = runtime()
         r._states = {"123456": candidate(), "005930": candidate("005930", True)}
-        r.subscriptions.add("005930", owner=r.SUBSCRIPTION_OWNER)
         r.expire_once(at=DAY.replace(hour=15))
         self.assertEqual(r._states["123456"].state, ResearchState.EXPIRED)
         self.assertEqual(r._states["005930"].state, ResearchState.PAPER_ENTERED)
-        self.assertIn("005930", r.subscriptions.symbols())
         self.assertNotIn("005930", [v["stock_code"] for v in r.minute_source.discarded])
 
     def test_excluded_hits_audited_without_candidate_or_rest(self):
@@ -131,7 +129,7 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(len(r.repository.hits), 2)
         self.assertEqual(r.repository.created, [])
         self.assertEqual(r.minute_source.codes, [])
-        self.assertEqual(r.subscriptions.symbols(), set())
+        self.assertFalse(hasattr(r, "subscriptions"))
 
     def test_excluded_open_exit_without_previous_close_after_cutoff(self):
         r = runtime()

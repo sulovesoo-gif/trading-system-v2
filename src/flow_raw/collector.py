@@ -6,9 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import deque
 from datetime import datetime, time, timedelta
-from decimal import Decimal
 from typing import Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -68,6 +68,19 @@ def issue_approval_key(*, base_url: str, app_key: str, app_secret: str) -> str:
     return key
 
 
+def safe_error_message(error: Exception, *, approval: str = "") -> str:
+    message = str(error)
+    for secret in (approval, os.getenv("KIS_API_KEY", ""), os.getenv("KIS_API_SECRET", ""),
+                   os.getenv("KIS_ACCESS_TOKEN", "")):
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    message = re.sub(r'(?i)(bearer\s+)\S+', r'\1[REDACTED]', message)
+    message = re.sub(
+        r'''(?i)((?:access_token|approval_key|appkey|appsecret|secretkey|authorization)["']?\s*[:=]\s*["']?)[^\s,"'}]+''',
+        r'\1[REDACTED]', message)
+    return message.replace("\n", " ").replace("\r", " ")[:500]
+
+
 class FlowRawCollector:
     FLOW_SYMBOLS = ("005930", "000660")
     REALTIME_MINUTE_SYMBOLS = ("005930", "000660", "0193W0", "0193T0", "0193L0", "0197X0")
@@ -75,15 +88,11 @@ class FlowRawCollector:
 
     def __init__(self, repository, *, integrated_repository=None,
                  ws_url: str, approval_provider: Callable[[], str],
-                 dynamic_execution_registry=None,
-                 dynamic_execution_handler: Callable[[str, datetime, Decimal], None] | None = None,
                  now_provider: Callable[[], datetime] | None = None) -> None:
         self.repository = repository
         self.integrated_repository = integrated_repository
         self.ws_url = ws_url
         self.approval_provider = approval_provider
-        self.dynamic_execution_registry = dynamic_execution_registry
-        self.dynamic_execution_handler = dynamic_execution_handler
         self.now = now_provider or (lambda: datetime.now(KST).replace(tzinfo=None))
         self.instance_id = uuid4()
         self._sequence = 0
@@ -106,16 +115,8 @@ class FlowRawCollector:
         return execution + flow + integrated
 
     @property
-    def dynamic_subscriptions(self) -> list[dict[str, str]]:
-        dynamic_symbols = (
-            self.dynamic_execution_registry.symbols() - set(self.REALTIME_MINUTE_SYMBOLS)
-            if self.dynamic_execution_registry is not None else set()
-        )
-        return [{"tr_id": TR_EXECUTION, "tr_key": symbol} for symbol in sorted(dynamic_symbols)]
-
-    @property
     def subscriptions(self) -> list[dict[str, str]]:
-        return self.base_subscriptions + self.dynamic_subscriptions
+        return self.base_subscriptions
 
     async def _change_subscription(self, socket, *, approval: str, subscription: dict[str, str],
                                    tr_type: str, deferred_frames) -> None:
@@ -188,53 +189,12 @@ class FlowRawCollector:
                             socket, approval=approval, subscription=subscription,
                             tr_type="1", deferred_frames=deferred_frames,
                         )
-                    registered_dynamic: set[str] = set()
-                    failed_dynamic_add: set[str] = set()
-                    failed_dynamic_remove: set[str] = set()
-                    for subscription in self.dynamic_subscriptions:
-                        symbol = subscription["tr_key"]
-                        try:
-                            await self._change_subscription(
-                                socket, approval=approval, subscription=subscription,
-                                tr_type="1", deferred_frames=deferred_frames,
-                            )
-                            registered_dynamic.add(symbol)
-                        except Exception as error:
-                            # A research-only candidate must never disconnect the base RAW streams.
-                            failed_dynamic_add.add(symbol)
-                            LOGGER.error("dynamic research subscription failed stock_code=%s error=%s", symbol, type(error).__name__)
                     LOGGER.info("FLOW websocket connected connection_id=%s subscriptions=%d", connection_id, len(self.subscriptions))
                     backoff = 1
                     first_data = True
                     integrated_first_data = True
                     last_data_frame_at = self.now()
                     while True:
-                        if self.dynamic_execution_registry is not None:
-                            desired_dynamic = self.dynamic_execution_registry.symbols() - set(self.REALTIME_MINUTE_SYMBOLS)
-                            failed_dynamic_add.intersection_update(desired_dynamic)
-                            failed_dynamic_remove.intersection_update(registered_dynamic - desired_dynamic)
-                            for symbol in sorted(desired_dynamic - registered_dynamic - failed_dynamic_add):
-                                try:
-                                    await self._change_subscription(
-                                        socket, approval=approval,
-                                        subscription={"tr_id": TR_EXECUTION, "tr_key": symbol},
-                                        tr_type="1", deferred_frames=deferred_frames,
-                                    )
-                                    registered_dynamic.add(symbol)
-                                except Exception as error:
-                                    failed_dynamic_add.add(symbol)
-                                    LOGGER.error("dynamic research subscription failed stock_code=%s error=%s", symbol, type(error).__name__)
-                            for symbol in sorted(registered_dynamic - desired_dynamic - failed_dynamic_remove):
-                                try:
-                                    await self._change_subscription(
-                                        socket, approval=approval,
-                                        subscription={"tr_id": TR_EXECUTION, "tr_key": symbol},
-                                        tr_type="2", deferred_frames=deferred_frames,
-                                    )
-                                    registered_dynamic.discard(symbol)
-                                except Exception as error:
-                                    failed_dynamic_remove.add(symbol)
-                                    LOGGER.error("dynamic research unsubscription failed stock_code=%s error=%s", symbol, type(error).__name__)
                         if deferred_frames:
                             received_at,frame = deferred_frames.popleft()
                         else:
@@ -292,15 +252,6 @@ class FlowRawCollector:
                                 integrated_first_data = False
                                 continue
                             event_time = source_datetime(event, received_at=received_at)
-                            if (
-                                event.tr_id == TR_EXECUTION
-                                and self.dynamic_execution_registry is not None
-                                and symbol in self.dynamic_execution_registry.symbols()
-                                and self.dynamic_execution_handler is not None
-                            ):
-                                price = as_decimal(event.values.get("STCK_PRPR"))
-                                if price is not None and price > 0:
-                                    self.dynamic_execution_handler(symbol, event_time, price)
                             if symbol not in self.SYMBOLS or event.tr_id not in SUPPORTED_TR_IDS:
                                 continue
                             stream = (event.tr_id, symbol)
@@ -338,7 +289,9 @@ class FlowRawCollector:
                 except Exception:
                     LOGGER.exception("FLOW connection close audit failed")
                 self._reconnect_count += 1
-                LOGGER.warning("FLOW websocket reconnect=%d backoff=%ds reason=%s", self._reconnect_count, backoff, type(error).__name__)
+                LOGGER.warning("FLOW websocket reconnect=%d backoff=%ds reason_type=%s reason_message=%s",
+                               self._reconnect_count, backoff, type(error).__name__,
+                               safe_error_message(error, approval=locals().get("approval", "")))
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
 
@@ -348,9 +301,7 @@ class FlowRawCollector:
         return {"tr_id": message.get("header", {}).get("tr_id"), "msg1": body.get("msg1"), "rt_cd": body.get("rt_cd")}
 
 
-def collector_from_environment(repository, *, integrated_repository=None,
-                               dynamic_execution_registry=None,
-                               dynamic_execution_handler=None) -> FlowRawCollector:
+def collector_from_environment(repository, *, integrated_repository=None) -> FlowRawCollector:
     base_url = os.getenv("KIS_BASE_URL", "")
     app_key = os.getenv("KIS_API_KEY", "")
     app_secret = os.getenv("KIS_API_SECRET", "")
@@ -359,6 +310,5 @@ def collector_from_environment(repository, *, integrated_repository=None,
         raise FlowCollectorError(f"missing FLOW collector configuration: {','.join(missing)}")
     ws_url = os.getenv("KIS_WS_URL", "ws://ops.koreainvestment.com:21000")
     return FlowRawCollector(repository, integrated_repository=integrated_repository,
-                            dynamic_execution_registry=dynamic_execution_registry,
-                            dynamic_execution_handler=dynamic_execution_handler, ws_url=ws_url,
+                            ws_url=ws_url,
                             approval_provider=lambda: issue_approval_key(base_url=base_url, app_key=app_key, app_secret=app_secret))
