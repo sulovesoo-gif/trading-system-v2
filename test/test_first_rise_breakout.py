@@ -13,6 +13,7 @@ from src.first_rise_breakout.condition_search import SavedConditionError, SavedC
 from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
 from src.first_rise_breakout.models import CandidateState, MinuteBar, Observation, ResearchState
 from src.first_rise_breakout.condition_search import ConditionCandidate
+from src.first_rise_breakout.repository import FirstRiseBreakoutRepository
 from src.first_rise_breakout.runtime import DynamicExecutionRegistry, FirstRiseBreakoutRuntime
 from src.first_rise_breakout.strategy import FirstRiseBreakoutStrategy
 from src.collector.raw.kis_client import KISClientError
@@ -245,6 +246,46 @@ class DynamicSubscriptionTest(unittest.TestCase):
 
 
 class RuntimePersistencePathTest(unittest.TestCase):
+    def test_record_candidate_reloads_open_trade_entry_fields(self):
+        candidate_id = uuid4()
+        entry_time = datetime(2026, 9, 22, 9, 14)
+        row = (
+            candidate_id, date(2026, 9, 22), "123456", "PAPER_ENTERED",
+            Decimal("100"), AT, Decimal("99"), Decimal("0.01"), entry_time,
+            Decimal("100"), "entry-key", 7, entry_time, Decimal("100"),
+            Decimal("100.02"),
+        )
+
+        class Cursor:
+            def __init__(self):
+                self.results = [None, row]
+                self.statements = []
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def execute(self, sql, params=None): self.statements.append(sql)
+            def fetchone(self): return self.results.pop(0)
+        class Context:
+            def __init__(self, value): self.value = value
+            def __enter__(self): return self.value
+            def __exit__(self, *args): return False
+        cursor = Cursor()
+        class Connection:
+            def transaction(self): return Context(None)
+            def cursor(self): return cursor
+        class Pool:
+            def connection(self): return Context(Connection())
+
+        restored, created = FirstRiseBreakoutRepository(Pool()).record_candidate(
+            business_date=date(2026, 9, 22), condition_name="condition", condition_seq="7",
+            stock_code="123456", stock_name="A", discovered_at=AT, raw_payload={},
+        )
+
+        self.assertFalse(created)
+        self.assertEqual(restored.state, ResearchState.PAPER_ENTERED)
+        self.assertEqual(restored.entry_signal_time, entry_time)
+        self.assertEqual(restored.raw_entry_price, Decimal("100"))
+        self.assertIn("first_rise_breakout_paper_trade", cursor.statements[-1])
+
     def test_empty_poll_and_end_of_window_summary_are_logged(self):
         class Repo:
             def __init__(self): self.hit_rows = 0
@@ -417,6 +458,150 @@ class RuntimePersistencePathTest(unittest.TestCase):
             "123456",
             registry.symbols(owner=FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER),
         )
+
+    def test_polled_entered_candidate_keeps_entry_fields_and_stops(self):
+        candidate_id = uuid4()
+        entry_time = datetime(2026, 9, 22, 9, 14)
+        entered = CandidateState(
+            candidate_id, date(2026, 9, 22), "123456", ResearchState.PAPER_ENTERED,
+            entry_signal_time=entry_time, raw_entry_price=Decimal("100"), version=4,
+        )
+        class Repo:
+            def __init__(self): self.decisions = []
+            def record_condition_hits(self, **kwargs): return len(kwargs["candidates"])
+            def record_candidate(self, **kwargs): return entered, False
+            def previous_regular_close(self, **kwargs): return Decimal("95")
+            def apply(self, decision, observation, **kwargs):
+                self.decisions.append(decision)
+                return decision.after
+        class Search:
+            def resolve_seq(self, name): return "7"
+            def candidates(self, seq):
+                return [ConditionCandidate("123456", "A", {"code": "123456"}, 1)]
+        class Source:
+            def completed_bars_from_open(self, **kwargs):
+                return [MinuteBar(
+                    datetime(2026, 9, 22, 9, 15), Decimal("99"), Decimal("100"),
+                    Decimal("98"), Decimal("99"),
+                )]
+
+        repo = Repo()
+        runtime = FirstRiseBreakoutRuntime(
+            repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=Search(),
+            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+        )
+        runtime.scan_once(at=datetime(2026, 9, 22, 9, 20))
+        runtime.refresh_completed_bars(at=datetime(2026, 9, 22, 9, 21))
+
+        self.assertEqual(repo.decisions[-1].reason, "STOP_ENTRY_BREAK")
+        self.assertEqual(runtime._states["123456"].state, ResearchState.PAPER_EXITED)
+
+    def test_candidate_rest_failure_does_not_block_next_open_exit(self):
+        first = CandidateState(
+            uuid4(), date(2026, 9, 22), "111111", ResearchState.PAPER_ENTERED,
+            entry_signal_time=AT, raw_entry_price=Decimal("100"),
+        )
+        second = CandidateState(
+            uuid4(), date(2026, 9, 22), "222222", ResearchState.PAPER_ENTERED,
+            entry_signal_time=AT, raw_entry_price=Decimal("100"),
+        )
+        class Repo:
+            def __init__(self): self.applied = []
+            def previous_regular_close(self, **kwargs): return Decimal("95")
+            def apply(self, decision, observation, **kwargs):
+                self.applied.append(decision)
+                return decision.after
+        class Source:
+            def completed_bars_from_open(self, *, stock_code, **kwargs):
+                if stock_code == "111111":
+                    raise KISClientError("HTTP 500")
+                return [MinuteBar(
+                    AT + timedelta(minutes=1), Decimal("99"), Decimal("100"),
+                    Decimal("98"), Decimal("99"),
+                )]
+
+        repo = Repo()
+        runtime = FirstRiseBreakoutRuntime(
+            repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
+            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+        )
+        runtime._states = {"111111": first, "222222": second}
+
+        with self.assertLogs("src.first_rise_breakout.runtime", level="ERROR") as captured:
+            changed = runtime.refresh_completed_bars(at=AT + timedelta(minutes=2))
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(repo.applied[-1].reason, "STOP_ENTRY_BREAK")
+        output = "\n".join(captured.output)
+        self.assertIn("stock_code=111111", output)
+        self.assertIn(str(first.candidate_event_id), output)
+        self.assertIn("state=PAPER_ENTERED", output)
+        self.assertIn("exception_type=KISClientError", output)
+
+    def test_entered_state_rehydrates_open_trade_before_exit_evaluation(self):
+        candidate_id = uuid4()
+        broken = CandidateState(
+            candidate_id, date(2026, 9, 22), "111111", ResearchState.PAPER_ENTERED,
+            version=4,
+        )
+        restored = CandidateState(
+            candidate_id, date(2026, 9, 22), "111111", ResearchState.PAPER_ENTERED,
+            entry_signal_time=AT, raw_entry_price=Decimal("100"), version=4,
+        )
+        class Repo:
+            def __init__(self): self.applied = []
+            def open_trade_state(self, **kwargs): return restored
+            def previous_regular_close(self, **kwargs): return Decimal("95")
+            def apply(self, decision, observation, **kwargs):
+                self.applied.append(decision)
+                return decision.after
+        class Source:
+            def completed_bars_from_open(self, **kwargs):
+                return [MinuteBar(
+                    AT + timedelta(minutes=1), Decimal("99"), Decimal("100"),
+                    Decimal("98"), Decimal("99"),
+                )]
+
+        repo = Repo()
+        runtime = FirstRiseBreakoutRuntime(
+            repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
+            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+        )
+        runtime._states = {"111111": broken}
+
+        changed = runtime.refresh_completed_bars(at=AT + timedelta(minutes=2))
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(repo.applied[-1].reason, "STOP_ENTRY_BREAK")
+        self.assertEqual(runtime._states["111111"].state, ResearchState.PAPER_EXITED)
+
+    def test_entered_state_without_open_trade_logs_lifecycle_mismatch(self):
+        broken = CandidateState(
+            uuid4(), date(2026, 9, 22), "111111", ResearchState.PAPER_ENTERED,
+        )
+        class Repo:
+            def __init__(self): self.apply_count = 0
+            def open_trade_state(self, **kwargs): return None
+            def apply(self, *args, **kwargs): self.apply_count += 1
+        class Source:
+            def completed_bars_from_open(self, **kwargs):
+                raise AssertionError("REST must not run for an inconsistent lifecycle")
+
+        repo = Repo()
+        runtime = FirstRiseBreakoutRuntime(
+            repository=repo, strategy=FirstRiseBreakoutStrategy(), condition_search=object(),
+            minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+        )
+        runtime._states = {"111111": broken}
+
+        with self.assertLogs("src.first_rise_breakout.runtime", level="ERROR") as captured:
+            changed = runtime.refresh_completed_bars(at=AT)
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(repo.apply_count, 0)
+        output = "\n".join(captured.output)
+        self.assertIn("first-rise lifecycle mismatch", output)
+        self.assertIn("missing_open_paper_trade=true", output)
 
 
 class FrozenResearchContractTest(unittest.TestCase):
