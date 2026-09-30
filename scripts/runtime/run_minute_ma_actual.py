@@ -28,6 +28,7 @@ from src.minute_ma.fill_checkpoint import PostgresMinuteMaFillCheckpointStore
 from src.minute_ma.production_polling import MinuteMaCheckpointPoller
 from src.minute_ma.cost_finalizer import MinuteMaCostFinalizer
 from src.minute_ma.real_live import MinuteMaRealLiveRuntime,PostgresMinuteMaRealLivePlanner
+from src.minute_ma.official_signals import OfficialSignalCycle
 
 def main():
     load_dotenv(ROOT/'.env')
@@ -50,12 +51,13 @@ def main():
         repository=PostgresMinuteMaRepository(pool,write_enabled=True)
         price_lookup=MinuteMaKISReferencePriceLookup(client)
         cash_lookup=KISBrokerAvailableCashLookup(client=client,account=account)
-        signals=MinuteMaV1LiveRuntime(repository=repository,planner=planner,
-          price_lookup=price_lookup,cash_lookup=cash_lookup)
+        official_signals=OfficialSignalCycle(repository)
+        signals=MinuteMaV1LiveRuntime(repository=official_signals,planner=planner,
+          price_lookup=price_lookup,cash_lookup=cash_lookup,engine=official_signals)
         signal_result={'legacy':signals.run_day(trading_date=today)}
         signal_result['real']=MinuteMaRealLiveRuntime(pool=pool,
           planner=PostgresMinuteMaRealLivePlanner(factory),price_lookup=price_lookup,
-          cash_lookup=cash_lookup).run_day(trading_date=today)
+          cash_lookup=cash_lookup,signals=official_signals).run_day(trading_date=today)
         store=PostgresMinuteMaActualSubmitStore(factory)
         transport=MinuteMaKISOrderTransport(client=client,
           config=MinuteMaKISOrderTransportConfig.from_environment(whitelist=whitelist),
