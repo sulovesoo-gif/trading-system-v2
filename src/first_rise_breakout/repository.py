@@ -20,6 +20,16 @@ class FirstRiseBreakoutRepository:
     def __init__(self, pool) -> None:
         self.pool = pool
 
+    def runtime_config(self):
+        from .config import FirstRiseRuntimeConfig
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute("""SELECT use_yn,attr1,attr2,attr3,attr4 FROM common_code
+                              WHERE group_cd='FIRST_RISE_RUNTIME' AND code='DEFAULT'""")
+            rows = cursor.fetchall()
+            if len(rows) != 1:
+                raise ValueError("FIRST_RISE_RUNTIME/DEFAULT must have exactly one row")
+            return FirstRiseRuntimeConfig.from_row(rows[0])
+
     @staticmethod
     def _state(row) -> CandidateState:
         return CandidateState(

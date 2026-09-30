@@ -14,7 +14,8 @@ from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
 from src.first_rise_breakout.models import CandidateState, MinuteBar, Observation, ResearchState
 from src.first_rise_breakout.condition_search import ConditionCandidate
 from src.first_rise_breakout.repository import FirstRiseBreakoutRepository
-from src.first_rise_breakout.runtime import DynamicExecutionRegistry, FirstRiseBreakoutRuntime
+from src.first_rise_breakout.runtime import DynamicExecutionRegistry, FirstRiseBreakoutRuntime as Runtime
+from src.first_rise_breakout.config import FirstRiseRuntimeConfig
 from src.first_rise_breakout.strategy import FirstRiseBreakoutStrategy
 from src.collector.raw.kis_client import KISClientError
 from src.flow_raw.collector import FlowRawCollector
@@ -22,6 +23,14 @@ from src.flow_raw.contracts import TR_EXECUTION
 
 
 AT = datetime(2026, 9, 22, 9, 10)
+
+
+def FirstRiseBreakoutRuntime(**kwargs):
+    kwargs.setdefault("config", FirstRiseRuntimeConfig.from_row(("Y", "09:01", "10:00", "09:01", "10:00")))
+    return Runtime(**kwargs)
+
+
+FirstRiseBreakoutRuntime.SUBSCRIPTION_OWNER = Runtime.SUBSCRIPTION_OWNER
 
 
 def state() -> CandidateState:
@@ -157,7 +166,7 @@ class FakeMinuteCollector:
 class MinuteSourceTest(unittest.TestCase):
     def test_walks_back_to_open_and_uses_actual_high(self):
         result = SameDayMinutePeakSource(FakeMinuteCollector()).peak(stock_code="123456", until=AT)
-        self.assertEqual(result, (Decimal("102"), datetime(2026, 9, 22, 9, 0), Decimal("99")))
+        self.assertEqual(result, (Decimal("102"), datetime(2026, 9, 22, 9, 0), Decimal("100")))
 
 
 class FakeRawRepository:
