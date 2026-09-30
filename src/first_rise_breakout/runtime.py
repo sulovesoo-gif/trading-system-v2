@@ -70,19 +70,14 @@ class FirstRiseBreakoutRuntime:
     ) -> None:
         self.repository = repository
         self.strategy = strategy
+        self.now = now_provider or (lambda: datetime.now(KST).replace(tzinfo=None))
+        self._config_date = None
+        self._config_override = config
         self.config = config
-        if self.config is None:
-            try:
-                self.config = repository.runtime_config()
-            except Exception:
-                LOGGER.exception("FIRST_RISE_CONFIG_ERROR new ENTRY blocked; OPEN EXIT remains active")
-        if self.config is not None:
-            self.SEARCH_START = self.strategy.ENTRY_START = self.config.paper_entry_start
-            self.SEARCH_END = self.strategy.ENTRY_CUTOFF = self.config.paper_entry_cutoff
+        self._load_daily_config(at=self.now())
         self.condition_search = condition_search
         self.minute_source = minute_source
         self.subscriptions = subscriptions
-        self.now = now_provider or (lambda: datetime.now(KST).replace(tzinfo=None))
         self.scan_interval_seconds = scan_interval_seconds
         self._states: dict[str, CandidateState] = {}
         self._condition_date = None
@@ -96,6 +91,23 @@ class FirstRiseBreakoutRuntime:
         self._poll_discovered: set[str] = set()
         self._poll_summary_date = None
         self._previous_closes: dict[tuple[object, str], Decimal] = {}
+
+    def _load_daily_config(self, *, at: datetime) -> None:
+        if self._config_date == at.date():
+            return
+        self._config_date = at.date()
+        self.config = self._config_override
+        if self.config is None:
+            try:
+                self.config = self.repository.runtime_config()
+            except Exception:
+                LOGGER.exception("FIRST_RISE_CONFIG_ERROR new ENTRY blocked; OPEN EXIT remains active")
+        if self.config is not None:
+            self.SEARCH_START = self.strategy.ENTRY_START = self.config.paper_entry_start
+            self.SEARCH_END = self.strategy.ENTRY_CUTOFF = self.config.paper_entry_cutoff
+            LOGGER.info("FIRST_RISE_CONFIG_LOADED date=%s paper_start=%s paper_cutoff=%s live_start=%s live_cutoff=%s",
+                        at.date(), self.config.paper_entry_start, self.config.paper_entry_cutoff,
+                        self.config.live_entry_start, self.config.live_entry_cutoff)
 
     def _ensure_poll_date(self, at: datetime) -> None:
         if self._poll_date == at.date():
@@ -412,6 +424,7 @@ class FirstRiseBreakoutRuntime:
         while True:
             at = self.now()
             try:
+                await asyncio.to_thread(self._load_daily_config, at=at)
                 if self._restored_date != at.date():
                     await asyncio.to_thread(self.restore, at=at)
                 await asyncio.to_thread(self.scan_once, at=at)

@@ -49,6 +49,36 @@ def runtime(repo=None, source=None):
 
 
 class ConfigRuntimeTests(unittest.TestCase):
+    def test_config_load_once_per_day_and_next_day_failure_does_not_retry(self):
+        class DailyRepo(Repo):
+            calls = 0
+            fail = False
+            def runtime_config(self):
+                self.calls += 1
+                if self.fail:
+                    raise ValueError("inactive")
+                return CONFIG
+        repo = DailyRepo()
+        r = FirstRiseBreakoutRuntime(repository=repo, strategy=FirstRiseBreakoutStrategy(),
+            condition_search=object(), minute_source=Source(), subscriptions=DynamicExecutionRegistry(),
+            now_provider=lambda: DAY)
+        for minute in (1, 2, 300):
+            r._load_daily_config(at=DAY+timedelta(minutes=minute))
+        self.assertEqual(repo.calls, 1)
+        repo.fail = True
+        with self.assertLogs("src.first_rise_breakout.runtime", "ERROR"):
+            r._load_daily_config(at=DAY+timedelta(days=1))
+        r._load_daily_config(at=DAY+timedelta(days=1, minutes=10))
+        self.assertEqual(repo.calls, 2)
+        self.assertIsNone(r.config)
+        r._states = {"123456": candidate(opened=True)}
+        r.refresh_completed_bars(at=DAY+timedelta(days=1, minutes=20))
+        self.assertEqual(repo.applied[-1].reason, "STOP_ENTRY_BREAK")
+        repo.fail = False
+        r._load_daily_config(at=DAY+timedelta(days=2))
+        self.assertEqual(repo.calls, 3)
+        self.assertIs(r.config, CONFIG)
+
     def test_invalid_config_blocks_entry_but_open_exit_continues(self):
         class Broken(Repo):
             def runtime_config(self): raise ValueError("missing config")
