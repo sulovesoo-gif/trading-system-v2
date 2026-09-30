@@ -106,12 +106,39 @@ class FirstRiseBreakoutRepository:
             cursor.execute(
                 """SELECT e.candidate_event_id,e.business_date,e.stock_code,s.state_code,
                           s.peak_price,s.peak_time,s.pullback_low_price,s.pullback_pct,
-                          s.last_observed_at,s.last_observed_price,s.entry_event_key,s.state_version
+                          s.last_observed_at,s.last_observed_price,s.entry_event_key,s.state_version,
+                          p.entry_signal_time,
+                          COALESCE((p.entry_evidence->>'raw_entry_price')::numeric,
+                                   p.entry_execution_price / (1 + 2.0/10000.0)),
+                          p.entry_execution_price
                    FROM first_rise_breakout_candidate_event e
                    JOIN first_rise_breakout_candidate_state s USING(candidate_event_id)
+                   LEFT JOIN first_rise_breakout_paper_trade p
+                     ON p.candidate_event_id=e.candidate_event_id AND p.trade_status='OPEN'
                    WHERE e.event_key=%s""", (event_key,),
             )
             return self._state(cursor.fetchone()), created
+
+    def open_trade_state(self, *, candidate_event_id: UUID) -> CandidateState | None:
+        """Reload an entered candidate together with its persisted OPEN trade."""
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT e.candidate_event_id,e.business_date,e.stock_code,s.state_code,
+                          s.peak_price,s.peak_time,s.pullback_low_price,s.pullback_pct,
+                          s.last_observed_at,s.last_observed_price,s.entry_event_key,s.state_version,
+                          p.entry_signal_time,
+                          COALESCE((p.entry_evidence->>'raw_entry_price')::numeric,
+                                   p.entry_execution_price / (1 + 2.0/10000.0)),
+                          p.entry_execution_price
+                   FROM first_rise_breakout_candidate_event e
+                   JOIN first_rise_breakout_candidate_state s USING(candidate_event_id)
+                   JOIN first_rise_breakout_paper_trade p
+                     ON p.candidate_event_id=e.candidate_event_id AND p.trade_status='OPEN'
+                   WHERE e.candidate_event_id=%s AND s.state_code='PAPER_ENTERED'""",
+                (candidate_event_id,),
+            )
+            row = cursor.fetchone()
+            return self._state(row) if row is not None else None
 
     def active_states(self, *, business_date: date) -> list[CandidateState]:
         with self.pool.connection() as connection, connection.cursor() as cursor:
@@ -148,9 +175,15 @@ class FirstRiseBreakoutRepository:
                 cursor.execute(
                     """SELECT e.candidate_event_id,e.business_date,e.stock_code,s.state_code,
                               s.peak_price,s.peak_time,s.pullback_low_price,s.pullback_pct,
-                              s.last_observed_at,s.last_observed_price,s.entry_event_key,s.state_version
+                              s.last_observed_at,s.last_observed_price,s.entry_event_key,s.state_version,
+                              p.entry_signal_time,
+                              COALESCE((p.entry_evidence->>'raw_entry_price')::numeric,
+                                       p.entry_execution_price / (1 + 2.0/10000.0)),
+                              p.entry_execution_price
                        FROM first_rise_breakout_candidate_event e
                        JOIN first_rise_breakout_candidate_state s USING(candidate_event_id)
+                       LEFT JOIN first_rise_breakout_paper_trade p
+                         ON p.candidate_event_id=e.candidate_event_id AND p.trade_status='OPEN'
                        WHERE e.candidate_event_id=%s""", (before.candidate_event_id,),
                 )
                 return self._state(cursor.fetchone())

@@ -231,38 +231,63 @@ class FirstRiseBreakoutRuntime:
         for stock_code, state in current_states:
             if state.state in TERMINAL_STATES:
                 continue
-            previous_close = self._previous_close(stock_code, at)
-            if previous_close is None:
-                continue
-            bars = self.minute_source.completed_bars_from_open(stock_code=stock_code, as_of=at)
-            if state.state == ResearchState.PAPER_ENTERED:
-                decision = self.strategy.exit_from_completed_bars(
-                    state, bars, session_ended=at.time() > self.strategy.SESSION_CLOSE,
-                )
-                if decision.changed:
-                    state = self._persist_decision(decision, None)
-                    changed += 1
-            else:
-                session_volume = 0
-                for bar in bars:
-                    session_volume += bar.volume
-                    if state.last_observed_at is not None and bar.bar_time <= state.last_observed_at:
+            try:
+                if (
+                    state.state == ResearchState.PAPER_ENTERED
+                    and (state.raw_entry_price is None or state.entry_signal_time is None)
+                ):
+                    restored = self.repository.open_trade_state(
+                        candidate_event_id=state.candidate_event_id,
+                    )
+                    if restored is None:
+                        LOGGER.error(
+                            "first-rise lifecycle mismatch stock_code=%s candidate_event_id=%s "
+                            "state=%s missing_open_paper_trade=true",
+                            stock_code, state.candidate_event_id, state.state.value,
+                        )
                         continue
-                    decision = self.strategy.observe_bar(
-                        state, bar, previous_close=previous_close,
-                        allow_entry=True, bootstrap=False,
-                        session_volume=session_volume,
-                        session_amount=bar.accumulated_amount,
+                    state = restored
+                    with self._state_lock:
+                        self._states[stock_code] = state
+                previous_close = self._previous_close(stock_code, at)
+                if previous_close is None:
+                    continue
+                bars = self.minute_source.completed_bars_from_open(stock_code=stock_code, as_of=at)
+                if state.state == ResearchState.PAPER_ENTERED:
+                    decision = self.strategy.exit_from_completed_bars(
+                        state, bars, session_ended=at.time() > self.strategy.SESSION_CLOSE,
                     )
                     if decision.changed:
-                        state = self._persist_decision(decision, bar)
+                        state = self._persist_decision(decision, None)
                         changed += 1
-                    if state.state in TERMINAL_STATES or state.state == ResearchState.PAPER_ENTERED:
-                        break
-            with self._state_lock:
-                self._states[stock_code] = state
-            if state.state in TERMINAL_STATES:
-                self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
+                else:
+                    session_volume = 0
+                    for bar in bars:
+                        session_volume += bar.volume
+                        if state.last_observed_at is not None and bar.bar_time <= state.last_observed_at:
+                            continue
+                        decision = self.strategy.observe_bar(
+                            state, bar, previous_close=previous_close,
+                            allow_entry=True, bootstrap=False,
+                            session_volume=session_volume,
+                            session_amount=bar.accumulated_amount,
+                        )
+                        if decision.changed:
+                            state = self._persist_decision(decision, bar)
+                            changed += 1
+                        if state.state in TERMINAL_STATES or state.state == ResearchState.PAPER_ENTERED:
+                            break
+                with self._state_lock:
+                    self._states[stock_code] = state
+                if state.state in TERMINAL_STATES:
+                    self.subscriptions.discard(stock_code, owner=self.SUBSCRIPTION_OWNER)
+            except Exception as error:
+                LOGGER.exception(
+                    "first-rise candidate refresh failed stock_code=%s candidate_event_id=%s "
+                    "state=%s exception_type=%s error=%s",
+                    stock_code, state.candidate_event_id, state.state.value,
+                    type(error).__name__, error,
+                )
         return changed
 
     def _previous_close(self, stock_code: str, at: datetime) -> Decimal | None:
