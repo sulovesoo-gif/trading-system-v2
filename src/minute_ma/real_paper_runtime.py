@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 
 from .contracts import Axis, MinuteBar, MinuteMaPath
 from .engine import MinuteMaSignalEngine, SignalType
+from .official_signals import OfficialSignalCycle, signal_evidence
+from .repository import PostgresMinuteMaRepository
 from .real_paper import (
     INITIAL_CAPITAL, CandidateTrade, RealFilter, RealSnapshot, account_costs,
     eligible_entry_time, passing_filters, purchasable_quantity,
@@ -36,6 +39,7 @@ class MinuteMaRealPaperRuntime:
         self.engine = MinuteMaSignalEngine()
 
     def _strategies(self) -> tuple[MinuteMaPath, ...]:
+        # Frozen historical backfill contract only. Forward uses V1 below.
         sql = """SELECT minute_strategy_id,source_daily_strategy_id,signal_code,
                         direction,entry_fast_ma,entry_slow_ma,exit_fast_ma,exit_slow_ma,trend_ma
                    FROM minute_ma_strategy_master
@@ -223,18 +227,26 @@ class MinuteMaRealPaperRuntime:
                                     for strategy in strategies for code in selected))
 
     def process_day(self, trading_date: date) -> tuple[int, int]:
-        strategies=self._strategies(); by_stock: dict[str,list[MinuteMaPath]]=defaultdict(list)
-        for strategy in strategies: by_stock[strategy.signal_code].append(strategy)
+        strategies=self._forward_strategies(); by_stock=defaultdict(list)
+        for item in strategies: by_stock[item[1].signal_code].append(item)
+        signals=OfficialSignalCycle(PostgresMinuteMaRepository(self.pool))
         opened=closed=0
         for stock_code,group in by_stock.items():
+            # KRX is retained solely as the historical PAPER execution-price
+            # proxy. These prices never enter MA preparation/evaluation.
             bars=self._bars(stock_code,trading_date,trading_date)
             bar_by_time={bar.bar_time:bar for bar in bars}
             real_by_time=self._real(stock_code,trading_date,trading_date)
-            points=self.engine.prepare(path=group[0],bars=bars); events=[]
-            for strategy in group:
-                for event in self.engine.evaluate_prepared(path=strategy,points=points):
+            events=[]
+            for strategy_id,path,cutover in group:
+                _,official_events=signals.day(path=path,trading_date=trading_date)
+                for event in official_events:
+                    if event.source_bar_time<=cutover: continue
                     execution_time=event.source_bar_time+timedelta(minutes=1)
                     if execution_time in bar_by_time:
+                        # Persistence APIs historically use this field as the
+                        # strategy id; the signal itself retains official path id.
+                        strategy=replace(path,minute_path_id=strategy_id)
                         events.append((execution_time,0 if event.signal_type is SignalType.EXIT else 1,
                                        strategy,event))
             for execution_time,_,strategy,event in sorted(
@@ -246,6 +258,25 @@ class MinuteMaRealPaperRuntime:
                     opened+=self._open_incremental(strategy,event,bar_by_time[execution_time],snapshot)
         return opened,closed
 
+    def _forward_strategies(self):
+        with self.pool.connection() as c,c.cursor() as q:
+            q.execute("""SELECT DISTINCT s.minute_strategy_id,p.minute_path_id,pp.policy_path_key,
+              p.data_axis,s.signal_code,s.direction,s.entry_fast_ma,s.entry_slow_ma,
+              s.exit_fast_ma,s.exit_slow_ma,s.trend_ma,s.source_daily_strategy_id,v.forward_signal_from
+              FROM minute_ma_real_variant v
+              JOIN minute_ma_strategy_master s ON s.minute_strategy_id=v.minute_strategy_id
+              LEFT JOIN minute_ma_path p ON p.minute_path_id=v.forward_minute_path_id
+                AND p.minute_strategy_id=s.minute_strategy_id
+              LEFT JOIN minute_ma_policy_path pp ON pp.minute_path_id=p.minute_path_id AND pp.is_enabled='Y'
+              WHERE v.enabled AND v.effective_to IS NULL AND s.is_enabled='Y' AND s.direction='LONG'
+              ORDER BY s.minute_strategy_id""")
+            rows=q.fetchall()
+        if any(r[1] is None or r[2] is None or r[12] is None for r in rows):
+            raise ValueError('REAL_FORWARD_SIGNAL_MIGRATION_REQUIRED')
+        return tuple((int(r[0]),MinuteMaPath(int(r[1]),str(r[2]),Axis(r[3]),str(r[4]),str(r[4]),
+            str(r[5]),int(r[6]),int(r[7]),int(r[8]),int(r[9]),
+            int(r[10]) if r[10] is not None else None,str(r[11])),r[12]) for r in rows)
+
     def _open_incremental(self,strategy,event,execution_bar,snapshot:RealSnapshot|None) -> int:
         inserted=0
         filters=(RealFilter.BASE,)+(() if snapshot is None else passing_filters(snapshot))
@@ -256,8 +287,9 @@ class MinuteMaRealPaperRuntime:
                   FROM minute_ma_real_variant v JOIN minute_ma_real_capital_epoch c
                     ON c.real_variant_id=v.real_variant_id AND c.paper_epoch=v.paper_epoch AND c.ended_at IS NULL
                   WHERE v.minute_strategy_id=%s AND v.filter_code=%s AND v.enabled
-                    AND v.effective_to IS NULL FOR UPDATE OF c""",
-                  (strategy.minute_path_id,filter_code.value)); variant=cursor.fetchone()
+                    AND v.effective_to IS NULL AND v.forward_signal_from<%s
+                    AND v.forward_minute_path_id=%s FOR UPDATE OF c""",
+                  (strategy.minute_path_id,filter_code.value,event.source_bar_time,event.minute_path_id)); variant=cursor.fetchone()
                 if variant is None: continue
                 variant_id,epoch,capital=int(variant[0]),int(variant[1]),Decimal(str(variant[2]))
                 price=Decimal(str(execution_bar.open_price))
@@ -267,8 +299,8 @@ class MinuteMaRealPaperRuntime:
                   real_variant_id,minute_strategy_id,strategy_id,signal_code,filter_code,paper_epoch,
                   lifecycle_status,entry_signal_key,entry_signal_time,entry_execution_time,entry_price,
                   compound_quantity,fixed_quantity,entry_realized_capital,velocity_value,velocity_avg_3,
-                  velocity_avg_10,flow_avg_5,flow_avg_20,real_is_complete)
-                  VALUES(%s,%s,%s,%s,%s,%s,'OPEN',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                  velocity_avg_10,flow_avg_5,flow_avg_20,real_is_complete,entry_signal_evidence)
+                  VALUES(%s,%s,%s,%s,%s,%s,'OPEN',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                   ON CONFLICT(real_variant_id,entry_signal_key) DO NOTHING""",
                   (variant_id,strategy.minute_path_id,str(strategy.minute_path_id),strategy.signal_code,
                    filter_code.value,epoch,key,event.source_bar_time,execution_bar.bar_time,price,
@@ -278,7 +310,7 @@ class MinuteMaRealPaperRuntime:
                     None if snapshot is None else snapshot.velocity_avg_10,
                     None if snapshot is None else snapshot.flow_avg_5,
                     None if snapshot is None else snapshot.flow_avg_20,
-                    False if snapshot is None else snapshot.is_complete))
+                    False if snapshot is None else snapshot.is_complete,json.dumps(signal_evidence(event))))
                 inserted+=cursor.rowcount
             connection.commit()
         return inserted
@@ -314,6 +346,7 @@ class MinuteMaRealPaperRuntime:
                       compound_net_return=%s,compound_realized_pnl=%s,
                       fixed_gross_pnl=%s,fixed_gross_return=%s,fixed_buy_fee=%s,fixed_sell_fee=%s,
                       fixed_sell_tax=%s,fixed_total_cost=%s,fixed_net_return=%s,fixed_realized_pnl=%s,
+                      exit_signal_evidence=%s::jsonb,
                       updated_at=CURRENT_TIMESTAMP WHERE real_paper_trade_id=%s AND lifecycle_status='OPEN'""",
                       (event.source_bar_time,execution_bar.bar_time,exit_price,execution_bar.bar_time,capital,
                        compound.gross_pnl,compound.gross_pnl/compound_base if compound_base else Decimal(0),
@@ -324,7 +357,7 @@ class MinuteMaRealPaperRuntime:
                        fixed.gross_pnl,fixed.gross_pnl/fixed_base if fixed_base else Decimal(0),
                        fixed.buy_fee,fixed.sell_fee,fixed.sell_tax,
                        fixed.buy_fee+fixed.sell_fee+fixed.sell_tax,fixed.realized_pnl/INITIAL_CAPITAL,
-                       fixed.realized_pnl,trade_id)); count+=cursor.rowcount
+                       fixed.realized_pnl,json.dumps(signal_evidence(event)),trade_id)); count+=cursor.rowcount
                 cursor.execute("""UPDATE minute_ma_real_capital_epoch SET current_realized_capital=%s,
                   version=version+1,updated_at=CURRENT_TIMESTAMP
                   WHERE real_variant_id=%s AND paper_epoch=%s AND ended_at IS NULL""",

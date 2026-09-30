@@ -42,11 +42,11 @@ def test_fixed_quantity_is_preserved_when_cash_supports_one_share():
 
 def test_routes_query_uses_only_alias_qualified_joins():
     source=open("src/minute_ma/real_live.py",encoding="utf-8").read()
-    routes_sql=source[source.index("def _routes"):source.index("def _bars")]
+    routes_sql=source[source.index("def _routes"):source.index("def _real")]
     assert "USING(" not in routes_sql
     assert "v.real_variant_id=r.real_variant_id" in routes_sql
-    assert "p.minute_path_id=r.minute_path_id" in routes_sql
-    assert "s.minute_strategy_id=p.minute_strategy_id" in routes_sql
+    assert "p.minute_path_id=v.forward_minute_path_id" in routes_sql
+    assert "pp.minute_path_id=p.minute_path_id" in routes_sql
     assert "s.minute_strategy_id=v.minute_strategy_id" in routes_sql
 
 

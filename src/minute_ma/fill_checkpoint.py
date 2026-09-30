@@ -32,6 +32,7 @@ class PostgresMinuteMaFillCheckpointStore:
               FROM minute_ma_live_intent i
               JOIN minute_ma_live_order_link l USING(intent_id)
               LEFT JOIN minute_ma_operation o ON i.minute_policy_path_id IS NULL
+                AND i.real_live_route_id IS NULL
                 AND o.minute_path_id=i.minute_path_id AND o.effective_to IS NULL
               LEFT JOIN minute_ma_policy_operation po
                 ON po.minute_policy_operation_id=i.minute_policy_operation_id

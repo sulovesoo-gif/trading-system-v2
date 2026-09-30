@@ -9,8 +9,10 @@ from decimal import Decimal
 from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 
-from .contracts import Axis, MinuteBar, MinuteMaPath
-from .engine import MinuteMaSignalEngine, SignalEvent, SignalType
+from .contracts import Axis, MinuteMaPath
+from .engine import SignalEvent, SignalType
+from .official_signals import OfficialSignalCycle, signal_evidence
+from .repository import PostgresMinuteMaRepository
 from .real_paper import BUY_FEE_RATE, RealFilter, RealSnapshot, eligible_entry_time, passing_filters, purchasable_quantity
 
 
@@ -43,6 +45,7 @@ class RealLiveRoute:
     activated_at: datetime
     cursor: datetime | None
     active: bool
+    signal_effective_from: datetime | None = None
 
 
 class PostgresMinuteMaRealLivePlanner:
@@ -138,8 +141,7 @@ class PostgresMinuteMaRealLivePlanner:
               VALUES(%s,%s,%s,'ENTRY',%s,%s,%s::jsonb,'REAL_VARIANT_ENTRY',%s,%s,
                      CURRENT_TIMESTAMP,%s) ON CONFLICT DO NOTHING""",
               (signal_id,route.path.minute_path_id,event_key,event.source_bar_time,event.confirmed_at,
-               json.dumps({"filter":route.filter_code.value,"ma":event.ma_values,
-                 "previous_ma":event.previous_ma_values}),event.signal_source,
+               json.dumps({"filter":route.filter_code.value,**signal_evidence(event)}),event.signal_source,
                event.confirmed_at if event.signal_source.startswith("KIS_H0") else None,
                route.variant_id))
             q.execute("""INSERT INTO minute_ma_live_intent(
@@ -179,8 +181,7 @@ class PostgresMinuteMaRealLivePlanner:
               VALUES(%s,%s,%s,'EXIT',%s,%s,%s::jsonb,'NORMAL_EXIT',%s,%s,
                      CURRENT_TIMESTAMP,%s) ON CONFLICT DO NOTHING""",
               (signal_id,route.path.minute_path_id,event_key,event.source_bar_time,event.confirmed_at,
-               json.dumps({"filter":route.filter_code.value,"ma":event.ma_values,
-                 "previous_ma":event.previous_ma_values}),event.signal_source,
+               json.dumps({"filter":route.filter_code.value,**signal_evidence(event)}),event.signal_source,
                event.confirmed_at if event.signal_source.startswith("KIS_H0") else None,
                route.variant_id))
             q.execute("""SELECT t.minute_live_trade_id,t.ownership_id,t.capital_at_signal,
@@ -240,24 +241,26 @@ class PostgresMinuteMaRealLivePlanner:
 
 
 class MinuteMaRealLiveRuntime:
-    def __init__(self, *, pool, planner, price_lookup, cash_lookup, engine=None):
+    def __init__(self, *, pool, planner, price_lookup, cash_lookup, signals=None):
         self.pool=pool; self.planner=planner; self.price_lookup=price_lookup
-        self.cash_lookup=cash_lookup; self.engine=engine or MinuteMaSignalEngine()
+        self.cash_lookup=cash_lookup; self.signals=signals
 
     def _routes(self) -> tuple[RealLiveRoute,...]:
-        sql="""SELECT r.real_live_route_id,v.real_variant_id,v.filter_code,p.minute_path_id,p.path_key,
+        sql="""SELECT r.real_live_route_id,v.real_variant_id,v.filter_code,p.minute_path_id,pp.policy_path_key,
           p.data_axis,s.signal_code,s.direction,s.entry_fast_ma,s.entry_slow_ma,s.exit_fast_ma,
           s.exit_slow_ma,s.trend_ma,s.source_daily_strategy_id,r.route_code,r.execution_stock_code,
           r.sizing_mode,r.allocated_amount,r.fixed_quantity,r.capital_epoch_no,r.activated_at,
-          r.last_source_bar_time,(r.effective_to IS NULL) AS active
+          r.last_source_bar_time,(r.effective_to IS NULL) AS active,v.forward_signal_from
           FROM minute_ma_real_live_route r
           JOIN minute_ma_real_variant v
             ON v.real_variant_id=r.real_variant_id
-          JOIN minute_ma_path p
-            ON p.minute_path_id=r.minute_path_id
+          LEFT JOIN minute_ma_path p
+            ON p.minute_path_id=v.forward_minute_path_id
+           AND p.minute_strategy_id=v.minute_strategy_id
+          LEFT JOIN minute_ma_policy_path pp
+            ON pp.minute_path_id=p.minute_path_id AND pp.is_enabled='Y'
           JOIN minute_ma_strategy_master s
-            ON s.minute_strategy_id=p.minute_strategy_id
-           AND s.minute_strategy_id=v.minute_strategy_id
+            ON s.minute_strategy_id=v.minute_strategy_id
           WHERE v.enabled AND (r.effective_to IS NULL OR EXISTS(
             SELECT 1 FROM minute_ma_live_trade t WHERE t.real_live_route_id=r.real_live_route_id
               AND t.trade_status='OPEN')) ORDER BY r.real_live_route_id"""
@@ -265,22 +268,14 @@ class MinuteMaRealLiveRuntime:
             q.execute(sql); rows=q.fetchall()
         result=[]
         for x in rows:
+            if x[3] is None or x[4] is None or x[23] is None:
+                raise ValueError('REAL_FORWARD_SIGNAL_MIGRATION_REQUIRED')
             path=MinuteMaPath(int(x[3]),str(x[4]),Axis(str(x[5])),str(x[6]),str(x[15]),
               str(x[7]),int(x[8]),int(x[9]),int(x[10]),int(x[11]),
               int(x[12]) if x[12] is not None else None,str(x[13]))
             result.append(RealLiveRoute(int(x[0]),int(x[1]),RealFilter(str(x[2])),path,str(x[14]),
-              str(x[15]),str(x[16]),Decimal(str(x[17])),int(x[18]),int(x[19]),x[20],x[21],bool(x[22])))
+              str(x[15]),str(x[16]),Decimal(str(x[17])),int(x[18]),int(x[19]),x[20],x[21],bool(x[22]),x[23]))
         return tuple(result)
-
-    def _bars(self, stock_code: str, trading_date: date) -> tuple[MinuteBar,...]:
-        with self.pool.connection() as c,c.cursor() as q:
-            q.execute("""SELECT DISTINCT ON(bar_time) bar_time,open_price,high_price,low_price,
-              close_price,volume FROM raw_stock_minute WHERE stock_code=%s AND data_source='KIS'
-              AND trading_venue='KRX' AND collect_cycle='1MIN' AND bar_time::date=%s
-              AND bar_time::time BETWEEN TIME '09:00' AND TIME '15:30'
-              ORDER BY bar_time,collected_at DESC NULLS LAST""",(stock_code,trading_date))
-            rows=q.fetchall()
-        return tuple(MinuteBar(r[0],float(r[1]),float(r[2]),float(r[3]),float(r[4]),int(r[5] or 0)) for r in rows)
 
     def _real(self, stock_code: str, trading_date: date) -> dict[datetime,RealSnapshot]:
         with self.pool.connection() as c,c.cursor() as q:
@@ -294,20 +289,23 @@ class MinuteMaRealLiveRuntime:
 
     def run_day(self, *, trading_date: date) -> dict[str,int]:
         routes=self._routes(); counts=defaultdict(int)
+        signals=self.signals or OfficialSignalCycle(PostgresMinuteMaRepository(self.pool))
         by_stock=defaultdict(list)
         for route in routes: by_stock[route.path.signal_code].append(route)
         for stock_code,group in by_stock.items():
-            bars=self._bars(stock_code,trading_date)
-            if not bars: continue
             real=self._real(stock_code,trading_date)
-            points=self.engine.prepare(path=group[0].path,bars=bars)
+            points,_=signals.day(path=group[0].path,trading_date=trading_date)
+            if not points: continue
             by_strategy=defaultdict(list)
             for route in group: by_strategy[route.path.minute_path_id].append(route)
             for route_group in by_strategy.values():
-                events=self.engine.evaluate_prepared(path=route_group[0].path,points=points)
+                _,events=signals.day(path=route_group[0].path,trading_date=trading_date)
                 for event in sorted(events,key=lambda e:(e.source_bar_time,0 if e.signal_type is SignalType.EXIT else 1)):
                     for route in route_group:
                         floor=route.cursor or route.activated_at
+                        if route.signal_effective_from is None:
+                            raise ValueError('REAL_FORWARD_SIGNAL_MIGRATION_REQUIRED')
+                        floor=max(floor,route.signal_effective_from)
                         if event.source_bar_time<=floor: continue
                         if event.signal_type is SignalType.ENTRY:
                             if not route.active: continue
