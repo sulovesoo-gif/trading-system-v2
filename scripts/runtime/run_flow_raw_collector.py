@@ -21,14 +21,13 @@ from src.collector.raw.kis_client import KISClient
 from src.first_rise_breakout.condition_search import SavedConditionSearch
 from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
 from src.first_rise_breakout.repository import FirstRiseBreakoutRepository
-from src.first_rise_breakout.runtime import DynamicExecutionRegistry, FirstRiseBreakoutRuntime
+from src.first_rise_breakout.runtime import FirstRiseBreakoutRuntime
 from src.first_rise_breakout.strategy import FirstRiseBreakoutStrategy
 from src.minute_ma.integrated_realtime_repository import MinuteMaIntegratedRealtimeRepository
 from src.repository.database import DatabaseSettings, create_connection_pool
 
 
 async def run(pool) -> None:
-    registry = DynamicExecutionRegistry()
     condition_request_lock = RLock()
     research = None
     try:
@@ -42,25 +41,15 @@ async def run(pool) -> None:
             minute_source=SameDayMinutePeakSource(
                 StockMinuteCollector(client), request_lock=condition_request_lock,
             ),
-            subscriptions=registry,
         )
     except Exception:
         # Optional research setup cannot prevent the established RAW streams.
         logging.exception("first-rise research setup disabled")
 
-    def observe_research(code, at, price) -> None:
-        if research is None:
-            return
-        try:
-            research.observe(code, observed_at=at, price=price)
-        except Exception:
-            logging.exception("first-rise research observation failed stock_code=%s", code)
 
     collector = collector_from_environment(
         FlowRawRepository(pool),
         integrated_repository=MinuteMaIntegratedRealtimeRepository(pool),
-        dynamic_execution_registry=registry if research is not None else None,
-        dynamic_execution_handler=observe_research if research is not None else None,
     )
     tasks = [collector.run_forever()]
     if research is not None:

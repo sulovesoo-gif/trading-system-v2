@@ -9,6 +9,7 @@ from src.flow_raw.collector import (
     RECEIVE_TIMEOUT_SECONDS,
     FlowRawCollector,
     liveness_reconnect_reason,
+    safe_error_message,
 )
 from src.minute_ma.integrated_realtime_contracts import TR_INTEGRATED_EXECUTION
 from src.flow_raw.contracts import (
@@ -25,6 +26,19 @@ def frame(tr_id: str, names: tuple[str, ...], records: list[dict[str, str]]) -> 
 
 
 class FlowContractTest(unittest.TestCase):
+    def test_reconnect_message_retains_cause_but_masks_credentials(self):
+        error = RuntimeError('NameError missing name; access_token=secret bearer token approval-value')
+        message = safe_error_message(error, approval='approval-value')
+        self.assertIn('NameError missing name', message)
+        self.assertNotIn('secret', message)
+        self.assertNotIn('bearer token', message)
+        self.assertNotIn('approval-value', message)
+
+    def test_removed_dynamic_handler_cannot_raise_undefined_as_decimal(self):
+        source = Path('src/flow_raw/collector.py').read_text(encoding='utf-8')
+        for removed in ('as_decimal(', 'dynamic_execution_handler', 'dynamic_execution_registry'):
+            self.assertNotIn(removed, source)
+
     def test_official_field_widths_are_locked(self):
         self.assertEqual(len(EXECUTION_FIELDS), 46)
         self.assertEqual(len(PROGRAM_FIELDS), 11)
