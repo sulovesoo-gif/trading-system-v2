@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from src.service.sql_analysis_runner_service import SqlAnalysisRunner, SqlAnalysisSettings, StreamingXlsxWriter
+from src.service.sql_analysis_runner_service import SqlAnalysisRunner, SqlAnalysisSessions, SqlAnalysisSettings, StreamingXlsxWriter
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,6 +29,9 @@ class CancelIntegrationTest(unittest.TestCase):
         cls.settings = SqlAnalysisSettings.from_environment(ROOT)
         cls.history = psycopg.connect(host=os.environ['DB_HOST'], port=os.environ['DB_PORT'],
             dbname=os.environ['DB_NAME'], user=os.environ['DB_USER'], password=os.environ['DB_PASSWORD'], autocommit=True)
+        cls.history.execute('SET search_path TO pg_temp')
+        cls.history.execute('CREATE TEMP TABLE live_broker_order (test_marker integer)')
+        cls.history.execute('CREATE TEMP TABLE live_broker_fill (test_marker integer)')
         initial = (ROOT / 'database/migrations/20260828_sql_analysis_runner_additive.sql').read_text()
         cls.history.execute(initial.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE'))
         cls.history.execute((ROOT / 'database/migrations/20260910_sql_analysis_cancel.sql').read_text())
@@ -44,7 +47,12 @@ class CancelIntegrationTest(unittest.TestCase):
         self.requests = requests
         self.temp = tempfile.TemporaryDirectory()
         self.runner = SqlAnalysisRunner(self, replace(self.settings, artifact_dir=Path(self.temp.name)))
-        handler = type('IsolatedAnalysisHandler', (DashboardHandler,), {'sql_runner': self.runner})
+        def runner_factory(*args):
+            if self.runner._stop.is_set():
+                self.runner = SqlAnalysisRunner(*args)
+            return self.runner
+        sessions = SqlAnalysisSessions(self, self.runner.settings, runner_factory=runner_factory)
+        handler = type('IsolatedAnalysisHandler', (DashboardHandler,), {'sql_runner': sessions})
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -132,6 +140,44 @@ class CancelIntegrationTest(unittest.TestCase):
             release.set()
             self.assertEqual(self.wait(target)['status'], 'CANCELLED')
             connect.assert_not_called()
+
+    def test_cancel_timing_actual_postgres_query(self):
+        import psycopg
+        import json
+        from datetime import datetime, timezone
+        marks = {}
+        def stamp(name):
+            marks[name] = {'utc': datetime.now(timezone.utc).isoformat(),
+                           'monotonic': time.monotonic()}
+        original = psycopg.Connection.cancel_safe
+        def measured(connection, *args, **kwargs):
+            if connection is self.runner._connection:
+                if 'cancel_send' not in marks: stamp('cancel_send')
+            return original(connection, *args, **kwargs)
+        target = self.submit('SELECT pg_sleep(120) /* isolated cancel latency */;')
+        pid = self.running(target)
+        with patch.object(psycopg.Connection, 'cancel_safe', measured):
+            stamp('http_cancel_request')
+            response = self.requests.post(self.url+'/cancel', headers=self.headers,
+                json={'execution_id': target}, timeout=5)
+            self.assertTrue(response.json()['cancel_requested'])
+            deadline=time.monotonic()+5
+            while time.monotonic()<deadline:
+                with self.connection() as history:
+                    state=history.execute('SELECT state FROM pg_stat_activity WHERE pid=%s',(pid,)).fetchone()
+                if state and state[0]!='active':
+                    stamp('postgres_query_end_observed')
+                    break
+                time.sleep(.01)
+            self.assertIn('postgres_query_end_observed',marks)
+            done=self.wait(target)
+            stamp('worker_terminal')
+        self.assertEqual(done['status'],'CANCELLED')
+        self.assertIn('cancel_send',marks)
+        elapsed=(marks['postgres_query_end_observed']['monotonic']-marks['http_cancel_request']['monotonic'])*1000
+        print('CANCEL_TIMING '+json.dumps({'execution_id':target,'backend_pid':pid,
+            'request_to_query_end_ms':round(elapsed,3),'timestamps':marks},sort_keys=True))
+        self.assertLess(elapsed,5000)
 
     def test_timeout_is_failed_and_session_end_cleans_temp(self):
         self.assertEqual(self.wait(self.submit("SET statement_timeout='100ms';"))['status'], 'SUCCEEDED')

@@ -188,6 +188,68 @@ class UserCancelled(Exception):
     """Cancellation requested for this execution, not statement_timeout."""
 
 
+class SqlAnalysisSessions:
+    """Bounded independent browser sessions, each using the unchanged runner.
+
+    Four sessions maximum; each retains its own TEMP connection and one worker.
+    Only idle expired sessions may be removed to make room for another tab.
+    """
+    def __init__(self, history_pool, settings, *, max_sessions=4, runner_factory=None):
+        self.history_pool = history_pool
+        self.settings = settings
+        self.max_sessions = max_sessions
+        self._factory = runner_factory or SqlAnalysisRunner
+        self._sessions = {}
+        self._lock = threading.RLock()
+
+    @property
+    def auth_token(self):
+        return self.settings.auth_token
+
+    def for_client(self, client_id):
+        # Old cached pages remain supported as one serialized legacy session.
+        key = str(uuid.UUID(client_id)) if client_id else 'legacy'
+        with self._lock:
+            if key in self._sessions:
+                runner = self._sessions[key]
+                with runner._lock:
+                    runner._last_activity = time.monotonic()
+                return runner
+            for old_key, runner in list(self._sessions.items()):
+                with runner._lock:
+                    expired = (runner._active_execution is None and
+                        time.monotonic() - runner._last_activity >= self.settings.session_ttl_seconds)
+                    if expired:
+                        runner.close()
+                        del self._sessions[old_key]
+            if len(self._sessions) >= self.max_sessions:
+                raise RuntimeError(f'SQL session limit reached ({self.max_sessions}); end an unused TEMP session')
+            runner = self._factory(self.history_pool, self.settings)
+            self._sessions[key] = runner
+            return runner
+
+    def end_client(self, client_id):
+        with self._lock:
+            runner = self.for_client(client_id)
+            result = runner.end_session()
+            if result.get('ended'):
+                key = str(uuid.UUID(client_id)) if client_id else 'legacy'
+                self._sessions.pop(key, None)
+                runner.close()
+            return result
+
+    def submit(self, client_id, **kwargs):
+        # Do not let session/end retire this worker between lookup and enqueue.
+        with self._lock:
+            return self.for_client(client_id).submit(**kwargs)
+
+    def close(self):
+        with self._lock:
+            for runner in self._sessions.values():
+                runner.close()
+            self._sessions.clear()
+
+
 class SqlAnalysisRunner:
     def __init__(self, history_pool, settings: SqlAnalysisSettings):
         self.history_pool = history_pool

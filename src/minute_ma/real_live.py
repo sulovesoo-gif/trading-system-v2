@@ -8,10 +8,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 from .contracts import Axis, MinuteMaPath
 from .engine import SignalEvent, SignalType
 from .official_signals import OfficialSignalCycle, signal_evidence
+from .overnight_exit import OvernightPolicy, OvernightEvent, reason_for, evidence_for
 from .repository import PostgresMinuteMaRepository
 from .real_paper import BUY_FEE_RATE, RealFilter, RealSnapshot, eligible_entry_time, passing_filters, purchasable_quantity
 
@@ -178,10 +180,10 @@ class PostgresMinuteMaRealLivePlanner:
               minute_live_signal_event_id,minute_path_id,signal_event_key,event_type,source_bar_time,
               confirmed_at,source_snapshot,event_reason,signal_source,source_bar_finalized_at,
               evaluated_at,real_variant_id)
-              VALUES(%s,%s,%s,'EXIT',%s,%s,%s::jsonb,'NORMAL_EXIT',%s,%s,
+              VALUES(%s,%s,%s,'EXIT',%s,%s,%s::jsonb,%s,%s,%s,
                      CURRENT_TIMESTAMP,%s) ON CONFLICT DO NOTHING""",
               (signal_id,route.path.minute_path_id,event_key,event.source_bar_time,event.confirmed_at,
-               json.dumps({"filter":route.filter_code.value,**signal_evidence(event)}),event.signal_source,
+               json.dumps({"filter":route.filter_code.value,**evidence_for(event)}),reason_for(event),event.signal_source,
                event.confirmed_at if event.signal_source.startswith("KIS_H0") else None,
                route.variant_id))
             q.execute("""SELECT t.minute_live_trade_id,t.ownership_id,t.capital_at_signal,
@@ -190,7 +192,13 @@ class PostgresMinuteMaRealLivePlanner:
                 ON lp.ownership_type='MINUTE_MA' AND lp.ownership_id=t.ownership_id
                AND lp.stock_code=%s
               WHERE t.real_live_route_id=%s AND t.trade_status='OPEN'
-              ORDER BY t.minute_live_trade_id""",(route.execution_stock_code,route.route_id))
+                AND EXISTS (SELECT 1 FROM minute_ma_live_intent entry
+                  WHERE entry.minute_live_trade_id=t.minute_live_trade_id AND entry.intent_type='ENTRY'
+                    AND entry.source_event_time<=%s
+                    AND (%s::date IS NULL OR entry.source_event_time::date<%s))
+              ORDER BY t.minute_live_trade_id""",(route.execution_stock_code,route.route_id,
+                event.source_bar_time,event.source_bar_time.date() if isinstance(event,OvernightEvent) else None,
+                event.source_bar_time.date()))
             trades=q.fetchall(); c.commit()
         counts=defaultdict(int)
         for trade in trades:
@@ -211,30 +219,43 @@ class PostgresMinuteMaRealLivePlanner:
         intent_id=str(uuid5(NAMESPACE_URL,"minute-real-intent|"+key))
         request_id=str(uuid5(NAMESPACE_URL,"minute-real-request|"+key))
         with self.connection_factory() as c,c.cursor() as q:
+            # Serialize independent exit planners for this trade, not its route.
+            q.execute("SELECT trade_status FROM minute_ma_live_trade WHERE minute_live_trade_id=%s FOR UPDATE",(trade_id,))
+            current=q.fetchone()
+            if current is None or current[0]!='OPEN': return 'TRADE_NOT_OPEN'
             q.execute("SELECT lifecycle_status FROM minute_ma_live_intent WHERE intent_key=%s",(key,))
             prior=q.fetchone()
             if prior is not None: return str(prior[0])
+            q.execute("""SELECT 1 FROM minute_ma_live_intent WHERE target_minute_live_trade_id=%s
+              AND intent_type='EXIT' AND lifecycle_status NOT IN ('REJECTED','CANCELLED','FAILED') LIMIT 1""",(trade_id,))
+            if q.fetchone() is not None: return 'EXIT_ALREADY_PENDING'
+            q.execute("""SELECT quantity FROM execution_logical_position WHERE ownership_type='MINUTE_MA'
+              AND ownership_id=%s AND stock_code=%s""",(ownership,route.execution_stock_code))
+            position=q.fetchone()
+            qty=int(position[0]) if position else 0
+            if qty<=0: return 'OWNERSHIP_REQUIRED'
             q.execute("""INSERT INTO minute_ma_live_intent(
               intent_id,intent_key,minute_path_id,minute_live_signal_event_id,minute_live_trade_id,
               intent_type,source_event_time,reference_price,requested_quantity,capital_at_signal,
               lifecycle_status,target_minute_live_trade_id,exit_reason,real_variant_id,
               real_live_route_id,real_capital_epoch_no)
               VALUES(%s,%s,%s,%s,%s,'EXIT',%s,%s,%s,%s,'READY_FOR_BROKER',%s,
-                     'NORMAL_EXIT',%s,%s,%s)""",
+                     %s,%s,%s,%s)""",
               (intent_id,key,route.path.minute_path_id,signal_id,trade_id,event.confirmed_at,price,
-               qty,capital,trade_id,route.variant_id,route.route_id,epoch))
+               qty,capital,trade_id,reason_for(event),route.variant_id,route.route_id,epoch))
             request_key=_digest("MINUTE_REAL_V1_5|REQUEST|"+key+"|SELL")
             q.execute("""INSERT INTO live_order_request(
               order_request_id,idempotency_key,strategy_instance_id,source_intent_id,source_decision_id,
               execution_stock_code,side,requested_notional,requested_quantity,reference_price,order_type,
               execution_target_time,strategy_capital_before,reserved_capital,safety_status,status,reason,detail)
               VALUES(%s,%s,%s,%s,%s,%s,'SELL',%s,%s,%s,'MARKET',%s,%s,0,'PASS',
-                     'READY_FOR_BROKER','NORMAL_EXIT',%s::jsonb)""",
+                     'READY_FOR_BROKER',%s,%s::jsonb)""",
               (request_id,request_key,f"MINUTE_REAL_ROUTE:{route.route_id}:LIVE_TRADE:{trade_id}",
                intent_id,str(uuid5(NAMESPACE_URL,"minute-real-decision|"+key)),
-               route.execution_stock_code,price*qty,qty,price,event.confirmed_at,capital,
+               route.execution_stock_code,price*qty,qty,price,event.confirmed_at,capital,reason_for(event),
                json.dumps({"real_variant_id":route.variant_id,"real_live_route_id":route.route_id,
-                 "minute_live_trade_id":trade_id,"ownership_id":ownership})))
+                 "minute_live_trade_id":trade_id,"ownership_id":ownership,
+                 "exit_reason":reason_for(event),"exit_evidence":evidence_for(event)})))
             q.execute("INSERT INTO minute_ma_live_order_link(intent_id,order_request_id) VALUES(%s,%s)",
                       (intent_id,request_id))
             c.commit(); return "READY_FOR_BROKER"
@@ -290,6 +311,8 @@ class MinuteMaRealLiveRuntime:
     def run_day(self, *, trading_date: date) -> dict[str,int]:
         routes=self._routes(); counts=defaultdict(int)
         signals=self.signals or OfficialSignalCycle(PostgresMinuteMaRepository(self.pool))
+        overnight=OvernightPolicy(self.pool)
+        now=datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
         by_stock=defaultdict(list)
         for route in routes: by_stock[route.path.signal_code].append(route)
         for stock_code,group in by_stock.items():
@@ -300,13 +323,17 @@ class MinuteMaRealLiveRuntime:
             for route in group: by_strategy[route.path.minute_path_id].append(route)
             for route_group in by_strategy.values():
                 _,events=signals.day(path=route_group[0].path,trading_date=trading_date)
+                forced=overnight.event(route_group[0].path,trading_date,
+                    signals.v1_source_bars(stock_code=stock_code,trading_date=trading_date),events,now)
+                if forced is not None:
+                    events=tuple(events)+(forced,)
                 for event in sorted(events,key=lambda e:(e.source_bar_time,0 if e.signal_type is SignalType.EXIT else 1)):
                     for route in route_group:
                         floor=route.cursor or route.activated_at
                         if route.signal_effective_from is None:
                             raise ValueError('REAL_FORWARD_SIGNAL_MIGRATION_REQUIRED')
                         floor=max(floor,route.signal_effective_from)
-                        if event.source_bar_time<=floor: continue
+                        if event.source_bar_time<=floor and event.signal_type is SignalType.ENTRY: continue
                         if event.signal_type is SignalType.ENTRY:
                             if not route.active: continue
                             if route.cursor is None:

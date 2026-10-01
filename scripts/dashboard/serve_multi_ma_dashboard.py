@@ -41,7 +41,7 @@ from src.service.minute_ma_dashboard_service import path_detail as minute_ma_pat
 from src.service.flow_v3_dashboard_service import dashboard_payload as flow_v3_dashboard_payload
 from src.service.flow_v3_dashboard_service import strategy_detail_payload, trade_detail_payload
 from src.service.flow_v3_dashboard_service import capital_efficiency_payload
-from src.service.sql_analysis_runner_service import SqlAnalysisRunner, SqlAnalysisSettings, excel_content_disposition
+from src.service.sql_analysis_runner_service import SqlAnalysisSessions, SqlAnalysisSettings, excel_content_disposition
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -1070,15 +1070,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 query = parse_qs(parsed.query)
+                runner = self.sql_runner.for_client(self.headers.get("X-Analysis-Session", ""))
                 if parsed.path == "/sql-analysis/api/status":
-                    payload = self.sql_runner.status()
-                    payload["recent"] = self.sql_runner.recent(8)
+                    payload = runner.status()
+                    payload["recent"] = runner.recent(8)
                     return self._send_json(payload)
                 if parsed.path == "/sql-analysis/api/execution":
-                    return self._send_json(self.sql_runner.get_execution((query.get("execution_id") or [""])[0]))
+                    return self._send_json(runner.get_execution((query.get("execution_id") or [""])[0]))
                 if parsed.path.startswith("/sql-analysis/api/download/"):
                     execution_id = parsed.path.rsplit("/", 1)[-1]
-                    path, filename = self.sql_runner.artifact(execution_id)
+                    path, filename = runner.artifact(execution_id)
                     body = path.read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -1262,7 +1263,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return self._send_json({"status": "ERROR", "error": "request body size is invalid"}, 413)
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 if parsed.path == "/sql-analysis/api/run":
-                    item = self.sql_runner.submit(sql=str(payload.get("sql") or ""),
+                    item = self.sql_runner.submit(self.headers.get("X-Analysis-Session", ""),
+                        sql=str(payload.get("sql") or ""),
                         title=(str(payload.get("title") or "").strip() or None),
                         source_type=str(payload.get("source_type") or "PASTE"),
                         filename=(str(payload.get("filename") or "").strip() or None),
@@ -1272,9 +1274,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     execution_id = str(payload.get("execution_id") or "").strip()
                     if not execution_id:
                         raise ValueError("execution_id is required")
-                    return self._send_json(self.sql_runner.cancel_execution(execution_id))
+                    return self._send_json(self.sql_runner.for_client(self.headers.get("X-Analysis-Session", "")).cancel_execution(execution_id))
                 if parsed.path == "/sql-analysis/api/session/end":
-                    return self._send_json(self.sql_runner.end_session())
+                    return self._send_json(self.sql_runner.end_client(self.headers.get("X-Analysis-Session", "")))
                 return self._send_json({"error": "not found"}, 404)
             except KeyError as error:
                 return self._send_json({"status": "ERROR", "error": str(error)}, 404)
@@ -1328,7 +1330,7 @@ def main() -> int:
     pool = create_connection_pool(DatabaseSettings.from_environment())
     sql_runner = None
     try:
-        sql_runner = SqlAnalysisRunner(pool, SqlAnalysisSettings.from_environment(ROOT))
+        sql_runner = SqlAnalysisSessions(pool, SqlAnalysisSettings.from_environment(ROOT))
     except Exception as error:
         logging.warning("SQL analysis runner disabled: %s", error)
     stop = threading.Event()

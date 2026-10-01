@@ -49,6 +49,7 @@ class Pool:
     @contextmanager
     def cursor(self): yield self
     def execute(self, sql, params=None): self.executed.append((sql,params))
+    def fetchone(self): return None  # no enabled overnight switch in baseline fixtures
     def commit(self): pass
 
 

@@ -7,10 +7,12 @@ import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
+from zoneinfo import ZoneInfo
 
 from .contracts import Axis, MinuteBar, MinuteMaPath
 from .engine import MinuteMaSignalEngine, SignalType
 from .official_signals import OfficialSignalCycle, signal_evidence
+from .overnight_exit import OvernightPolicy, OvernightEvent, reason_for, evidence_for
 from .repository import PostgresMinuteMaRepository
 from .real_paper import (
     INITIAL_CAPITAL, CandidateTrade, RealFilter, RealSnapshot, account_costs,
@@ -230,6 +232,8 @@ class MinuteMaRealPaperRuntime:
         strategies=self._forward_strategies(); by_stock=defaultdict(list)
         for item in strategies: by_stock[item[1].signal_code].append(item)
         signals=OfficialSignalCycle(PostgresMinuteMaRepository(self.pool))
+        overnight=OvernightPolicy(self.pool)
+        now=datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None)
         opened=closed=0
         for stock_code,group in by_stock.items():
             # KRX is retained solely as the historical PAPER execution-price
@@ -240,6 +244,11 @@ class MinuteMaRealPaperRuntime:
             events=[]
             for strategy_id,path,cutover in group:
                 _,official_events=signals.day(path=path,trading_date=trading_date)
+                forced=overnight.event(path,trading_date,signals.v1_source_bars(
+                    stock_code=stock_code,trading_date=trading_date),official_events,now)
+                if forced is not None and forced.source_bar_time in bar_by_time:
+                    events.append((forced.source_bar_time,0,
+                                   replace(path,minute_path_id=strategy_id),forced))
                 for event in official_events:
                     if event.source_bar_time<=cutover: continue
                     execution_time=event.source_bar_time+timedelta(minutes=1)
@@ -323,13 +332,16 @@ class MinuteMaRealPaperRuntime:
               FROM minute_ma_real_paper_trade t
               WHERE t.minute_strategy_id=%s AND t.lifecycle_status='OPEN'
                 AND t.entry_execution_time<=%s
+                AND (%s::date IS NULL OR t.entry_execution_time::date<%s)
               ORDER BY t.real_variant_id,t.real_paper_trade_id FOR UPDATE OF t""",
-              (strategy.minute_path_id,event.source_bar_time)); rows=cursor.fetchall()
+              (strategy.minute_path_id,event.source_bar_time,
+               event.source_bar_time.date() if isinstance(event,OvernightEvent) else None,
+               event.source_bar_time.date())); rows=cursor.fetchall()
             by_variant=defaultdict(list)
             for row in rows: by_variant[(int(row[1]),int(row[2]))].append(row)
             for (variant_id,epoch),trades in by_variant.items():
                 cursor.execute("""SELECT current_realized_capital FROM minute_ma_real_capital_epoch
-                  WHERE real_variant_id=%s AND paper_epoch=%s AND ended_at IS NULL FOR UPDATE""",
+                  WHERE real_variant_id=%s AND paper_epoch=%s FOR UPDATE""",
                   (variant_id,epoch)); capital=Decimal(str(cursor.fetchone()[0]))
                 for trade_id,_,_,compound_qty,fixed_qty,entry_price in trades:
                     entry=Decimal(str(entry_price))
@@ -339,7 +351,7 @@ class MinuteMaRealPaperRuntime:
                     compound_base=Decimal(compound.quantity)*entry
                     fixed_base=Decimal(fixed.quantity)*entry
                     cursor.execute("""UPDATE minute_ma_real_paper_trade SET lifecycle_status='CLOSED',
-                      exit_signal_time=%s,exit_execution_time=%s,exit_price=%s,exit_reason='NORMAL_EXIT',
+                      exit_signal_time=%s,exit_execution_time=%s,exit_price=%s,exit_reason=%s,
                       settlement_time=%s,settlement_realized_capital_after=%s,
                       compound_gross_pnl=%s,compound_gross_return=%s,compound_buy_fee=%s,
                       compound_sell_fee=%s,compound_sell_tax=%s,compound_total_cost=%s,
@@ -348,7 +360,7 @@ class MinuteMaRealPaperRuntime:
                       fixed_sell_tax=%s,fixed_total_cost=%s,fixed_net_return=%s,fixed_realized_pnl=%s,
                       exit_signal_evidence=%s::jsonb,
                       updated_at=CURRENT_TIMESTAMP WHERE real_paper_trade_id=%s AND lifecycle_status='OPEN'""",
-                      (event.source_bar_time,execution_bar.bar_time,exit_price,execution_bar.bar_time,capital,
+                      (event.source_bar_time,execution_bar.bar_time,exit_price,reason_for(event),execution_bar.bar_time,capital,
                        compound.gross_pnl,compound.gross_pnl/compound_base if compound_base else Decimal(0),
                        compound.buy_fee,compound.sell_fee,compound.sell_tax,
                        compound.buy_fee+compound.sell_fee+compound.sell_tax,
@@ -357,10 +369,10 @@ class MinuteMaRealPaperRuntime:
                        fixed.gross_pnl,fixed.gross_pnl/fixed_base if fixed_base else Decimal(0),
                        fixed.buy_fee,fixed.sell_fee,fixed.sell_tax,
                        fixed.buy_fee+fixed.sell_fee+fixed.sell_tax,fixed.realized_pnl/INITIAL_CAPITAL,
-                       fixed.realized_pnl,json.dumps(signal_evidence(event)),trade_id)); count+=cursor.rowcount
+                       fixed.realized_pnl,json.dumps(evidence_for(event)),trade_id)); count+=cursor.rowcount
                 cursor.execute("""UPDATE minute_ma_real_capital_epoch SET current_realized_capital=%s,
                   version=version+1,updated_at=CURRENT_TIMESTAMP
-                  WHERE real_variant_id=%s AND paper_epoch=%s AND ended_at IS NULL""",
+                  WHERE real_variant_id=%s AND paper_epoch=%s""",
                   (capital,variant_id,epoch))
             connection.commit()
         return count
