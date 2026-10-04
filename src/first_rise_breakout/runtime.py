@@ -38,6 +38,17 @@ class FirstRiseBreakoutRuntime:
         self._load_daily_config(at=self.now())
         self.condition_search = condition_search
         self.minute_source = minute_source
+        raw_factory = getattr(repository, 'completed_minute_raw_repository', None)
+        if raw_factory is not None:
+            self.minute_source.raw_repository = raw_factory()
+        j_factory = getattr(repository, 'j_market_repository', None)
+        self.j_market = None
+        if j_factory is not None:
+            from .j_runtime import JMarketRuntime
+            self.j_market = JMarketRuntime(repository=j_factory(),minute_source=self.minute_source)
+            if self.config is not None:
+                self.SEARCH_START=min(self.config.paper_entry_start,self.config.live_entry_start)
+                self.SEARCH_END=max(self.config.paper_entry_cutoff,self.config.live_entry_cutoff)
         self.scan_interval_seconds = scan_interval_seconds
         self._states: dict[str, CandidateState] = {}
         self._condition_date = None
@@ -50,7 +61,7 @@ class FirstRiseBreakoutRuntime:
         self._poll_errors = 0
         self._poll_discovered: set[str] = set()
         self._poll_summary_date = None
-        self._previous_closes: dict[tuple[object, str], Decimal] = {}
+        self._discovered_at = {}
 
     def _load_daily_config(self, *, at: datetime) -> None:
         if self._config_date == at.date():
@@ -59,12 +70,17 @@ class FirstRiseBreakoutRuntime:
         self.config = self._config_override
         if self.config is None:
             try:
-                self.config = self.repository.runtime_config()
+                daily_loader = getattr(self.repository, "runtime_config_for_day", None)
+                self.config = (daily_loader(at=at) if daily_loader is not None
+                               else self.repository.runtime_config())
             except Exception:
                 LOGGER.exception("FIRST_RISE_CONFIG_ERROR new ENTRY blocked; OPEN EXIT remains active")
         if self.config is not None:
             self.SEARCH_START = self.strategy.ENTRY_START = self.config.paper_entry_start
             self.SEARCH_END = self.strategy.ENTRY_CUTOFF = self.config.paper_entry_cutoff
+            if getattr(self,'j_market',None) is not None:
+                self.SEARCH_START=min(self.config.paper_entry_start,self.config.live_entry_start)
+                self.SEARCH_END=max(self.config.paper_entry_cutoff,self.config.live_entry_cutoff)
             LOGGER.info("FIRST_RISE_CONFIG_LOADED date=%s paper_start=%s paper_cutoff=%s live_start=%s live_cutoff=%s",
                         at.date(), self.config.paper_entry_start, self.config.paper_entry_cutoff,
                         self.config.live_entry_start, self.config.live_entry_cutoff)
@@ -81,6 +97,11 @@ class FirstRiseBreakoutRuntime:
     def restore(self, *, at: datetime) -> None:
         self._ensure_poll_date(at)
         restored = {state.stock_code: state for state in self.repository.active_states(business_date=at.date())}
+        if self.j_market is not None:
+            self.j_market.restore(at=at)
+            restored={code:s for code,s in restored.items() if s.state==ResearchState.PAPER_ENTERED}
+        loader = getattr(self.repository, 'discovery_times', None)
+        self._discovered_at = loader(business_date=at.date()) if loader else {}
         with self._state_lock:
             self._states = restored
             self._restored_date = at.date()
@@ -146,13 +167,21 @@ class FirstRiseBreakoutRuntime:
                     discovered_at=at, raw_payload=candidate.raw_payload,
                 )
                 with self._state_lock:
-                    self._states[candidate.stock_code] = state
+                    if self.j_market is None or state.state==ResearchState.PAPER_ENTERED:
+                        self._states[candidate.stock_code] = state
+                self._discovered_at.setdefault(candidate.stock_code, at)
                 if not created:
                     continue
                 created_count += 1
                 LOGGER.info(
                     "FIRST_RISE_DISCOVERED stock_code=%s stock_name=%s discovered_at=%s",
                     candidate.stock_code, candidate.stock_name or "", at.isoformat(),
+                )
+                if self.j_market is not None:
+                    self.j_market.register(state,discovered_at=at)
+                    continue
+                bars = self.minute_source.completed_bars_from_open(
+                    stock_code=candidate.stock_code, as_of=at,
                 )
                 previous_close = self._previous_close(candidate.stock_code, at)
                 if previous_close is None:
@@ -161,9 +190,6 @@ class FirstRiseBreakoutRuntime:
                         candidate.stock_code,
                     )
                     continue
-                bars = self.minute_source.completed_bars_from_open(
-                    stock_code=candidate.stock_code, as_of=at,
-                )
                 session_volume = 0
                 for bar in bars:
                     session_volume += bar.volume
@@ -239,10 +265,6 @@ class FirstRiseBreakoutRuntime:
                     state = restored
                     with self._state_lock:
                         self._states[stock_code] = state
-                if state.state != ResearchState.PAPER_ENTERED:
-                    previous_close = self._previous_close(stock_code, at)
-                    if previous_close is None:
-                        continue
                 rest_targets += 1
                 try:
                     bars = self.minute_source.completed_bars_from_open(stock_code=stock_code, as_of=at)
@@ -257,14 +279,19 @@ class FirstRiseBreakoutRuntime:
                         state = self._persist_decision(decision, None)
                         changed += 1
                 else:
+                    previous_close = self._previous_close(stock_code, at)
+                    if previous_close is None:
+                        continue
                     session_volume = 0
                     for bar in bars:
                         session_volume += bar.volume
                         if state.last_observed_at is not None and bar.bar_time <= state.last_observed_at:
                             continue
+                        discovered = self._discovered_at.get(stock_code)
+                        bootstrap = discovered is not None and bar.bar_time < discovered.replace(second=0,microsecond=0)
                         decision = self.strategy.observe_bar(
                             state, bar, previous_close=previous_close,
-                            allow_entry=True, bootstrap=False,
+                            allow_entry=not bootstrap, bootstrap=bootstrap,
                             session_volume=session_volume,
                             session_amount=bar.accumulated_amount,
                         )
@@ -289,12 +316,17 @@ class FirstRiseBreakoutRuntime:
                     stock_code, state.candidate_event_id, state.state.value,
                     type(error).__name__, error,
                 )
+        if self.j_market is not None:
+            changed+=self.j_market.refresh(at=at,config=self.config)
+            rest_targets+=self.j_market.last_summary.get('targets',0)
+            rest_errors+=self.j_market.last_summary.get('errors',0)
+        j_summary=self.j_market.last_summary if self.j_market is not None else {}
         modes = getattr(self.minute_source, "mode_counts", {})
         LOGGER.info(
             "FIRST_RISE_REFRESH active=%d paper_entered=%d minute_rest_targets=%d "
             "fhk_calls=%d bootstrap=%d catch_up=%d incremental=%d rest_errors=%d elapsed_ms=%d",
-            sum(s.state not in TERMINAL_STATES for _, s in current_states),
-            sum(s.state == ResearchState.PAPER_ENTERED for _, s in current_states),
+            sum(s.state not in TERMINAL_STATES for _, s in current_states)+j_summary.get('active',0),
+            sum(s.state == ResearchState.PAPER_ENTERED for _, s in current_states)+j_summary.get('open',0),
             rest_targets, getattr(self.minute_source, "request_count", 0) - calls_before,
             *(modes.get(key, 0) - modes_before.get(key, 0) for key in ("bootstrap", "catch_up", "incremental")),
             rest_errors, round((perf_counter() - started) * 1000),
@@ -308,14 +340,11 @@ class FirstRiseBreakoutRuntime:
             self.minute_source.discard(stock_code=state.stock_code, business_date=state.business_date)
 
     def _previous_close(self, stock_code: str, at: datetime) -> Decimal | None:
-        key = (at.date(), stock_code)
-        if key not in self._previous_closes:
-            value = self.repository.previous_regular_close(
-                stock_code=stock_code, business_date=at.date(),
-            )
-            if value is not None:
-                self._previous_closes[key] = Decimal(value)
-        return self._previous_closes.get(key)
+        reader = getattr(self.minute_source, 'previous_close', None)
+        value = reader(stock_code=stock_code,business_date=at.date()) if reader else None
+        if value is None:
+            LOGGER.error('FIRST_RISE_PREVIOUS_CLOSE_UNAVAILABLE stock_code=%s source=FHKST03010200 entry_blocked=true',stock_code)
+        return value
 
     def _persist_decision(self, decision, bar: MinuteBar | None) -> CandidateState:
         if not decision.changed:

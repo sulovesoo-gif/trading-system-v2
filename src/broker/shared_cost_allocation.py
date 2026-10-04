@@ -22,12 +22,17 @@ class OwnedCheckpoint:
 def allocate_shared_costs(*, snapshot, checkpoints, unattributed_activity=False):
     grouped = {}
     seen = set()
+    owners = {}
     for fill in checkpoints:
-        if fill.family not in ('DAILY','MINUTE','FLOW'):
+        if fill.family not in ('DAILY','MINUTE','FLOW','FIRST_RISE'):
             raise ValueError('UNKNOWN_COST_OWNER')
         if fill.side not in ('BUY','SELL') or fill.quantity<=0 or not fill.amount.is_finite() or fill.amount<=0:
             raise ValueError('INVALID_COST_CHECKPOINT')
         identity=(fill.broker_order_id,fill.checkpoint_version)
+        prior_family=owners.setdefault(identity,fill.family)
+        if prior_family!=fill.family:
+            raise ValueError('DUPLICATE_CHECKPOINT_COST_OWNERSHIP')
+        if fill.family=='FIRST_RISE':identity=(*identity,fill.trade_id)
         if identity in seen:
             raise ValueError('DUPLICATE_CHECKPOINT_COST_OWNERSHIP')
         seen.add(identity)

@@ -16,7 +16,8 @@ class SharedBrokerCostFinalizer:
         with self.factory() as c,c.cursor() as q:
             q.execute("""SELECT trade_date,execution_stock_code FROM daily_strategy_live_broker_cost_snapshot
                 UNION SELECT trade_date,execution_stock_code FROM minute_ma_live_broker_cost_snapshot
-                UNION SELECT COALESCE(broker_trade_date,broker_event_time::date),stock_code FROM flow_v3_live_checkpoint_allocation""")
+                UNION SELECT COALESCE(broker_trade_date,broker_event_time::date),stock_code FROM flow_v3_live_checkpoint_allocation
+                UNION SELECT broker_event_time::date,stock_code FROM first_rise_j_live_checkpoint_allocation""")
             days=q.fetchall()
         final=0
         for day,stock in days:
@@ -42,8 +43,11 @@ class SharedBrokerCostFinalizer:
                 WHERE stock_code=%s AND broker_event_time::date=%s
                 UNION ALL SELECT 'FLOW',live_trade_id,broker_order_id::text,checkpoint_version,
                     side,delta_quantity,delta_amount FROM flow_v3_live_checkpoint_allocation
-                WHERE stock_code=%s AND COALESCE(broker_trade_date,broker_event_time::date)=%s ORDER BY 1,2,3,4""",
-                (stock,day,stock,day,stock,day))
+                WHERE stock_code=%s AND COALESCE(broker_trade_date,broker_event_time::date)=%s
+                UNION ALL SELECT 'FIRST_RISE',cost_trade_id,broker_order_id::text,checkpoint_version,
+                    side,delta_quantity,delta_amount FROM first_rise_j_live_checkpoint_allocation
+                WHERE stock_code=%s AND broker_event_time::date=%s ORDER BY 1,2,3,4""",
+                (stock,day,stock,day,stock,day,stock,day))
             rows=q.fetchall()
             fingerprint=sha256(repr(rows).encode()).hexdigest()
             q.execute("""SELECT count(*) FROM daily_strategy_live_checkpoint_allocation a
@@ -110,6 +114,9 @@ class SharedBrokerCostFinalizer:
     @staticmethod
     def _publish(q,day,stock,state,allocations):
         # Consumers receive exactly their globally allocated slice; no second rounding.
+        from src.first_rise_breakout.j_cost import settle_final_costs
+        for tid in sorted({key[1] for key,a in allocations if key[0]=='FIRST_RISE'}):
+            settle_final_costs(q,cost_trade_id=tid,at=state.snapshot.broker_snapshot_at)
         for family,prefix,id_column,uuid_prefix in (
             ('DAILY','daily_strategy_live','live_trade_id','daily-ma-v042-cost'),
             ('MINUTE','minute_ma_live','minute_live_trade_id','minute-ma-cost')):

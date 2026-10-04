@@ -12,7 +12,7 @@ from src.first_rise_breakout.condition_search import ConditionCandidate
 
 
 DAY = datetime(2026, 9, 30, 9)
-CONFIG = FirstRiseRuntimeConfig.from_row(("Y", "09:01", "15:00", "09:01", "10:00"))
+CONFIG = FirstRiseRuntimeConfig.from_row(("Y", "09:01", "15:00", "09:01", "10:00", "10000000", "10000000", "100000000"))
 
 
 def candidate(code="123456", opened=False):
@@ -36,6 +36,7 @@ class Repo:
 
 
 class Source:
+    def previous_close(self, **kwargs): return Decimal('95')
     def __init__(self): self.codes = []; self.discarded = []
     def completed_bars_from_open(self, *, stock_code, **kwargs):
         self.codes.append(stock_code)
@@ -49,6 +50,21 @@ def runtime(repo=None, source=None):
 
 
 class ConfigRuntimeTests(unittest.TestCase):
+    def test_durable_daily_loader_used_once_in_cycle(self):
+        class DailyRepo(Repo):
+            calls=0
+            def runtime_config(self): raise AssertionError('must use daily snapshot')
+            def runtime_config_for_day(self, *, at):
+                self.calls+=1
+                return CONFIG
+        repo=DailyRepo()
+        r=FirstRiseBreakoutRuntime(repository=repo,strategy=FirstRiseBreakoutStrategy(),
+            condition_search=object(),minute_source=Source(),now_provider=lambda:DAY)
+        r._load_daily_config(at=DAY+timedelta(hours=3))
+        self.assertEqual(repo.calls,1)
+        r._load_daily_config(at=DAY+timedelta(days=1))
+        self.assertEqual(repo.calls,2)
+
     def test_config_load_once_per_day_and_next_day_failure_does_not_retry(self):
         class DailyRepo(Repo):
             calls = 0
@@ -150,7 +166,7 @@ class ConfigRuntimeTests(unittest.TestCase):
         s = candidate().evolve(peak_price=Decimal("10000"), peak_time=at-timedelta(minutes=10),
             pullback_low_price=Decimal("9800"), pullback_pct=Decimal("0.02"))
         r._states = {s.stock_code: s}
-        r.repository.previous_regular_close = lambda **kw: Decimal("9500")
+        r.minute_source.previous_close = lambda **kw: Decimal("9500")
         r.minute_source.completed_bars_from_open = lambda **kw: [MinuteBar(
             at, Decimal("9900"), Decimal("10100"), Decimal("9900"), Decimal("10100"))]
         r.refresh_completed_bars(at=at+timedelta(minutes=1))

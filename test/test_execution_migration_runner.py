@@ -10,5 +10,5 @@ class ExecutionMigrationRunnerTest(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True), self.assertRaises(SystemExit):
             main()
 
-    def test_only_declares_the_two_additive_execution_files(self):
-        self.assertEqual(DDL_FILES, ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql", "database/ddl/38_live_strategy_instance_role.sql"))
+    def test_declares_existing_additive_execution_manifest(self):
+        self.assertEqual(DDL_FILES, ("database/ddl/36_execution_ownership.sql", "database/ddl/37_forward_observation.sql", "database/ddl/38_live_strategy_instance_role.sql", "database/ddl/39_forward_performance_metrics.sql"))

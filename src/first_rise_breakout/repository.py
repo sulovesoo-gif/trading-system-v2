@@ -20,15 +20,33 @@ class FirstRiseBreakoutRepository:
     def __init__(self, pool) -> None:
         self.pool = pool
 
+    def completed_minute_raw_repository(self):
+        from .minute_raw_repository import FirstRiseMinuteRawRepository
+        return FirstRiseMinuteRawRepository(self.pool)
+
+    def j_market_repository(self):
+        from .j_repository import JMarketRepository
+        return JMarketRepository(self.pool)
+
+    def discovery_times(self, *, business_date):
+        with self.pool.connection() as c, c.cursor() as q:
+            q.execute('''SELECT stock_code,discovered_at FROM first_rise_breakout_candidate_event
+                WHERE business_date=%s''',(business_date,))
+            return dict(q.fetchall())
+
     def runtime_config(self):
         from .config import FirstRiseRuntimeConfig
         with self.pool.connection() as connection, connection.cursor() as cursor:
-            cursor.execute("""SELECT use_yn,attr1,attr2,attr3,attr4 FROM common_code
+            cursor.execute("""SELECT use_yn,attr1,attr2,attr3,attr4,attr5,attr6,attr7 FROM common_code
                               WHERE group_cd='FIRST_RISE_RUNTIME' AND code='DEFAULT'""")
             rows = cursor.fetchall()
             if len(rows) != 1:
                 raise ValueError("FIRST_RISE_RUNTIME/DEFAULT must have exactly one row")
             return FirstRiseRuntimeConfig.from_row(rows[0])
+
+    def runtime_config_for_day(self, *, at):
+        from .j_epoch import daily_config
+        return daily_config(self.pool, business_date=at.date(), loaded_at=at)
 
     @staticmethod
     def _state(row) -> CandidateState:

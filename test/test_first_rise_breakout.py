@@ -26,7 +26,7 @@ AT = datetime(2026, 9, 22, 9, 10)
 
 
 def FirstRiseBreakoutRuntime(**kwargs):
-    kwargs.setdefault("config", FirstRiseRuntimeConfig.from_row(("Y", "09:01", "10:00", "09:01", "10:00")))
+    kwargs.setdefault("config", FirstRiseRuntimeConfig.from_row(("Y", "09:01", "10:00", "09:01", "10:00", "10000000", "10000000", "100000000")))
     return Runtime(**kwargs)
 
 
@@ -131,7 +131,7 @@ class StrategyTest(unittest.TestCase):
             previous_close=Decimal("95"),
         )
         self.assertEqual(decision.after.state, ResearchState.TRACKING)
-        self.assertEqual(decision.reason, "PULLBACK_OVER_4_STRUCTURE_INVALIDATED")
+        self.assertEqual(decision.reason, "PULLBACK_LIMIT_STRUCTURE_INVALIDATED")
 
     def test_after_ten_without_entry_expires(self):
         seeded = self.strategy.seed_peak(state(), peak_price=Decimal("100"), peak_time=AT).after
@@ -187,6 +187,7 @@ class RestIsolationTest(unittest.TestCase):
             def candidates(self, seq): return [ConditionCandidate(str(100000+i), "candidate", {}, i) for i in range(100)]
         class Source:
             def __init__(self): self.calls = []
+            def previous_close(self, **kw): return Decimal('100')
             def completed_bars_from_open(self, **kw): self.calls.append(kw["stock_code"]); return []
         source = Source()
         runtime = FirstRiseBreakoutRuntime(repository=Repo(), strategy=FirstRiseBreakoutStrategy(),
@@ -379,6 +380,7 @@ class RuntimePersistencePathTest(unittest.TestCase):
             def completed_bars_from_open(self, **kwargs): return list(self.bars)
         source = Source()
         def previous_regular_close(**kwargs): return Decimal("9500")
+        source.previous_close = lambda **kwargs: Decimal('9500')
         repo = Repo()
         repo.previous_regular_close = previous_regular_close
         runtime = FirstRiseBreakoutRuntime(

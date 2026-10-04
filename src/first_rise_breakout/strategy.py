@@ -10,6 +10,7 @@ from .models import CandidateState, Decision, MinuteBar, Observation, ResearchSt
 
 
 class FirstRiseBreakoutStrategy:
+    USE_PREVIOUS_CLOSE = True
     STRATEGY_VERSION = "RISE3_REST9_PBMAX4_KMODE1_V1.0"
     ENTRY_START = time(9, 1)
     ENTRY_CUTOFF = time(10, 0)
@@ -91,7 +92,7 @@ class FirstRiseBreakoutStrategy:
         return Decision(state, after, "RECORD_HIGH_SEEDED")
 
     def observe_bar(
-        self, state: CandidateState, bar: MinuteBar, *, previous_close: Decimal,
+        self, state: CandidateState, bar: MinuteBar, *, previous_close: Decimal | None = None,
         allow_entry: bool = True, bootstrap: bool = False,
         session_volume: int | None = None,
         session_amount: Decimal | None = None,
@@ -99,16 +100,16 @@ class FirstRiseBreakoutStrategy:
         """Apply one completed KRX one-minute bar in chronological order."""
         if min(bar.open_price, bar.high_price, bar.low_price, bar.close_price) <= 0:
             raise ValueError("minute bar prices must be positive")
-        if previous_close <= 0:
+        if self.USE_PREVIOUS_CLOSE and (previous_close is None or previous_close <= 0):
             raise ValueError("previous_close must be positive")
         if state.state in TERMINAL_STATES or state.state == ResearchState.PAPER_ENTERED:
             return Decision(state, state, "STATE_NOT_ENTRY_ELIGIBLE")
         if bar.bar_time.date() != state.business_date:
             return Decision(state, state, "DIFFERENT_BUSINESS_DATE")
-        if session_volume is not None and previous_close < self.MIN_PREVIOUS_CLOSE:
+        if self.USE_PREVIOUS_CLOSE and session_volume is not None and previous_close < self.MIN_PREVIOUS_CLOSE:
             after = state.evolve(state=ResearchState.REJECTED, last_observed_at=bar.bar_time)
             return Decision(state, after, "PREVIOUS_CLOSE_BELOW_1000")
-        if (
+        if self.USE_PREVIOUS_CLOSE and (
             bar.high_price > previous_close * self.CORPORATE_ACTION_HIGH
             or bar.low_price < previous_close * self.CORPORATE_ACTION_LOW
         ):
@@ -128,12 +129,12 @@ class FirstRiseBreakoutStrategy:
             and self.MIN_PULLBACK <= state.pullback_pct <= self.MAX_PULLBACK
         )
         if bar.high_price > peak:
-            rise = peak / previous_close - Decimal("1")
+            rise = peak / previous_close - Decimal("1") if self.USE_PREVIOUS_CLOSE else None
             rest = bar.bar_time - peak_time
             decision_evidence = self._bar_evidence(
                 bar, bootstrap=bootstrap, previous_close=previous_close,
             )
-            if has_valid_pullback and rest >= self.MIN_PEAK_AGE and rise >= self.MIN_RISE:
+            if has_valid_pullback and rest >= self.MIN_PEAK_AGE and (not self.USE_PREVIOUS_CLOSE or rise >= self.MIN_RISE):
                 raw_entry = max(bar.open_price, peak)
                 historical_liquidity_threshold_met = (
                     None if session_volume is None or session_amount is None else
@@ -148,7 +149,7 @@ class FirstRiseBreakoutStrategy:
                     previous_close=previous_close,
                     peak_time=peak_time,
                     prior_high=peak,
-                    prior_high_rise_pct=rise * Decimal("100"),
+                    prior_high_rise_pct=rise * Decimal("100") if rise is not None else None,
                     pullback_low=state.pullback_low_price,
                     pullback_pct=state.pullback_pct * Decimal("100"),
                     rest_minutes=Decimal(str(rest.total_seconds() / 60)),
@@ -209,7 +210,7 @@ class FirstRiseBreakoutStrategy:
                 last_observed_price=bar.close_price,
             )
             return Decision(
-                state, after, "PULLBACK_OVER_4_STRUCTURE_INVALIDATED",
+                state, after, "PULLBACK_LIMIT_STRUCTURE_INVALIDATED",
                 evidence=self._bar_evidence(bar, bootstrap=bootstrap, previous_close=previous_close),
             )
         if pullback >= self.MIN_PULLBACK:
