@@ -37,6 +37,8 @@ def main():
     from src.first_rise_breakout.j_submit import JSubmitStore,JKISOrderTransport
     from src.first_rise_breakout.j_recovery import JRecovery
     from src.first_rise_breakout.j_cancel import JCancelRuntime,KRXExecutionSession
+    from src.first_rise_breakout.j_protection import ActualStopProtection
+    from src.first_rise_breakout.trading_day import FirstRiseTradingDay
     parser=argparse.ArgumentParser()
     parser.add_argument('--once',action='store_true')
     parser.add_argument('--cycle-seconds',type=float,default=60)
@@ -54,6 +56,7 @@ def main():
             raise RuntimeError('FIRST_RISE_EXECUTION_ALREADY_RUNNING')
         lease.commit()
         pool=create_connection_pool(settings)
+        protection_thread=None
         try:
             client=KISClient();account=KISOrderAccount.from_environment()
             context=DailyCapitalContext(JCapitalEpochRepository(pool))
@@ -72,6 +75,7 @@ def main():
             submitter=DailyMaSendOrchestrator(submit_store=store,submit_runtime=DailyMaBrokerSubmitRuntime(
                 store=InMemoryDailyMaSubmitStore(),transport=transport,profile=None))
             runtime=JLiveRuntime(context=context,planner=JLiveRepository(pool),submit_store=store,
+                trading_day=FirstRiseTradingDay(calendar),
                 submitter=submitter,recovery=JRecovery(pool,DailyMaKISOrderHistoryLookup(client=client,account=account)),
                 price_lookup=MinuteMaKISReferencePriceLookup(client),cash_lookup=KISBrokerAvailableCashLookup(client=client,account=account),
                 cancellations=JCancelRuntime(pool,client,account,session_open=session),
@@ -79,12 +83,31 @@ def main():
                 cost_finalizer=SharedBrokerCostFinalizer(connection_factory=factory,
                     cost_lookup=DailyMaKISProductDayCostLookup(client=client,account=account),
                     calendar=calendar))
+            # Separate clients/stores: transport payload and in-memory submit state
+            # must not be shared concurrently with the unchanged 60-second cycle.
+            protection_client=KISClient()
+            protection_session=KRXExecutionSession(KisTradingCalendar(HolidayCalendarCollector(protection_client)))
+            protection_store=JSubmitStore(factory,session_open=protection_session)
+            protection_submitter=DailyMaSendOrchestrator(submit_store=protection_store,
+                submit_runtime=DailyMaBrokerSubmitRuntime(store=InMemoryDailyMaSubmitStore(),
+                    transport=JKISOrderTransport(client=protection_client,account=account,
+                        attempt_recorder=protection_store),profile=None))
+            protection=ActualStopProtection(planner=JLiveRepository(pool),
+                price_lookup=MinuteMaKISReferencePriceLookup(protection_client),submitter=protection_submitter,
+                clock=lambda:datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None),
+                session_open=protection_session)
+            if not args.once:
+                protection_thread=threading.Thread(target=protection.run,args=(stop,),name='first-rise-protection')
+                protection_thread.start()
             while not stop.is_set():
                 result=runtime.cycle(at=datetime.now(ZoneInfo('Asia/Seoul')).replace(tzinfo=None))
                 print(json.dumps(result,default=str),flush=True)
                 if args.once:break
                 stop.wait(args.cycle_seconds)
-        finally:pool.close()
+        finally:
+            stop.set()
+            if protection_thread is not None:protection_thread.join()
+            pool.close()
 
 
 if __name__=='__main__':main()

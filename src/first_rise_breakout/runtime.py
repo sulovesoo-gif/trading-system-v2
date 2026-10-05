@@ -28,8 +28,10 @@ class FirstRiseBreakoutRuntime:
         now_provider=None,
         scan_interval_seconds: int = 60,
         config=None,
+        trading_day=None,
     ) -> None:
         self.repository = repository
+        self.trading_day = trading_day
         self.strategy = strategy
         self.now = now_provider or (lambda: datetime.now(KST).replace(tzinfo=None))
         self._config_date = None
@@ -114,6 +116,8 @@ class FirstRiseBreakoutRuntime:
         return self._condition_seq
 
     def scan_once(self, *, at: datetime) -> int:
+        if self.trading_day is not None and not self.trading_day(at):
+            return 0
         if self.config is None or not (self.SEARCH_START <= at.time() < self.SEARCH_END):
             return 0
         self._ensure_poll_date(at)
@@ -231,6 +235,8 @@ class FirstRiseBreakoutRuntime:
 
     def refresh_completed_bars(self, *, at: datetime) -> int:
         """Advance every active candidate from actual completed KRX minute bars."""
+        if self.trading_day is not None and not self.trading_day(at):
+            return 0
         changed = 0
         started = perf_counter()
         calls_before = getattr(self.minute_source, "request_count", 0)
@@ -368,6 +374,8 @@ class FirstRiseBreakoutRuntime:
         )
 
     def expire_once(self, *, at: datetime) -> int:
+        if self.trading_day is not None and not self.trading_day(at):
+            return 0
         if self.config is None or at.time() < self.SEARCH_END:
             return 0
         if self._expired_date == at.date():
@@ -406,6 +414,9 @@ class FirstRiseBreakoutRuntime:
         while True:
             at = self.now()
             try:
+                if self.trading_day is not None and not await asyncio.to_thread(self.trading_day, at):
+                    await asyncio.sleep(self.scan_interval_seconds)
+                    continue
                 await asyncio.to_thread(self._load_daily_config, at=at)
                 if self._restored_date != at.date():
                     await asyncio.to_thread(self.restore, at=at)

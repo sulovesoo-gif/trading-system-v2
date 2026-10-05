@@ -16,6 +16,22 @@ def identity(value):return uuid5(NAMESPACE_URL,'FIRST_RISE|'+value)
 class JLiveRepository:
     def __init__(self,pool):self.pool=pool
 
+    def protection_stocks(self):
+        with self.pool.connection() as c,c.cursor() as q:
+            q.execute('''SELECT DISTINCT b.stock_code FROM first_rise_j_live_cost c
+                JOIN first_rise_j_capital_binding b ON b.trade_id=c.trade_id
+                WHERE c.buy_quantity>c.sell_quantity ORDER BY b.stock_code''')
+            return [r[0] for r in q.fetchall()]
+
+    def protection_request_keys(self,stock):
+        with self.pool.connection() as c,c.cursor() as q:
+            q.execute('''SELECT idempotency_key FROM live_order_request
+                WHERE strategy_instance_id=%s AND execution_stock_code=%s AND side='SELL'
+                AND status IN ('READY_FOR_BROKER','SUBMITTING')
+                AND detail->>'actual_exit_reason'='ACTUAL_STOP_ENTRY_BREAK_PROTECTION'
+                ORDER BY created_at''',(STRATEGY_ID,stock))
+            return [r[0] for r in q.fetchall()]
+
     def entry_signals(self,*,at):
         with self.pool.connection() as c,c.cursor() as q:
             q.execute('''SELECT s.market_signal_id FROM first_rise_j_market_signal s
@@ -109,7 +125,9 @@ class JLiveRepository:
              Decimal(evidence.get('common_slot_amount','0')),cash,Jsonb(detail)))
         return request
 
-    def plan_exits(self,*,at):
+    def plan_exits(self,*,at,protection=None):
+        # protection is a fresh, finite KIS quote keyed by stock, not a market EXIT.
+        # Both planners share the same transaction lock and SELL generation keys.
         count=0
         with self.pool.connection() as c,c.transaction(),c.cursor() as q:
             q.execute("SELECT pg_advisory_xact_lock(hashtext('first_rise_j_capital_epoch'))")
@@ -117,7 +135,8 @@ class JLiveRepository:
                 JOIN first_rise_j_capital_binding b ON b.trade_id=c.trade_id
                 WHERE c.buy_quantity>c.sell_quantity ORDER BY b.stock_code''')
             for (stock,) in q.fetchall():
-                if self.pending_stock(q,stock=stock):continue
+                if protection is not None and stock not in protection:continue
+                if self.pending_stock(q,stock=stock,side='SELL' if protection is not None else None):continue
                 q.execute('''SELECT s.market_signal_id,s.exit_signal_time,s.raw_exit_price,s.exit_reason,
                     s.signal_sequence,i.planning_reason,i.order_request_id,s.entry_signal_time
                     FROM first_rise_j_market_signal s LEFT JOIN first_rise_j_live_intent i
@@ -126,6 +145,36 @@ class JLiveRepository:
                 event=q.fetchone()
                 if event is None:continue
                 signal,signal_time,price,reason,sequence,planning,buy_request,entry_time=event
+                evidence={'ownership':'FIRST_RISE','exit_state':'EXIT_RECOVERY'}
+                q.execute('''SELECT i.signal_time,r.reference_price,r.detail FROM first_rise_j_live_intent i
+                    JOIN live_order_request r ON r.order_request_id=i.order_request_id
+                    WHERE i.market_signal_id=%s AND i.side='SELL'
+                      AND r.detail->>'actual_exit_reason'='ACTUAL_STOP_ENTRY_BREAK_PROTECTION'
+                    ORDER BY i.generation DESC LIMIT 1''',(signal,))
+                prior_protection=q.fetchone()
+                if protection is not None:
+                    price,observed_at=protection[stock]
+                    price=Decimal(price)
+                    if not price.is_finite() or price<=0:raise ValueError('INVALID_PROTECTION_PRICE')
+                    q.execute('''SELECT c.trade_id,c.buy_amount/c.buy_quantity FROM first_rise_j_live_cost c
+                        JOIN first_rise_j_live_intent i ON i.trade_id=c.trade_id AND i.side='BUY'
+                        WHERE i.market_signal_id=%s AND c.buy_quantity>c.sell_quantity''',(signal,))
+                    actual=q.fetchone()
+                    # FIRST residual stays retained while SECOND has no actual lot.
+                    # A filled SECOND is protected against its own actual entry.
+                    if actual is None or price>=actual[1]:continue
+                    signal_time=observed_at
+                    reason='ACTUAL_STOP_ENTRY_BREAK_PROTECTION'
+                    evidence.update(actual_exit_reason=reason,trigger_trade_id=str(actual[0]),stock_code=stock,
+                        actual_average_entry_price=str(actual[1]),stop_reference_price=str(actual[1]),
+                        observed_market_price=str(price),observation_timestamp=observed_at.isoformat(),
+                        observation_source='KIS_FHKST01010100_RESPONSE_RECEIVED')
+                elif prior_protection and reason is None:
+                    # CANCELLED residual recovery survives restart/price rebound,
+                    # but a newer SECOND signal does not inherit FIRST's trigger.
+                    signal_time,price,prior_evidence=prior_protection
+                    evidence.update(prior_evidence)
+                    reason='ACTUAL_STOP_ENTRY_BREAK_PROTECTION'
                 if reason is None:
                     # SECOND market lifecycle, not actual BUY success, owns the
                     # transition. Keep FIRST residual until SECOND independent EXIT.
@@ -156,8 +205,9 @@ class JLiveRepository:
                 q.execute("SELECT COALESCE(max(generation)+1,0) FROM first_rise_j_live_intent WHERE market_signal_id=%s AND side='SELL'",(signal,))
                 generation=q.fetchone()[0]
                 intent=identity(str(signal)+'|SELL|'+str(generation))
+                evidence['sell_request_timestamp']=at.isoformat()
                 request=self._request(q,signal_id=signal,intent=intent,trade=trade,stock=stock,side='SELL',
-                    quantity=int(qty),price=price,cash=0,at=at,evidence={'ownership':'FIRST_RISE','exit_state':'EXIT_RECOVERY'},generation=generation)
+                    quantity=int(qty),price=price,cash=0,at=at,evidence=evidence,generation=generation)
                 q.execute('''INSERT INTO first_rise_j_live_intent(intent_id,market_signal_id,trade_id,side,signal_time,order_request_id,generation)
                     VALUES(%s,%s,%s,'SELL',%s,%s,%s)''',(intent,signal,trade,signal_time,request,generation))
                 for index,(lot,epoch,quantity) in enumerate(lots):

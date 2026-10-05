@@ -18,6 +18,9 @@ from src.flow_raw.collector import collector_from_environment
 from src.flow_raw.repository import FlowRawRepository
 from src.collector.raw.domestic_stock.stock_minute_collector import StockMinuteCollector
 from src.collector.raw.kis_client import KISClient
+from src.collector.raw.domestic_stock.holiday_calendar_collector import HolidayCalendarCollector
+from src.service.kis_trading_calendar import KisTradingCalendar
+from src.first_rise_breakout.trading_day import FirstRiseTradingDay
 from src.first_rise_breakout.condition_search import SavedConditionSearch
 from src.first_rise_breakout.minute_source import SameDayMinutePeakSource
 from src.first_rise_breakout.repository import FirstRiseBreakoutRepository
@@ -34,6 +37,7 @@ async def run(pool) -> None:
         client = KISClient()
         research = FirstRiseBreakoutRuntime(
             repository=FirstRiseBreakoutRepository(pool),
+            trading_day=FirstRiseTradingDay(KisTradingCalendar(HolidayCalendarCollector(client))),
             strategy=FirstRiseBreakoutStrategy(),
             condition_search=SavedConditionSearch(
                 client, user_id=os.getenv("KIS_USER", ""), request_lock=condition_request_lock,

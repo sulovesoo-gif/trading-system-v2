@@ -128,6 +128,10 @@ class JRecovery:
                     record_checkpoint(q,trade_id=trade,broker_order_id=broker_order_id,version=checkpoint.version,
                         quantity=delta.quantity,amount=delta.amount,at=broker_time)
             q.execute('''SELECT c.trade_id FROM first_rise_j_live_cost c WHERE c.buy_quantity>0
+                AND NOT EXISTS(SELECT 1 FROM first_rise_j_live_intent bi
+                    JOIN live_order_request br ON br.order_request_id=bi.order_request_id
+                    WHERE bi.trade_id=c.trade_id AND bi.side='BUY'
+                      AND br.status NOT IN ('FILLED','REJECTED','CANCELLED'))
                 AND c.buy_quantity=c.sell_quantity AND (c.trade_id=%s OR EXISTS(
                     SELECT 1 FROM first_rise_j_sell_allocation a WHERE a.order_request_id=%s AND a.trade_id=c.trade_id))''',(trade,request))
             for (closed_trade,) in q.fetchall():close_actual(q,trade_id=closed_trade,at=at)

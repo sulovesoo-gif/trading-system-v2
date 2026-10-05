@@ -4,13 +4,14 @@ LOGGER=logging.getLogger(__name__)
 
 
 class JLiveRuntime:
-    def __init__(self,*,context,planner,submit_store,submitter,recovery,price_lookup,cash_lookup,cost_finalizer,cancellations=None,capacity_monitor=None):
+    def __init__(self,*,context,planner,submit_store,submitter,recovery,price_lookup,cash_lookup,cost_finalizer,cancellations=None,capacity_monitor=None,trading_day=None):
         self.context,self.planner=context,planner
         self.submit_store,self.submitter=submit_store,submitter
         self.recovery,self.price_lookup,self.cash_lookup=recovery,price_lookup,cash_lookup
         self.cost_finalizer=cost_finalizer
         self.cancellations=cancellations
         self.capacity_monitor=capacity_monitor
+        self.trading_day=trading_day
 
     def submit_ready(self):
         result={}
@@ -25,6 +26,7 @@ class JLiveRuntime:
         return result
 
     def cycle(self,*,at):
+        entry_day=self.trading_day is None or self.trading_day(at)
         self.context.load(at=at)
         recovered=self.recovery.poll(at=at)
         if self.cancellations:
@@ -33,7 +35,7 @@ class JLiveRuntime:
         exits=self.planner.plan_exits(at=at)
         submitted=self.submit_ready()
         planned=[]
-        if self.context.config is not None:
+        if entry_day and self.context.config is not None:
             for signal in self.planner.entry_signals(at=at):
                 try:
                     planned.append(self.planner.plan_buy(signal,context=self.context,at=at,
