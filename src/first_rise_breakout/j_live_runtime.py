@@ -45,7 +45,11 @@ class JLiveRuntime:
                     planned.append('ERROR')
                 # Fresh KIS cash on each next signal; ACK state serializes with sizing.
                 for status,count in self.submit_ready().items():submitted[status]=submitted.get(status,0)+count
-        costs=self.cost_finalizer.finalize_due(today=at.date())
+        try:
+            costs=self.cost_finalizer.finalize_due(today=at.date())
+        except Exception as error:
+            LOGGER.exception('FIRST_RISE_COST_FINALIZATION_ERROR date=%s deferred=true',at.date())
+            costs={'status':'DEFERRED','error_type':type(error).__name__}
         if self.capacity_monitor is not None:
             try:self.capacity_monitor.refresh(at=at)
             except Exception:LOGGER.exception('FIRST_RISE_CAPACITY_MONITOR_ERROR')
