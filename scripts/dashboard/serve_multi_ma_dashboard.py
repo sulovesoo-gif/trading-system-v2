@@ -41,6 +41,7 @@ from src.service.minute_ma_dashboard_service import path_detail as minute_ma_pat
 from src.service.flow_v3_dashboard_service import dashboard_payload as flow_v3_dashboard_payload
 from src.service.flow_v3_dashboard_service import strategy_detail_payload, trade_detail_payload
 from src.service.flow_v3_dashboard_service import capital_efficiency_payload
+from src.service.first_rise_status_service import snapshot as first_rise_status_snapshot
 from src.service.sql_analysis_runner_service import SqlAnalysisSessions, SqlAnalysisSettings, excel_content_disposition
 
 KST = ZoneInfo("Asia/Seoul")
@@ -1063,6 +1064,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path in ("/first-rise", "/first-rise/"):
+            body = (ROOT / "reports/first-rise/status.html").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/first-rise/api/status":
+            try:
+                return self._send_json(first_rise_status_snapshot(self.pool, datetime.now(KST).date()))
+            except Exception:
+                logging.exception("FIRST_RISE status read failed")
+                return self._send_json({"error": "STATUS_READ_UNAVAILABLE"}, 503)
         if parsed.path in ("/leadership/api/options", "/leadership/api/ranking", "/leadership/api/history"):
             return self._proxy_leadership_get()
         if parsed.path.startswith("/sql-analysis/api/"):

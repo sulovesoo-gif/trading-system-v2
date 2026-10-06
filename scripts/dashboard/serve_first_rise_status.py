@@ -29,7 +29,7 @@ def handler(load):
             path=urlparse(self.path).path
             if path=='/':
                 body=PAGE.read_bytes();kind='text/html; charset=utf-8';status=200
-            elif path=='/api/status':
+            elif path in ('/api/status','/first-rise/api/status'):
                 try:
                     body=json.dumps(load(),ensure_ascii=False,default=serialize).encode();status=200
                 except Exception:

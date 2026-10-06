@@ -108,3 +108,29 @@ def test_error_copy_text_is_safe_and_bounded():
     copied=data['logs'][0]['copy_text']
     assert 'KST]' in copied and 'service=' in copied and 'level=ERROR' in copied
     assert 'SECRET' not in copied
+
+
+def test_shared_dashboard_first_rise_routes_are_readonly(monkeypatch):
+    from scripts.dashboard import serve_multi_ma_dashboard as dashboard
+    calls=[]
+    def load(pool,day):
+        calls.append(day)
+        return {'summary':{'signals':1}}
+    monkeypatch.setattr(dashboard,'first_rise_status_snapshot',load)
+    server=ThreadingHTTPServer(('127.0.0.1',0),dashboard.DashboardHandler)
+    thread=threading.Thread(target=server.serve_forever);thread.start()
+    try:
+        url=f'http://127.0.0.1:{server.server_port}'
+        with urlopen(url+'/first-rise/') as response:
+            page=response.read().decode()
+            assert 'frame-ancestors' in response.headers['Content-Security-Policy']
+        assert '<tbody id="rows">' in page and 'min-width:1420px' in page
+        assert '/first-rise/api/status' in page and 'copyButton(r.copy_text)' in page
+        with urlopen(url+'/first-rise/api/status') as response:
+            assert json.load(response)['summary']['signals']==1
+        for method in ('POST','PUT','PATCH','DELETE'):
+            with pytest.raises(HTTPError) as failure:
+                urlopen(Request(url+'/first-rise/api/status',data=b'{}',method=method))
+            assert failure.value.code==405
+        assert len(calls)==1
+    finally:server.shutdown();server.server_close();thread.join()
