@@ -5,11 +5,31 @@ from types import SimpleNamespace
 from unittest.mock import Mock,patch
 
 from src.first_rise_breakout.j_protection import ActualStopProtection
+from src.first_rise_breakout.j_live_repository import JLiveRepository
 from test.test_first_rise_j_wiring_e2e import WiringE2E,at
 from test import test_first_rise_j_exit_continuity as continuity
 
 
 class ProtectionPollTests(unittest.TestCase):
+    def test_signal_entry_price_not_actual_average_controls_protection(self):
+        common=dict(signal='first',sequence=1,signal_entry_price=D(11820),
+            actual=('trade',D(11870)),stock='123456',observed_at=at(9,15))
+        self.assertIsNone(JLiveRepository._protection_evidence(price=D(11850),**common))
+        evidence=JLiveRepository._protection_evidence(price=D(11810),**common)
+        self.assertEqual(D(evidence['signal_entry_price']),D(11820))
+        self.assertEqual(D(evidence['stop_reference_price']),D(11820))
+        self.assertEqual(D(evidence['actual_average_entry_price']),D(11870))
+        self.assertEqual(D(evidence['observed_market_price']),D(11810))
+        self.assertEqual(evidence['observation_timestamp'],at(9,15).isoformat())
+
+    def test_second_uses_second_signal_entry_price(self):
+        evidence=JLiveRepository._protection_evidence(signal='second',sequence=2,
+            signal_entry_price=D(12500),actual=('trade2',D(12600)),stock='123456',
+            price=D(12499),observed_at=at(10,15))
+        self.assertEqual(evidence['market_signal_id'],'second')
+        self.assertEqual(evidence['signal_sequence'],2)
+        self.assertEqual(D(evidence['stop_reference_price']),D(12500))
+
     def worker(self,stocks):
         self.planner=Mock()
         self.planner.protection_stocks.return_value=stocks
@@ -56,15 +76,23 @@ class ProtectionE2E(WiringE2E):
         self.cycle();self.fill('1');self.cycle()
 
     def test_protection_equal_above_exact_once_and_market_independence(self):
-        self.opened()
-        self.assertEqual(self.protect(1031),0);self.assertEqual(self.protect(1032),0)
+        self.cycle();self.fill('1',price=1040);self.cycle()
+        # Signal entry is 1031. A quote below the actual 1040 average but at
+        # or above the signal price must not trigger protection.
+        self.assertEqual(self.protect(1035),0);self.assertEqual(self.protect(1031),0)
         self.assertEqual(self.protect(1030),1)
         self.assertIsNone(self.query('SELECT exit_reason FROM first_rise_j_market_signal')[0][0])
         self.assertEqual(self.protect(1029),0)
         self.market_stop();self.cycle();self.protect(1028)
         self.assertEqual(len(self.posts),2)
         detail=self.query("SELECT detail FROM live_order_request WHERE side='SELL'")[0][0]
-        self.assertEqual(D(detail['actual_average_entry_price']),D(1031))
+        self.assertEqual(D(detail['signal_entry_price']),D(1031))
+        self.assertEqual(D(detail['stop_reference_price']),D(1031))
+        self.assertEqual(D(detail['actual_average_entry_price']),D(1040))
+        self.assertEqual(D(detail['observed_market_price']),D(1030))
+        self.assertEqual(detail['signal_sequence'],1)
+        self.assertIn('market_signal_id',detail)
+        self.assertEqual(detail['observation_timestamp'],self.now.isoformat())
         self.assertEqual(detail['actual_exit_reason'],'ACTUAL_STOP_ENTRY_BREAK_PROTECTION')
 
     def test_protection_partial_unknown_restart_no_duplicate(self):
@@ -146,3 +174,15 @@ class ProtectionSecondE2E(continuity.ExitContinuityE2E):
 
     def test_actual_protection_second_aggregate_ownership(self):
         self.test_c_aggregate_fifo_amount_epoch_and_compound()
+
+    def test_second_uses_its_own_signal_entry_price(self):
+        self.first_residual();self.second();self.cycle();self.fill('3',price=1100);self.cycle()
+        second=self.query('SELECT market_signal_id,raw_entry_price FROM first_rise_j_market_signal WHERE signal_sequence=2')[0]
+        self.assertEqual(ProtectionE2E.protect(self,1050),0)
+        self.assertEqual(ProtectionE2E.protect(self,1040),1)
+        detail=self.query("SELECT detail FROM live_order_request WHERE side='SELL' ORDER BY created_at DESC LIMIT 1")[0][0]
+        self.assertEqual(detail['market_signal_id'],str(second[0]))
+        self.assertEqual(D(detail['signal_entry_price']),second[1])
+        self.assertEqual(D(detail['stop_reference_price']),second[1])
+        self.assertEqual(D(detail['actual_average_entry_price']),D(1100))
+        self.assertEqual(detail['signal_sequence'],2)

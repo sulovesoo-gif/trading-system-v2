@@ -58,7 +58,8 @@ def sample():
     return dict(signal=dict(market_signal_id='s',entry_signal_time='2026-10-06T13:57:00',
         stock_code='049080',signal_sequence=2,raw_entry_price=11820,
         entry_evidence={'sequence_replay_only':True,'live_entry_eligible':False},
-        exit_reason='BOOK_TENKAN_PROFIT',exit_execution_time='2026-10-06T14:14:00'),
+        exit_reason='BOOK_TENKAN_PROFIT',exit_signal_time='2026-10-06T14:13:00',
+        exit_execution_time='2026-10-06T14:14:00'),
         stock_name='fixture',discovered_at='2026-10-06T14:00:00')
 
 
@@ -82,7 +83,7 @@ def test_readonly_status_endpoint_render_and_copy_smoke():
     data=snapshot(SimpleNamespace(connection=connection),DAY.date(),logs=unavailable)
     assert queries[0]=='SET TRANSACTION READ ONLY'
     assert data['log_access']=='LOG_ACCESS_UNAVAILABLE'
-    assert 'BOOTSTRAP REPLAY' in data['rows'][0]['copy_text']
+    assert '과거신호 복원' in data['rows'][0]['copy_text']
     assert 'BOOK_TENKAN_PROFIT' in data['rows'][0]['copy_text']
     server=ThreadingHTTPServer(('127.0.0.1',0),handler(lambda:data))
     thread=threading.Thread(target=server.serve_forever);thread.start()
@@ -110,6 +111,30 @@ def test_error_copy_text_is_safe_and_bounded():
     assert 'SECRET' not in copied
 
 
+def test_status_distinguishes_market_and_protection_times_without_guessing():
+    protected=sample();protected.update(cost=dict(buy_quantity=10,buy_amount=D(118700),sell_quantity=10,
+        sell_amount=D(118100),provisional_applied_at='2026-10-06T14:01:00'),capacity={},intent={},paper=None,shadow=None,
+        orders=[dict(side='SELL',created_at='2026-10-06T14:00:01',broker_created_at='2026-10-06T14:00:02',trigger=dict(
+            actual_exit_reason='ACTUAL_STOP_ENTRY_BREAK_PROTECTION',observation_timestamp='2026-10-06T14:00:00',
+            stop_reference_price='11820',observed_market_price='11810'),
+            observation=dict(first_fill_observed_at='2026-10-06T14:00:03'))])
+    row=lifecycle(protected)
+    assert row['market_exit_signal_time']=='2026-10-06T14:13:00'
+    assert row['market_exit_time']=='2026-10-06T14:14:00'
+    assert row['protection_trigger_time']=='2026-10-06T14:00:00'
+    assert row['protection_reference_price']=='11820'
+    assert row['protection_observed_price']=='11810'
+    assert row['actual_sell_order_time']=='2026-10-06T14:00:02'
+    assert row['actual_exit_time']=='2026-10-06T14:00:03'
+    assert '5초 보호청산=조건 2026-10-06T14:00:00' in row['copy_text']
+
+    historical=sample();historical.update(cost={},capacity={},intent={},paper=None,shadow=None,orders=[])
+    old=lifecycle(historical)
+    assert old['protection_trigger_time'] is None
+    assert old['actual_sell_order_time'] is None
+    assert old['actual_exit_time'] is None
+
+
 def test_shared_dashboard_first_rise_routes_are_readonly(monkeypatch):
     from scripts.dashboard import serve_multi_ma_dashboard as dashboard
     calls=[]
@@ -126,6 +151,9 @@ def test_shared_dashboard_first_rise_routes_are_readonly(monkeypatch):
             assert 'frame-ancestors' in response.headers['Content-Security-Policy']
         assert '<tbody id="rows">' in page and 'min-width:1420px' in page
         assert '/first-rise/api/status' in page and 'copyButton(r.copy_text)' in page
+        for label in ('과거신호 복원','실주문 가능','실제 보유','주문 대기 / 상태 미확정',
+                      '독립 시장청산','5초 보호청산 / 실제 매도'):
+            assert label in page
         with urlopen(url+'/first-rise/api/status') as response:
             assert json.load(response)['summary']['signals']==1
         for method in ('POST','PUT','PATCH','DELETE'):

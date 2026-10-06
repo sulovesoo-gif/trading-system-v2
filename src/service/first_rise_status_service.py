@@ -29,8 +29,9 @@ def signal_text(row):
     return (f"{row['time']} | {row['stock']} {row['name'] or ''} | {row['sequence']} | {row['status']}\n"
         f"신호 {row['signal_price']} → BUY {row['buy_quantity']}주 @{row['buy_average']}"
         f" → SELL {row['sell_quantity']}주 @{row['sell_average']}\n"
-        f"독립 EXIT={row['market_exit_reason']} {row['market_exit_time']}\n"
-        f"actual EXIT={row['actual_exit_reason']} {row['actual_exit_time']}\n"
+        f"독립 시장청산={row['market_exit_reason']} 신호 {row['market_exit_signal_time']} 실행 {row['market_exit_time']}\n"
+        f"5초 보호청산=조건 {row['protection_trigger_time']} 기준 {row['protection_reference_price']} 관찰 {row['protection_observed_price']}\n"
+        f"실제 청산=주문 {row['actual_sell_order_time']} 체결관찰 {row['actual_exit_time']}\n"
         f"{row['pnl_label']}={row['net_pnl']}원\n"+json.dumps(redact(row['evidence']),ensure_ascii=False,default=str))
 
 
@@ -75,17 +76,26 @@ def lifecycle(row):
     ev=capacity.get('evidence') or {};buy=c.get('buy_quantity') or 0;sell=c.get('sell_quantity') or 0
     final=c.get('final_net_realized_pnl')
     closed=bool(c.get('provisional_applied_at'))
-    if evidence.get('sequence_replay_only'):status='BOOTSTRAP REPLAY — LIVE 주문 없음(정상)'
-    elif closed:status='CLOSED'
-    elif buy>sell:status='OPEN'
-    else:status=intent.get('planning_reason') or ('LIVE ELIGIBLE — 주문 없음/대기' if evidence.get('live_entry_eligible') else 'PAPER_ONLY')
+    if evidence.get('sequence_replay_only'):status='과거신호 복원 — 실주문 없음(정상)'
+    elif closed:status='청산 완료'
+    elif buy>sell:status='실제 보유'
+    else:status=intent.get('planning_reason') or ('실주문 가능 — 주문 없음/대기' if evidence.get('live_entry_eligible') else '시장신호만 추적')
     sell_reasons=[(o.get('trigger') or {}).get('actual_exit_reason') for o in row.get('orders') or [] if o.get('side')=='SELL']
+    protection_orders=[o for o in row.get('orders') or [] if o.get('side')=='SELL'
+        and (o.get('trigger') or {}).get('actual_exit_reason')=='ACTUAL_STOP_ENTRY_BREAK_PROTECTION']
+    protection=protection_orders[-1] if protection_orders else {}
+    trigger=protection.get('trigger') or {};observation=protection.get('observation') or {}
+    actual_observed=ev.get('actual_exit_observed_at') or observation.get('terminal_observed_at') or observation.get('first_fill_observed_at')
     result=dict(id=s['market_signal_id'],time=s['entry_signal_time'],stock=s['stock_code'],name=row.get('stock_name'),
         sequence='FIRST' if s['signal_sequence']==1 else 'SECOND',status=status,
         signal_price=s['raw_entry_price'],buy_quantity=buy,sell_quantity=sell,
         buy_average=c['buy_amount']/buy if buy else None,sell_average=c['sell_amount']/sell if sell else None,
-        market_exit_time=s.get('exit_execution_time'),market_exit_reason=s.get('exit_reason'),market_exit_price=s.get('raw_exit_price'),
-        actual_exit_time=ev.get('actual_exit_observed_at'),actual_exit_reason=ev.get('actual_exit_reason') or next((r for r in reversed(sell_reasons) if r),None),
+        market_exit_signal_time=s.get('exit_signal_time'),market_exit_time=s.get('exit_execution_time'),
+        market_exit_reason=s.get('exit_reason'),market_exit_price=s.get('raw_exit_price'),
+        protection_trigger_time=trigger.get('observation_timestamp'),protection_reference_price=trigger.get('stop_reference_price'),
+        protection_observed_price=trigger.get('observed_market_price'),
+        actual_sell_order_time=protection.get('broker_created_at') or protection.get('created_at'),
+        actual_exit_time=actual_observed,actual_exit_reason=ev.get('actual_exit_reason') or next((r for r in reversed(sell_reasons) if r),None),
         pnl_label='확정 손익' if final is not None else '잠정 손익' if closed else '미실현/미체결',
         net_pnl=final if final is not None else c.get('provisional_net_realized_pnl'),
         evidence=dict(discovered_at=row.get('discovered_at'),entry=evidence,market_exit=s.get('exit_evidence'),
@@ -108,8 +118,9 @@ def snapshot(pool,day,*,logs=operation_logs):
             LEFT JOIN first_rise_j_capacity_observation v ON v.trade_id=i.trade_id
             LEFT JOIN first_rise_j_paper_trade p ON p.market_signal_id=s.market_signal_id
             LEFT JOIN first_rise_j_shadow_trade sh ON sh.market_signal_id=s.market_signal_id
-            LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('side',r.side,'status',r.status,
+            LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('side',r.side,'status',r.status,'created_at',r.created_at,
                 'quantity',r.requested_quantity,'reason',r.reason,'trigger',r.detail,'broker_status',o.status,
+                'broker_created_at',o.created_at,
                 'checkpoint',to_jsonb(f),'observation',to_jsonb(ob)) ORDER BY r.created_at) rows
                 FROM live_order_request r LEFT JOIN live_broker_order o USING(order_request_id)
                 LEFT JOIN first_rise_j_fill_checkpoint f USING(broker_order_id)

@@ -6,10 +6,10 @@
 <style>
 body{max-width:1920px;padding:20px 28px}.grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}.card{padding:12px;margin-bottom:0}.value{font-size:21px}#services{grid-template-columns:repeat(2,minmax(0,1fr));margin:12px 0}#money{display:flex;align-items:center;gap:24px;flex-wrap:wrap;border-left:4px solid #7faaff}#money p{margin:0}.table-wrap{overflow:auto;border:1px solid #304056;border-radius:8px;margin-top:12px;max-height:65vh}table{border-collapse:collapse;width:100%;min-width:1420px;font-size:13px}th{position:sticky;top:0;background:#24344b;text-align:left;color:#b7c9e2;z-index:1}th,td{padding:11px 12px;border-bottom:1px solid #304056;vertical-align:top;white-space:nowrap}tbody tr:hover{background:#1a2535}.sub{font-size:12px;color:#9aaac0;margin-top:5px;white-space:normal;max-width:230px}.detail td{white-space:normal;background:#172131;padding:18px}.detail pre{max-width:1500px}.log-table{min-width:850px}.log-table td.message{white-space:pre-wrap;overflow-wrap:anywhere;min-width:300px}.table-wrap.logs{max-height:360px}a{color:#accdff}.toolbar h2{margin-bottom:8px}.service-bad{border-color:#df876c}@media(max-width:900px){body{padding:12px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}#money{gap:10px}#services{grid-template-columns:1fr}.table-wrap{max-height:none}}
 </style>
-<header><h1>FIRST_RISE · 운영 상태</h1><div class="muted">READ ONLY · 8초 자동 갱신 · KST · 주문/설정 조작 없음</div><p id="updated" class="muted"></p><p id="loaderror" class="bad"></p></header>
+<header><h1>FIRST_RISE · 운영 상태</h1><div class="muted">읽기 전용 · 8초 자동 갱신 · 한국시간 · 주문/설정 조작 없음</div><p id="updated" class="muted"></p><p id="loaderror" class="bad"></p></header>
 <section id="money" class="card"></section><section id="services" class="grid"></section><section id="summary" class="grid"></section>
 <div class="toolbar"><h2>오늘 신호 → 주문 → 청산 → 손익</h2><a href="/flow-v3.html">FLOW V3</a></div><div class="muted">실제 거래와 독립 시장 EXIT를 구분합니다. 상세 버튼에서 판단 근거 확인 · 복사로 전체 근거 전달</div>
-<div class="table-wrap"><table aria-label="오늘 FIRST_RISE 신호 거래 lifecycle"><thead><tr><th>신호 시각 (KST)</th><th>종목 / 순번</th><th>상태 / 주문 여부</th><th>신호가격</th><th>실제 BUY</th><th>독립 시장 EXIT</th><th>실제 SELL / 보호 STOP</th><th>실제 순손익</th><th>근거</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="table-wrap"><table aria-label="오늘 FIRST_RISE 신호 거래 흐름"><thead><tr><th>신호 시각 (한국시간)</th><th>종목 / 순번</th><th>상태 / 주문 여부</th><th>신호가격</th><th>실제 매수</th><th>독립 시장청산</th><th>5초 보호청산 / 실제 매도</th><th>실제 순손익</th><th>근거</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="toolbar"><h2>최근 WARNING / ERROR</h2><button id="copylogs">최근 오류 전체 복사</button></div><p id="logstatus" class="muted"></p><div class="table-wrap logs"><table class="log-table" aria-label="운영 오류 로그"><thead><tr><th>KST 시각</th><th>서비스</th><th>수준</th><th>메시지</th><th>전달</th></tr></thead><tbody id="logs"></tbody></table></div>
 <script>
 const $=id=>document.getElementById(id),fmt=v=>v===null||v===undefined?'—':new Intl.NumberFormat('ko-KR',{maximumFractionDigits:2}).format(Number(v));
@@ -27,7 +27,9 @@ function signalRows(r){
  toggle.setAttribute('aria-expanded',String(!detail.hidden));toggle.onclick=()=>{detail.hidden=!detail.hidden;if(detail.hidden)expanded.delete(r.id);else expanded.add(r.id);toggle.textContent=detail.hidden?'상세':'접기';toggle.setAttribute('aria-expanded',String(!detail.hidden))};
  actions.append(toggle,document.createTextNode(' '),copyButton(r.copy_text));
  const pnl=cell(r.net_pnl==null?'—':`${fmt(r.net_pnl)}원`,r.pnl_label);if(r.net_pnl!=null)pnl.className=Number(r.net_pnl)<0?'negative':'positive';
- row.append(cell(time(r.time)),cell(`${r.stock} ${r.name??''}`,r.sequence),cell(r.status),cell(fmt(r.signal_price)),cell(`${fmt(r.buy_quantity)}주 @${fmt(r.buy_average)}`),cell(`${r.market_exit_reason??'—'} @${fmt(r.market_exit_price)}`,time(r.market_exit_time)),cell(`${fmt(r.sell_quantity)}주 @${fmt(r.sell_average)}`,`${r.actual_exit_reason??'—'} · ${time(r.actual_exit_time)}`),pnl,actions);
+ const marketSub=`신호 ${time(r.market_exit_signal_time)} · 실행 ${time(r.market_exit_time)}`;
+ const protectionSub=`조건 ${time(r.protection_trigger_time)} · 기준 ${fmt(r.protection_reference_price)} · 관찰 ${fmt(r.protection_observed_price)} · 주문 ${time(r.actual_sell_order_time)} · 체결관찰 ${time(r.actual_exit_time)}`;
+ row.append(cell(time(r.time)),cell(`${r.stock} ${r.name??''}`,r.sequence),cell(r.status),cell(fmt(r.signal_price)),cell(`${fmt(r.buy_quantity)}주 @${fmt(r.buy_average)}`),cell(`${r.market_exit_reason??'—'} @${fmt(r.market_exit_price)}`,marketSub),cell(`${fmt(r.sell_quantity)}주 @${fmt(r.sell_average)}`,protectionSub),pnl,actions);
  return [row,detail];
 }
 async function copy(value,button){try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(value);else{const t=document.createElement('textarea');t.value=value;document.body.append(t);t.select();if(!document.execCommand('copy'))throw Error();t.remove()}button.textContent='복사됨';setTimeout(()=>button.textContent='복사',1500)}catch{button.textContent='복사 실패';}}
@@ -37,7 +39,7 @@ function render(data){
  $('updated').textContent=`${data.date} · 최근 조회 ${data.generated_at}`;
  const s=data.summary;$('money').replaceChildren(txt('div',`오늘 실제 ${s.pnl_label} · CLOSE 기준 (${s.finalized_count}/${s.completed}건 비용 확정)`,'muted'),txt('div',`${fmt(s.net_pnl)}원`,'value '+(Number(s.net_pnl)<0?'negative':'positive')),txt('p',`완료거래 매수 ${fmt(s.buy_amount)} / 매도 ${fmt(s.sell_amount)} / 수수료 ${fmt(s.fee)} / 세금 ${fmt(s.tax)} / 기타 ${fmt(s.other_cost)}원`,'muted'));
  $('services').replaceChildren(...data.services.map(x=>{let c=card(x.name.includes('collector')?'Collector':'LIVE',x.ActiveState==='active'?'프로세스 정상':x.ActiveState);c.append(txt('div',`PID ${x.MainPID??'—'} · 시작 ${x.ExecMainStartTimestamp??'—'}`,'muted'));return c}));
- const stats=[['후보',s.candidates],['시장신호',s.signals],['Replay',s.replay],['LIVE eligible',s.eligible],['actual OPEN',s.opened],['PENDING / UNKNOWN',s.pending],['완료거래',s.completed],['공통 슬롯(원)',fmt(s.common_slot)],['마지막 refresh',data.last_refresh??'확인 불가'],['마지막 시장신호',s.last_signal??'—']];
+ const stats=[['후보',s.candidates],['시장신호',s.signals],['과거신호 복원',s.replay],['실주문 가능',s.eligible],['실제 보유',s.opened],['주문 대기 / 상태 미확정',s.pending],['완료거래',s.completed],['공통 슬롯(원)',fmt(s.common_slot)],['마지막 상태 갱신',data.last_refresh??'확인 불가'],['마지막 시장신호',s.last_signal??'—']];
  $('summary').replaceChildren(...stats.map(([k,v])=>card(k,v)));
  $('rows').replaceChildren(...data.rows.flatMap(signalRows));
  if(!data.rows.length)$('rows').append(emptyRow('오늘 시장신호 없음',9));

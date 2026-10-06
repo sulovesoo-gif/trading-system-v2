@@ -127,6 +127,16 @@ class JLiveRepository:
              Decimal(evidence.get('common_slot_amount','0')),cash,Jsonb(detail)))
         return request
 
+    @staticmethod
+    def _protection_evidence(*,signal,sequence,signal_entry_price,actual,stock,price,observed_at):
+        if actual is None or price>=signal_entry_price:return None
+        reason='ACTUAL_STOP_ENTRY_BREAK_PROTECTION'
+        return dict(actual_exit_reason=reason,trigger_trade_id=str(actual[0]),stock_code=stock,
+            market_signal_id=str(signal),signal_sequence=sequence,
+            signal_entry_price=str(signal_entry_price),stop_reference_price=str(signal_entry_price),
+            actual_average_entry_price=str(actual[1]),observed_market_price=str(price),
+            observation_timestamp=observed_at.isoformat(),observation_source='KIS_FHKST01010100_RESPONSE_RECEIVED')
+
     def plan_exits(self,*,at,protection=None):
         # protection is a fresh, finite KIS quote keyed by stock, not a market EXIT.
         # Both planners share the same transaction lock and SELL generation keys.
@@ -140,7 +150,7 @@ class JLiveRepository:
                 if protection is not None and stock not in protection:continue
                 if self.pending_stock(q,stock=stock,side='SELL' if protection is not None else None):continue
                 q.execute('''SELECT s.market_signal_id,s.exit_signal_time,s.raw_exit_price,s.exit_reason,
-                    s.signal_sequence,i.planning_reason,i.order_request_id,s.entry_signal_time
+                    s.signal_sequence,s.raw_entry_price,i.planning_reason,i.order_request_id,s.entry_signal_time
                     FROM first_rise_j_market_signal s LEFT JOIN first_rise_j_live_intent i
                       ON i.market_signal_id=s.market_signal_id AND i.side='BUY'
                     WHERE s.stock_code=%s
@@ -148,7 +158,7 @@ class JLiveRepository:
                     ORDER BY s.entry_signal_time DESC LIMIT 1''',(stock,))
                 event=q.fetchone()
                 if event is None:continue
-                signal,signal_time,price,reason,sequence,planning,buy_request,entry_time=event
+                signal,signal_time,price,reason,sequence,signal_entry_price,planning,buy_request,entry_time=event
                 evidence={'ownership':'FIRST_RISE','exit_state':'EXIT_RECOVERY'}
                 q.execute('''SELECT i.signal_time,r.reference_price,r.detail FROM first_rise_j_live_intent i
                     JOIN live_order_request r ON r.order_request_id=i.order_request_id
@@ -165,14 +175,15 @@ class JLiveRepository:
                         WHERE i.market_signal_id=%s AND c.buy_quantity>c.sell_quantity''',(signal,))
                     actual=q.fetchone()
                     # FIRST residual stays retained while SECOND has no actual lot.
-                    # A filled SECOND is protected against its own actual entry.
-                    if actual is None or price>=actual[1]:continue
+                    # A filled FIRST/SECOND lot is protected against that market
+                    # signal's own entry price, not its broker average fill price.
+                    protection_evidence=self._protection_evidence(signal=signal,sequence=sequence,
+                        signal_entry_price=signal_entry_price,actual=actual,stock=stock,price=price,
+                        observed_at=observed_at)
+                    if protection_evidence is None:continue
                     signal_time=observed_at
                     reason='ACTUAL_STOP_ENTRY_BREAK_PROTECTION'
-                    evidence.update(actual_exit_reason=reason,trigger_trade_id=str(actual[0]),stock_code=stock,
-                        actual_average_entry_price=str(actual[1]),stop_reference_price=str(actual[1]),
-                        observed_market_price=str(price),observation_timestamp=observed_at.isoformat(),
-                        observation_source='KIS_FHKST01010100_RESPONSE_RECEIVED')
+                    evidence.update(protection_evidence)
                 elif prior_protection and reason is None:
                     # CANCELLED residual recovery survives restart/price rebound,
                     # but a newer SECOND signal does not inherit FIRST's trigger.
