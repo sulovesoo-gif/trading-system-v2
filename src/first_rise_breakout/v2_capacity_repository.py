@@ -3,6 +3,7 @@ import logging
 from decimal import Decimal
 from psycopg.types.json import Jsonb
 from .v2_capacity import CapacityConfig,shadow_result,rolling_comparison,SHADOW_VERSION,FORMULA_VERSION
+from .actual_exit_evidence import load_actual_exit
 
 LOGGER=logging.getLogger(__name__)
 
@@ -82,11 +83,16 @@ class CapacityMonitor:
                 ev['fill_time_basis']='KIS_CUMULATIVE_POLL_OBSERVATION_NOT_EXACT_EXECUTION_TIME'
                 ev['live_closed_at']=closed.isoformat() if closed else None
                 entry_amount=ev.get('recent_5m_traded_amount')
-                exit_amount=((exit_ev or {}).get('exit_liquidity') or {}).get('recent_5m_traded_amount')
+                actual_exit=load_actual_exit(q,trade=trade,stock=stock,quantity=sq,amount=sell)
+                ev.update(actual_exit)
+                ev.update(market_exit_time=exit_at.isoformat() if exit_at else None,
+                    market_exit_reason=reason,market_exit_price=str(raw_exit) if raw_exit is not None else None,
+                    market_exit_liquidity=(exit_ev or {}).get('exit_liquidity'))
+                exit_amount=actual_exit['actual_exit_recent_5m_amount']
                 ev.update(live_invested_cash=str(buy),actual_buy_amount=str(buy),actual_sell_amount=str(sell),
                     entry_actual_participation_pct=str(buy/Decimal(entry_amount)*100) if entry_amount else None,
                     exit_recent_5m_amount=exit_amount,
-                    exit_actual_participation_pct=str(sell/Decimal(exit_amount)*100) if exit_amount else None,
+                    exit_actual_participation_pct=actual_exit['actual_exit_participation_pct'],
                     entry_slippage_bps_vs_shadow=str((buy/bq/(raw_entry*Decimal('1.0002'))-1)*10000),
                     exit_slippage_bps_vs_shadow=str((sell/sq/(raw_exit*Decimal('.9998'))-1)*10000) if sq and raw_exit else None,
                     return_gap_bp=str(((final_return if final_return is not None else provisional)-shadow)*10000)

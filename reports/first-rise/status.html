@@ -1,0 +1,32 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FIRST_RISE 운영 상태</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#e6edf6;background:#101723;color-scheme:dark}body{max-width:1100px;margin:auto;padding:18px}h1{font-size:24px;margin-bottom:5px}h2{font-size:18px;margin-top:26px}.muted{color:#9aaac0;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px}.card,details,.error{background:#1a2535;border:1px solid #304056;border-radius:10px;padding:13px;margin-bottom:9px}.value{font-size:24px;font-weight:700;margin-top:6px}#money .value{font-size:34px}.negative{color:#ffb1b1}.positive{color:#98e6b9}summary{cursor:pointer;line-height:1.7;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:430px;overflow:auto}button{font:inherit;font-size:12px;border:1px solid #64758d;border-radius:6px;padding:5px 9px;background:#24344b;color:inherit;cursor:pointer;min-height:30px}.error{border-left:3px solid #e5ac58}.error p{white-space:pre-wrap;overflow-wrap:anywhere}.toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center}.bad{color:#ffc185}#loaderror{white-space:pre-wrap}dt{color:#9aaac0}dd{margin:0 0 10px}@media(max-width:500px){body{padding:10px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.value{font-size:20px}}
+</style>
+<header><h1>FIRST_RISE · 운영 상태</h1><div class="muted">READ ONLY · 8초 자동 갱신 · KST · 주문/설정 조작 없음</div><p id="updated" class="muted"></p><p id="loaderror" class="bad"></p></header>
+<section id="money" class="card"></section><section id="services" class="grid"></section><section id="summary" class="grid"></section>
+<h2>오늘 신호 → 실제 거래</h2><div class="muted">펼치면 판단 근거·주문·checkpoint·비용 확인 / 복사로 전체 근거 전달</div><section id="rows"></section>
+<div class="toolbar"><h2>최근 WARNING / ERROR</h2><button id="copylogs">최근 오류 전체 복사</button></div><p id="logstatus" class="muted"></p><section id="logs"></section>
+<script>
+const $=id=>document.getElementById(id),fmt=v=>v===null||v===undefined?'—':new Intl.NumberFormat('ko-KR',{maximumFractionDigits:2}).format(Number(v));
+const txt=(tag,value,cls)=>{let e=document.createElement(tag);e.textContent=value??'—';if(cls)e.className=cls;return e};
+let lastLogs=[];
+async function copy(value,button){try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(value);else{const t=document.createElement('textarea');t.value=value;document.body.append(t);t.select();if(!document.execCommand('copy'))throw Error();t.remove()}button.textContent='복사됨';setTimeout(()=>button.textContent='복사',1500)}catch{button.textContent='복사 실패';}}
+function copyButton(value){let b=txt('button','복사');b.onclick=()=>copy(value,b);return b}
+function card(label,value){const c=txt('div',null,'card');c.textContent='';c.append(txt('div',label,'muted'),txt('div',value,'value'));return c}
+function render(data){
+ $('updated').textContent=`${data.date} · 최근 조회 ${data.generated_at}`;
+ const s=data.summary;$('money').replaceChildren(txt('div',`오늘 실제 ${s.pnl_label} · CLOSE 기준 (${s.finalized_count}/${s.completed}건 비용 확정)`,'muted'),txt('div',`${fmt(s.net_pnl)}원`,'value '+(Number(s.net_pnl)<0?'negative':'positive')),txt('p',`완료거래 매수 ${fmt(s.buy_amount)} / 매도 ${fmt(s.sell_amount)} / 수수료 ${fmt(s.fee)} / 세금 ${fmt(s.tax)} / 기타 ${fmt(s.other_cost)}원`,'muted'));
+ $('services').replaceChildren(...data.services.map(x=>{let c=card(x.name.includes('collector')?'Collector':'LIVE',x.ActiveState==='active'?'프로세스 정상':x.ActiveState);c.append(txt('div',`PID ${x.MainPID??'—'} · 시작 ${x.ExecMainStartTimestamp??'—'}`,'muted'));return c}));
+ const stats=[['후보',s.candidates],['시장신호',s.signals],['Replay',s.replay],['LIVE eligible',s.eligible],['actual OPEN',s.opened],['PENDING / UNKNOWN',s.pending],['완료거래',s.completed],['공통 슬롯(원)',fmt(s.common_slot)],['마지막 refresh',data.last_refresh??'확인 불가'],['마지막 시장신호',s.last_signal??'—']];
+ $('summary').replaceChildren(...stats.map(([k,v])=>card(k,v)));
+ const expanded=new Set([...$('rows').querySelectorAll('details[open]')].map(x=>x.dataset.id));
+ $('rows').replaceChildren(...data.rows.map(r=>{let d=document.createElement('details');d.dataset.id=r.id;d.open=expanded.has(r.id);d.append(txt('summary',`${r.time} | ${r.stock} ${r.name??''} | ${r.sequence} · ${r.status}\n신호 ${fmt(r.signal_price)} → BUY ${fmt(r.buy_quantity)}주 @${fmt(r.buy_average)} → SELL ${fmt(r.sell_quantity)}주 @${fmt(r.sell_average)} → ${r.pnl_label} ${fmt(r.net_pnl)}원`));d.append(copyButton(r.copy_text),txt('p',`시장 EXIT: ${r.market_exit_time??'—'} · ${r.market_exit_reason??'—'} @${fmt(r.market_exit_price)}\nactual EXIT 관찰: ${r.actual_exit_time??'확인 불가'} · ${r.actual_exit_reason??'—'}`),txt('pre',JSON.stringify(r.evidence,null,2)));return d}));
+ if(!data.rows.length)$('rows').append(txt('p','오늘 시장신호 없음','muted'));
+ lastLogs=data.logs;$('logstatus').textContent=data.log_access==='OK'?'최근 로그 범위에서 WARNING / ERROR 최대 50건':'LOG_ACCESS_UNAVAILABLE — 실행 계정의 journal 읽기 권한 확인 필요';
+ $('logs').replaceChildren(...data.logs.map(r=>{let e=txt('div',null,'error');e.textContent='';let h=txt('div',null,'toolbar');h.textContent='';h.append(txt('span',`${r.time} · ${r.service} · ${r.level}`,'muted'),copyButton(r.copy_text));e.append(h,txt('p',r.message));return e}));
+ if(!data.logs.length)$('logs').append(txt('p','표시할 오류 없음 (조회된 로그 범위 기준)','muted'));
+}
+$('copylogs').onclick=()=>copy(lastLogs.map(r=>r.copy_text).join('\n\n'),$('copylogs'));
+async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store',signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error('상태 조회 실패');render(await response.json());$('loaderror').textContent=''}catch(e){$('loaderror').textContent='STATUS_READ_UNAVAILABLE · 이전 표시값은 최신 상태가 아닙니다.'}finally{setTimeout(refresh,8000)}}refresh();
+</script></html>

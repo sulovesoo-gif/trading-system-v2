@@ -210,6 +210,7 @@ class JLiveRepository:
                 generation=q.fetchone()[0]
                 intent=identity(str(signal)+'|SELL|'+str(generation))
                 evidence['sell_request_timestamp']=at.isoformat()
+                evidence.setdefault('actual_exit_reason',reason)
                 request=self._request(q,signal_id=signal,intent=intent,trade=trade,stock=stock,side='SELL',
                     quantity=int(qty),price=price,cash=0,at=at,evidence=evidence,generation=generation)
                 q.execute('''INSERT INTO first_rise_j_live_intent(intent_id,market_signal_id,trade_id,side,signal_time,order_request_id,generation)
