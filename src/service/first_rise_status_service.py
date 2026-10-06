@@ -104,13 +104,29 @@ def lifecycle(row):
     return result
 
 
+def attach_orders(rows,links):
+    """Attach one batched order result to direct signals and allocated trades."""
+    signals={str(row['signal']['market_signal_id']):index for index,row in enumerate(rows)}
+    trades={str((row.get('intent') or {}).get('trade_id')):index for index,row in enumerate(rows)
+        if (row.get('intent') or {}).get('trade_id') is not None}
+    attached=[{} for _ in rows]
+    for signal_id,trade_id,order in links:
+        targets=set()
+        if signal_id is not None and str(signal_id) in signals:targets.add(signals[str(signal_id)])
+        if trade_id is not None and str(trade_id) in trades:targets.add(trades[str(trade_id)])
+        for index in targets:attached[index][str(order['order_request_id'])]=order
+    for index,row in enumerate(rows):
+        row['orders']=sorted(attached[index].values(),key=lambda order:(str(order.get('created_at') or ''),str(order['order_request_id'])))
+    return rows
+
+
 def snapshot(pool,day,*,logs=operation_logs):
     with pool.connection() as c,c.transaction(),c.cursor() as q:
         q.execute('SET TRANSACTION READ ONLY')
         q.execute("SET LOCAL statement_timeout='5s'")
         q.execute("""SELECT jsonb_build_object('signal',to_jsonb(s),'stock_name',to_jsonb(e)->>'stock_name',
             'discovered_at',e.discovered_at,'intent',to_jsonb(i),'cost',to_jsonb(c),'capacity',to_jsonb(v),
-            'paper',to_jsonb(p),'shadow',to_jsonb(sh),'orders',orders.rows)
+            'paper',to_jsonb(p),'shadow',to_jsonb(sh))
             FROM first_rise_j_market_signal s
             JOIN first_rise_breakout_candidate_event e USING(candidate_event_id)
             LEFT JOIN first_rise_j_live_intent i ON i.market_signal_id=s.market_signal_id AND i.side='BUY'
@@ -118,17 +134,33 @@ def snapshot(pool,day,*,logs=operation_logs):
             LEFT JOIN first_rise_j_capacity_observation v ON v.trade_id=i.trade_id
             LEFT JOIN first_rise_j_paper_trade p ON p.market_signal_id=s.market_signal_id
             LEFT JOIN first_rise_j_shadow_trade sh ON sh.market_signal_id=s.market_signal_id
-            LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('side',r.side,'status',r.status,'created_at',r.created_at,
-                'quantity',r.requested_quantity,'reason',r.reason,'trigger',r.detail,'broker_status',o.status,
-                'broker_created_at',o.created_at,
-                'checkpoint',to_jsonb(f),'observation',to_jsonb(ob)) ORDER BY r.created_at) rows
-                FROM live_order_request r LEFT JOIN live_broker_order o USING(order_request_id)
+            WHERE s.business_date=%s ORDER BY s.entry_signal_time DESC,s.stock_code""",(day,))
+        base_rows=[row[0] for row in q.fetchall()]
+        signal_ids=[str(row['signal']['market_signal_id']) for row in base_rows]
+        trade_ids=[str(row['intent']['trade_id']) for row in base_rows if row.get('intent') and row['intent'].get('trade_id')]
+        order_links=[]
+        if signal_ids:
+            q.execute("""WITH links AS (
+                SELECT r.order_request_id,r.source_decision_id AS market_signal_id,NULL::uuid AS trade_id
+                FROM live_order_request r
+                WHERE r.strategy_instance_id='FIRST_RISE_J_V1.3'
+                  AND r.source_decision_id=ANY(%s::uuid[])
+                UNION ALL
+                SELECT a.order_request_id,NULL::uuid AS market_signal_id,a.trade_id
+                FROM first_rise_j_sell_allocation a
+                WHERE a.trade_id=ANY(%s::uuid[]))
+                SELECT x.market_signal_id,x.trade_id,jsonb_build_object(
+                    'order_request_id',r.order_request_id,'side',r.side,'status',r.status,'created_at',r.created_at,
+                    'quantity',r.requested_quantity,'reason',r.reason,'trigger',r.detail,
+                    'broker_status',o.status,'broker_created_at',o.created_at,
+                    'checkpoint',to_jsonb(f),'observation',to_jsonb(ob))
+                FROM links x JOIN live_order_request r USING(order_request_id)
+                LEFT JOIN live_broker_order o USING(order_request_id)
                 LEFT JOIN first_rise_j_fill_checkpoint f USING(broker_order_id)
                 LEFT JOIN first_rise_v2_order_observation ob USING(broker_order_id)
-                WHERE r.strategy_instance_id='FIRST_RISE_J_V1.3' AND (r.source_decision_id=s.market_signal_id
-                  OR EXISTS(SELECT 1 FROM first_rise_j_sell_allocation a WHERE a.order_request_id=r.order_request_id AND a.trade_id=c.trade_id))) orders ON TRUE
-            WHERE s.business_date=%s ORDER BY s.entry_signal_time DESC,s.stock_code""",(day,))
-        rows=[lifecycle(row[0]) for row in q.fetchall()]
+                ORDER BY r.created_at,r.order_request_id""",(signal_ids,trade_ids))
+            order_links=q.fetchall()
+        rows=[lifecycle(row) for row in attach_orders(base_rows,order_links)]
         q.execute("""SELECT count(*),count(*) FILTER(WHERE entry_evidence->>'sequence_replay_only'='true'),
             count(*) FILTER(WHERE entry_evidence->>'live_entry_eligible'='true'),max(entry_signal_time)
             FROM first_rise_j_market_signal WHERE business_date=%s""",(day,))

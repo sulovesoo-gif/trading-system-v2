@@ -12,7 +12,7 @@ from unittest.mock import Mock,patch
 import pytest
 
 from src.first_rise_breakout.v2_capacity_repository import CapacityMonitor
-from src.service.first_rise_status_service import lifecycle,operation_logs,snapshot
+from src.service.first_rise_status_service import attach_orders,lifecycle,operation_logs,snapshot
 from scripts.dashboard.serve_first_rise_status import handler
 
 
@@ -64,12 +64,13 @@ def sample():
 
 
 def test_readonly_status_endpoint_render_and_copy_smoke():
-    queries=[];results=iter([[(sample(),)],[(1,1,0,'2026-10-06T13:57:00')],[(1,)],[(0,)],[(0,)],[(D(10000000),)],[(0,0,0,0,0,0,0,0)]])
+    queries=[];results=iter([[(sample(),)],[],[(1,1,0,'2026-10-06T13:57:00')],[(1,)],[(0,)],[(0,)],[(D(10000000),)],[(0,0,0,0,0,0,0,0)]])
     class Cursor:
         def execute(self,sql,args=None):
-            assert sql.lstrip().split()[0] in ('SET','SELECT')
+            statement=sql.lstrip().split()[0]
+            assert statement in ('SET','SELECT','WITH')
             queries.append(sql)
-            if sql.lstrip().startswith('SELECT'):self.rows=next(results)
+            if statement in ('SELECT','WITH'):self.rows=next(results)
         def fetchall(self):return self.rows
         def fetchone(self):return self.rows[0]
     q=Cursor()
@@ -82,6 +83,8 @@ def test_readonly_status_endpoint_render_and_copy_smoke():
     unavailable=lambda:operation_logs(run=lambda *a,**k:SimpleNamespace(returncode=1,stdout='',stderr='Permission denied'))
     data=snapshot(SimpleNamespace(connection=connection),DAY.date(),logs=unavailable)
     assert queries[0]=='SET TRANSACTION READ ONLY'
+    assert not any('LATERAL' in query for query in queries)
+    assert sum('WITH links AS' in query for query in queries)==1
     assert data['log_access']=='LOG_ACCESS_UNAVAILABLE'
     assert '과거신호 복원' in data['rows'][0]['copy_text']
     assert 'BOOK_TENKAN_PROFIT' in data['rows'][0]['copy_text']
@@ -97,6 +100,25 @@ def test_readonly_status_endpoint_render_and_copy_smoke():
         with pytest.raises(HTTPError) as failure:urlopen(Request(url+'/api/status',data=b'{}',method='POST'))
         assert failure.value.code==405
     finally:server.shutdown();server.server_close();thread.join()
+
+
+def test_batched_orders_attach_direct_allocation_deduplicate_and_sort():
+    rows=[dict(signal={'market_signal_id':'signal-1'},intent={'trade_id':'trade-1'}),
+          dict(signal={'market_signal_id':'signal-2'},intent={'trade_id':'trade-2'})]
+    direct={'order_request_id':'order-direct','created_at':'2026-10-06T09:01:00','side':'BUY'}
+    aggregate={'order_request_id':'order-sell','created_at':'2026-10-06T10:00:00','side':'SELL',
+        'trigger':{'actual_exit_reason':'ACTUAL_STOP_ENTRY_BREAK_PROTECTION'},
+        'broker_status':'FILLED','broker_created_at':'2026-10-06T10:00:01',
+        'checkpoint':{'version':1},'observation':{'first_fill_observed_at':'2026-10-06T10:00:02'}}
+    links=[('signal-1',None,direct),('signal-1','trade-1',aggregate),
+           (None,'trade-1',aggregate),(None,'trade-2',aggregate)]
+    attached=attach_orders(rows,links)
+    assert [order['order_request_id'] for order in attached[0]['orders']]==['order-direct','order-sell']
+    assert [order['order_request_id'] for order in attached[1]['orders']]==['order-sell']
+    assert attached[0]['orders'][1]['trigger']['actual_exit_reason']=='ACTUAL_STOP_ENTRY_BREAK_PROTECTION'
+    assert attached[0]['orders'][1]['broker_status']=='FILLED'
+    assert attached[0]['orders'][1]['checkpoint']['version']==1
+    assert attached[0]['orders'][1]['observation']['first_fill_observed_at'].endswith('02')
 
 
 def test_error_copy_text_is_safe_and_bounded():
