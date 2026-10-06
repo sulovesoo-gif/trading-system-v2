@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import time
 
 from .j_raw_tracking import market_needs_minutes
-from .j_signal import JSignalEngine, JStep
+from .j_signal import JSignalEngine, JStep, JState
 from .models import CandidateState, ResearchState
 from .strategy import FirstRiseBreakoutStrategy
 
@@ -17,15 +17,24 @@ class JMarketRuntime:
         self.minute_source.audit_previous_close=False
         self.states={}
         self.last_summary={}
+        self.recovery_from={}
+        self.rebuild=set()
 
     def restore(self, *, at):
         self.states={s.tracking.stock_code:(s,v,d) for s,v,d in self.repository.roster(business_date=at.date())}
+        self.recovery_from={code:at for code in self.states}
+        self.rebuild={code for code,(s,_,_) in self.states.items() if s.sequence==0}
 
     def register(self, candidate, *, discovered_at):
         # Legacy PAPER state is not the J lifecycle source of truth.
         seed=CandidateState(candidate.candidate_event_id,candidate.business_date,
                             candidate.stock_code,ResearchState.DISCOVERED)
         state,revision=self.repository.load_or_create(seed)
+        if seed.stock_code not in self.states:
+            self.recovery_from[seed.stock_code]=discovered_at
+            if state.sequence==0:self.rebuild.add(seed.stock_code)
+        else:
+            discovered_at=self.states[seed.stock_code][2]
         self.states[seed.stock_code]=(state,revision,discovered_at)
 
     def refresh(self, *, at, config):
@@ -48,9 +57,16 @@ class JMarketRuntime:
                     and b.bar_time<at.replace(second=0,microsecond=0)),key=lambda b:b.bar_time)
                 engine=JSignalEngine(config) if config is not None else None
                 if engine is not None:
+                    if code in self.rebuild:
+                        # Repair old price-only bootstrap snapshots, but never
+                        # overwrite an already persisted FIRST/SECOND lifecycle.
+                        state=JState(CandidateState(state.tracking.candidate_event_id,
+                            state.tracking.business_date,code,ResearchState.DISCOVERED))
+                        self.rebuild.discard(code)
+                    boundary=max(discovered,self.recovery_from.get(code,discovered)).replace(second=0,microsecond=0)
                     for bar in bars:
                         step=engine.advance(state,bar,completed_bars=bars,
-                            bootstrap=bar.bar_time<discovered.replace(second=0,microsecond=0))
+                            bootstrap=bar.bar_time<boundary)
                         if step.state!=state or step.market_entry or step.market_exit:
                             revision=self.repository.save(step,expected_revision=revision)
                             state=step.state;count+=1
@@ -78,6 +94,7 @@ class JMarketRuntime:
                 try:
                     restored,version=self.repository.load_or_create(state.tracking)
                     self.states[code]=(restored,version,discovered)
+                    if restored.sequence==0:self.rebuild.add(code)
                 except Exception:
                     LOGGER.exception('FIRST_RISE_J_RELOAD_ERROR stock_code=%s',code)
         return count

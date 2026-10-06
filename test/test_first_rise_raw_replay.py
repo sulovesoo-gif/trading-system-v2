@@ -58,7 +58,10 @@ def test_bootstrap_signal_never_reused_after_restart():
     rows[-1]['bar_time']=at(10,13);rows[-1]['observed_as_of']=discovered
     saved,events=replay_market(candidate=initial.tracking,discovered_at=discovered,
         rows=rows,config=CONFIG,initial_state=initial)
-    assert not any(e.market_entry for e in events)
+    entries=[e.market_entry for e in events if e.market_entry]
+    assert len(entries)==1 and saved.sequence==2
+    assert entries[0].evidence['sequence_replay_only']
+    assert not entries[0].evidence['live_entry_eligible']
     _,events=replay_market(candidate=initial.tracking,discovered_at=discovered,
         rows=rows,config=CONFIG,initial_state=decode_state(encode_state(saved)))
     assert not any(e.market_entry for e in events)

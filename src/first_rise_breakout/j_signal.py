@@ -74,7 +74,8 @@ class JSignalEngine:
         start = min(self.config.paper_entry_start, self.config.live_entry_start)
         cutoff = max(self.config.paper_entry_cutoff, self.config.live_entry_cutoff)
         sequence = entry_sequence(state, bar.bar_time, start=start, cutoff=cutoff)
-        eligible = sequence is not None and not bootstrap and not was_open
+        # Historical market events restore sequence, never authorize retro fills.
+        eligible = sequence is not None and not was_open
         decision = self.formula.observe_bar(state.tracking, bar,
             previous_close=previous_close, allow_entry=eligible, bootstrap=bootstrap,
             session_volume=sum(b.volume for b in usable), session_amount=bar.accumulated_amount)
@@ -89,8 +90,9 @@ class JSignalEngine:
                 prior_market_signal_key=state.prior_signal_key,
                 prior_market_exit_reason=state.prior_exit_reason,
                 second_signal_eligibility_reason="FIRST_INDEPENDENT_STOP" if sequence == 2 else None,
-                paper_entry_eligible=self.config.paper_entry_start <= bar.bar_time.time() < self.config.paper_entry_cutoff,
-                live_entry_eligible=self.config.live_entry_start <= bar.bar_time.time() < self.config.live_entry_cutoff)
+                sequence_replay_only=bootstrap,
+                paper_entry_eligible=not bootstrap and self.config.paper_entry_start <= bar.bar_time.time() < self.config.paper_entry_cutoff,
+                live_entry_eligible=not bootstrap and self.config.live_entry_start <= bar.bar_time.time() < self.config.live_entry_cutoff)
             entry = replace(decision, evidence=evidence)
             # Continue running-high observation while the independent signal is OPEN.
             tracking = self.formula.seed_peak(state.tracking,

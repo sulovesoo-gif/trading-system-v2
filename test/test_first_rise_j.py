@@ -91,13 +91,15 @@ def test_market_stop_is_independent_of_actual_fill():
     assert entry_sequence(step.state,at(10,0),start=time(9,1),cutoff=time(15)) == 2
 
 
-def test_bootstrap_does_not_create_retro_entry():
+def test_bootstrap_restores_market_entry_but_never_authorizes_retro_fills():
     engine=JSignalEngine(CONFIG); s=state(); bars=[]
     for b in [bar(9,0,'1030'),bar(9,1,'1025','1000'),bar(9,9,'1031','1025')]:
         bars.append(b);step=engine.advance(s,b,previous_close=D('1000'),completed_bars=bars,bootstrap=True)
         s=step.state
-        assert step.market_entry is None
-    assert step.observation.reason == 'MISSED_BEFORE_DISCOVERY'
+    assert s.sequence==1
+    assert step.market_entry.evidence['sequence_replay_only'] is True
+    assert step.market_entry.evidence['live_entry_eligible'] is False
+    assert step.market_entry.evidence['paper_entry_eligible'] is False
 
 
 @pytest.mark.parametrize('amount',['0','-1','1.1','NaN','Infinity','1e7','',None])

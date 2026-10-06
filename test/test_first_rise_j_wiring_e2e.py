@@ -259,7 +259,8 @@ class WiringE2E(cost_fixture.PostgresCostTests):
         self.fill('2',price=2200);self.cycle()
         self.assertEqual(self.query('SELECT common_slot_amount FROM first_rise_j_capital_epoch')[0][0],20000000)
         old_binding=self.query('SELECT entry_sizing_evidence FROM first_rise_j_capital_binding')[0][0]
-        self.bars.extend([bar(9,15,1050),bar(9,16,1040,1025),bar(9,25,1051,1040)])
+        # The new stock must not inherit the other stock's historical FIRST.
+        self.bars=[bar(9,0,1050),bar(9,15,1050),bar(9,16,1040,1025),bar(9,25,1051,1040)]
         self.now=at(9,26);self.add_stock('234567',discovered=at(9,12));self.cash=30000000;self.cycle()
         self.assertEqual(self.query("SELECT sizing_evidence->>'common_slot_amount' FROM first_rise_j_live_intent WHERE side='BUY' ORDER BY created_at")[-1][0],'20000000')
         self.assertEqual(old_binding['common_slot_amount'],'10000000')

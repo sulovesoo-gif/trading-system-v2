@@ -39,6 +39,7 @@ class JLiveRepository:
                 LEFT JOIN first_rise_j_live_intent i ON i.market_signal_id=s.market_signal_id AND i.side='BUY'
                 WHERE i.intent_id IS NULL AND s.entry_signal_time>=a.effective_from
                   AND s.business_date=%s AND s.exit_reason IS NULL
+                  AND COALESCE(s.entry_evidence->>'sequence_replay_only','false')<>'true'
                 ORDER BY s.entry_signal_time,s.stock_code''',(STRATEGY_ID,at.date()))
             return [row[0] for row in q.fetchall()]
 
@@ -55,6 +56,7 @@ class JLiveRepository:
             row=q.fetchone()
             if row is None:return 'NO_ACTIVATION'
             stock,signal_time,sequence,prior_reason,prior_time,effective,exited,parent,signal_evidence=row
+            if signal_evidence.get('sequence_replay_only'):return 'NO_REPLAY'
             if exited is not None:return 'SIGNAL_ALREADY_EXITED'
             if sequence==2:
                 # Never allow a parent exception to authorize unrelated lots/orders.
@@ -141,7 +143,9 @@ class JLiveRepository:
                     s.signal_sequence,i.planning_reason,i.order_request_id,s.entry_signal_time
                     FROM first_rise_j_market_signal s LEFT JOIN first_rise_j_live_intent i
                       ON i.market_signal_id=s.market_signal_id AND i.side='BUY'
-                    WHERE s.stock_code=%s ORDER BY s.entry_signal_time DESC LIMIT 1''',(stock,))
+                    WHERE s.stock_code=%s
+                      AND COALESCE(s.entry_evidence->>'sequence_replay_only','false')<>'true'
+                    ORDER BY s.entry_signal_time DESC LIMIT 1''',(stock,))
                 event=q.fetchone()
                 if event is None:continue
                 signal,signal_time,price,reason,sequence,planning,buy_request,entry_time=event

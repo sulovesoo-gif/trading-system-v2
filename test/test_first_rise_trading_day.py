@@ -60,16 +60,16 @@ class TradingDayTests(unittest.TestCase):
         self.assertEqual(self.jrepo.events,[]);self.assertIs(r._states[existing.stock_code],existing)
         self.assertEqual(self.client.get.call_count,1)
 
-    def test_failure_cached_fail_closed_until_next_day(self):
+    def test_failure_blocks_only_cycle_then_recovers_same_day(self):
         day=self.calendar(RuntimeError('mock calendar unavailable'));r=self.runtime(day)
         with self.assertLogs('src.first_rise_breakout.trading_day',level='ERROR'):
             self.assertEqual(r.scan_once(at=at(9,1)),0)
-        self.assertEqual(r.refresh_completed_bars(at=at(9,10)),0)
-        self.assertEqual(r.expire_once(at=at(15,1)),0)
         self.assertEqual(self.client.get.call_count,1)
+        self.assertIsNone(day.day)
         self.search.candidates.assert_not_called();self.assertEqual(self.jrepo.events,[])
         self.client.get.side_effect=lambda **kw:{'output':[{'bass_dt':kw['params']['BASS_DT'],'opnd_yn':'Y'}]}
-        self.assertTrue(day(at(9,1)+timedelta(days=1)))
+        self.assertEqual(r.scan_once(at=at(9,2)),1)
+        self.assertTrue(day(at(9,3)))
         self.assertEqual(self.client.get.call_count,2)
 
     def test_live_no_new_buy_planning_recovery_unchanged(self):
@@ -83,7 +83,7 @@ class TradingDayTests(unittest.TestCase):
             r.cycle(at=at(9,10));r.cycle(at=at(9,11))
             planner.entry_signals.assert_not_called();planner.plan_buy.assert_not_called()
             self.assertEqual(recovery.poll.call_count,2)
-            self.assertEqual(self.client.get.call_count,1)
+            self.assertEqual(self.client.get.call_count,2 if isinstance(opened,Exception) else 1)
 
     def test_holiday_run_loop_skips_restore_and_all_work(self):
         r=self.runtime(self.calendar('N'))
@@ -102,6 +102,23 @@ class TradingDayTests(unittest.TestCase):
         r.cycle(at=at(9,10))
         planner.plan_buy.assert_called_once()
         self.assertEqual(self.client.get.call_count,1)
+
+    def test_live_calendar_error_recovers_next_cycle_without_restart(self):
+        day=self.calendar(PermissionError('mock token permission'))
+        planner=Mock();planner.entry_signals.return_value=[]
+        store=Mock();store.discover_ready_request_keys.return_value=[]
+        recovery=Mock()
+        r=JLiveRuntime(context=SimpleNamespace(load=Mock(),config=CONFIG),planner=planner,
+            submit_store=store,submitter=Mock(),recovery=recovery,price_lookup=Mock(),
+            cash_lookup=Mock(),cost_finalizer=Mock(),trading_day=day)
+        with self.assertLogs('src.first_rise_breakout.trading_day',level='ERROR'):
+            r.cycle(at=at(9,10))
+        planner.entry_signals.assert_not_called()
+        self.client.get.side_effect=lambda **kw:{'output':[{'bass_dt':kw['params']['BASS_DT'],'opnd_yn':'Y'}]}
+        r.cycle(at=at(9,11));r.cycle(at=at(9,12))
+        self.assertEqual(planner.entry_signals.call_count,2)
+        self.assertEqual(recovery.poll.call_count,3)
+        self.assertEqual(self.client.get.call_count,2)
 
 
 class TradingDayPostgresTests(pg_fixture.WiringE2E):

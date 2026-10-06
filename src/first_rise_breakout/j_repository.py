@@ -105,9 +105,10 @@ class JMarketRepository:
                     VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
                     (signal_id,cid,state.tracking.business_date,state.tracking.stock_code,state.sequence,
                      prior_id,decision.after.entry_event_key,decision.signal_time,decision.raw_execution_price,Jsonb(evidence)))
-                self._paper_entry(q, signal_id, decision)
-                from .v2_capacity_repository import shadow_entry
-                shadow_entry(q,signal_id,decision)
+                if not evidence.get('sequence_replay_only'):
+                    self._paper_entry(q, signal_id, decision)
+                    from .v2_capacity_repository import shadow_entry
+                    shadow_entry(q,signal_id,decision)
             if step.market_exit is not None:
                 decision = step.market_exit
                 signal_id = stable_id('FIRST_RISE_J|'+decision.before.entry_event_key)

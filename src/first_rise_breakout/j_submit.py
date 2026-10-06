@@ -47,6 +47,7 @@ class JSubmitStore:
                   AND r.side=i.side AND r.execution_stock_code=b.stock_code
                   AND r.source_intent_id=i.intent_id AND r.source_decision_id=i.market_signal_id
                   AND r.detail->>'first_rise_trade_id'=i.trade_id::text
+                  AND (r.side<>'BUY' OR COALESCE(s.entry_evidence->>'sequence_replay_only','false')<>'true')
                 FOR UPDATE OF r''', (request_key,STRATEGY_ID))
             row=q.fetchone()
             if row is None or row[4] not in ('READY_FOR_BROKER','SUBMITTING'):
@@ -112,6 +113,7 @@ class JSubmitStore:
                     WHERE i.order_request_id=%s AND next_signal.signal_sequence=2
                       AND next_signal.exit_reason IS NULL AND next_signal.entry_signal_time>=a.effective_from
                       AND next_signal.business_date=%s
+                      AND COALESCE(next_signal.entry_evidence->>'sequence_replay_only','false')<>'true'
                       AND NOT EXISTS(SELECT 1 FROM first_rise_j_live_intent bi
                         WHERE bi.market_signal_id=next_signal.market_signal_id AND bi.side='BUY') LIMIT 1''',
                     (STRATEGY_ID,order.order_request_id,self.clock().date()))

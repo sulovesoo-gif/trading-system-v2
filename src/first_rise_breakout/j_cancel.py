@@ -42,6 +42,7 @@ class JCancelRuntime:
             q.execute('''SELECT DISTINCT s.stock_code FROM first_rise_j_market_signal s
                 JOIN first_rise_j_activation a ON a.strategy_id=%s
                 WHERE s.signal_sequence=2 AND s.exit_reason IS NULL AND s.business_date=%s
+                AND COALESCE(s.entry_evidence->>'sequence_replay_only','false')<>'true'
                 AND s.entry_signal_time>=a.effective_from AND NOT EXISTS(SELECT 1 FROM first_rise_j_live_intent i
                     WHERE i.market_signal_id=s.market_signal_id AND i.side='BUY')''',(STRATEGY_ID,at.date()))
             stocks=[r[0] for r in q.fetchall()]
